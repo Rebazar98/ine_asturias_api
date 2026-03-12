@@ -1,4 +1,4 @@
-﻿name: Security Scan
+name: Security Scan
 
 on:
   workflow_dispatch:
@@ -21,7 +21,7 @@ jobs:
         run: docker build -t ine_asturias_api:security .
 
       - name: Scan API image with Trivy
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.35.0
         with:
           image-ref: ine_asturias_api:security
           format: table
