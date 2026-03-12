@@ -1,0 +1,39 @@
+﻿name: Security Scan
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 7 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  app-image-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build API image
+        run: docker build -t ine_asturias_api:security .
+
+      - name: Scan API image with Trivy
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ine_asturias_api:security
+          format: table
+          output: trivy-report.txt
+          exit-code: '1'
+          ignore-unfixed: true
+          severity: HIGH,CRITICAL
+
+      - name: Upload Trivy report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-report
+          path: trivy-report.txt
+          if-no-files-found: error

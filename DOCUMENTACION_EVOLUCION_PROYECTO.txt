@@ -1,0 +1,3512 @@
+DOCUMENTACION DE EVOLUCION DEL PROYECTO
+=====================================
+
+Proyecto: ine_asturias_api
+Ubicacion: C:\Users\user\OneDrive\Documents\Playground
+Fecha de generacion: 2026-03-11
+
+1. RESUMEN GENERAL
+------------------
+Este documento sirve como memoria tecnica y fotografia de estado del proyecto.
+Recoge:
+- el objetivo funcional de la API
+- la evolucion desde la primera version hasta la version actual
+- la arquitectura interna por capas
+- la responsabilidad de cada modulo y archivo relevante
+- el detalle de flujos principales
+- limitaciones actuales y posibles mejoras
+- una copia textual del contenido del proyecto para referencia historica
+
+El proyecto expone una API FastAPI que actua como proxy pragmatica de la API publica del INE,
+con un foco especial en consultas para Asturias. La version actual ya no es solo un proxy:
+ahora incorpora cache, configuracion por entorno, persistencia en Postgres, normalizacion inicial de datos,
+resolucion automatica de Asturias, logging estructurado, seguridad opcional por API key, Docker y tests con mocks.
+Ademas, el endpoint de Asturias ya no depende de DATOS_METADATAOPERACION para obtener datos finales,
+sino que descubre tablas reales de la operacion y consulta DATOS_TABLA filtrando por Asturias.
+La persistencia normalizada tambien ha sido corregida para SQLAlchemy 2.x,
+evitar choques con la columna SQL metadata y aceptar unicamente filas planas y serializables.
+La ultima iteracion anade control del volumen procesado por request, filtrado real de Asturias tras la descarga
+y upserts en batches pequenos para poder probar operaciones grandes sin bloquear la API durante demasiado tiempo.
+En la fase mas reciente tambien se ha endurecido la base operativa: Alembic gestiona ya el esquema,
+Redis coordina jobs y workers, existe bootstrap seguro de migraciones para bases heredadas,
+y el proyecto queda preparado para produccion inicial sin depender de create_all.
+
+2. EVOLUCION DEL PROYECTO
+-------------------------
+Fase 1. Version inicial
+- Se creo una API FastAPI muy simple con main.py en raiz.
+- Se anadieron los endpoints /health, /ine/table/{table_id}, /ine/operation/{op_code}/variables,
+  /ine/operation/{op_code}/variable/{variable_id}/values y /ine/operation/{op_code}/asturias.
+- El proyecto usaba httpx.AsyncClient y validacion basica.
+- El testing era minimo y solo cubria /health.
+- No habia persistencia, cache, estructura por capas, Docker ni configuracion por entorno.
+
+Fase 2. Refactor a MVP profesional
+- Se reorganizo el proyecto dentro de app/ con separacion por capas.
+- Se introdujo configuracion central con pydantic-settings.
+- Se anadio cliente INE reusable con manejo de errores tipado.
+- Se incorporo cache TTL en memoria.
+- Se implemento resolucion automatica de Asturias a partir de variables y valores de la operacion.
+- Se anadio persistencia raw y normalizada en Postgres con SQLAlchemy async.
+- Se incorporo una normalizacion defensiva para respuestas de tabla y de Asturias.
+- Se anadio logging estructurado en JSON.
+- Se anadio proteccion opcional por cabecera X-API-Key.
+- Se amplio la suite de tests para cubrir errores, validacion, mocks y logica de resolucion.
+- Se anadieron Dockerfile, docker-compose, .env.example y README renovado.
+- Se mantuvo compatibilidad con el arranque anterior mediante un main.py en raiz que reexporta app.main:app.
+
+Fase 3. Correccion estructural del flujo Asturias
+- Se detecto que la resolucion geografica funcionaba bien, pero el ultimo paso del endpoint Asturias estaba mal orientado.
+- La estrategia anterior llamaba a DATOS_METADATAOPERACION/{op_code}?g1=... y podia recibir respuestas no utilizables como JSON de datos.
+- Se sustituyo el tramo final por un flujo real basado en tablas:
+  VARIABLES_OPERACION -> VALORES_VARIABLEOPERACION -> TABLAS_OPERACION -> DATOS_TABLA/{table_id}.
+- El endpoint ahora recupera una o varias tablas de la operacion, aplica el filtro geografico de Asturias sobre cada tabla,
+  agrega resultados, tolera fallos parciales y mantiene persistencia raw y normalizacion por tabla valida.
+- Se anadieron logs mas detallados para operacion, tablas encontradas, tablas seleccionadas, filas recuperadas y errores por tabla.
+
+Fase 4. Correccion de persistencia normalizada
+- Se detecto que la descarga del INE y el guardado raw funcionaban, pero la insercion en ine_series_normalized fallaba.
+- La causa exacta era el uso de insert(INESeriesNormalized).values(values) con una clave SQL metadata,
+  que colisionaba con Base.metadata en el modo ORM de SQLAlchemy 2.x.
+- Se cambio la persistencia para usar insert(INESeriesNormalized.__table__) y trabajar a nivel de tabla SQL.
+- Se introdujo una serializacion previa obligatoria con prepare_upsert_rows(...).
+- Cada item normalizado se convierte a un diccionario plano, con solo columnas validas:
+  operation_code, table_id, variable_id, geography_name, geography_code, period, value, unit, metadata, raw_payload.
+- Se filtran claves extra, se convierten valores no serializables a JSON seguro y se descartan filas sin period.
+- Se anadieron logs de inspeccion temporal antes del upsert para ver tipo de items, longitud, tipo del primer elemento y sus claves.
+- Se anadieron tests unitarios especificos para la serializacion previa a la insercion.
+
+Fase 5. Control de volumen y validacion real de Asturias
+- Se detecto que algunas operaciones descubren muchas tablas y algunas tablas contienen cientos de miles de filas.
+- Se anadio el parametro opcional max_tables al endpoint /ine/operation/{op_code}/asturias.
+- En entornos local, dev, development y test, si no se indica max_tables, el endpoint limita por defecto el procesamiento a 3 tablas por request.
+- Se introdujo un filtro real sobre el payload descargado desde DATOS_TABLA para conservar solo series cuyo contexto corresponde a Asturias.
+- Esto evita persistir series de otras geografias aunque el payload original venga mezclado.
+- La persistencia normalizada ahora trocea la insercion en batches pequenos, con logs por lote.
+- Si una tabla es especialmente grande, se registra una advertencia y se sigue procesando de forma controlada.
+
+Fase 6. Robustez del normalizador y correccion de encoding
+- Se hizo explicita la normalizacion del shape real del INE: payload raiz tipo list, cada elemento una serie dict y cada observacion dentro de Data.
+- Se anadieron helpers privados para detectar series, contar observaciones y hacer flatten de observaciones atomicas antes del upsert.
+- La extraccion de variable, unidad y periodo se reforzo con fallbacks reales del INE como COD, FK_Unidad, Anyo, Ano y FK_Periodo.
+- Se anadieron logs de depuracion antes del upsert con tipo de payload, series detectadas, observaciones totales, filas generadas, filas enviadas a upsert y ejemplo de la primera fila normalizada.
+- Se incorporo un test especifico de normalizacion con un payload realista del INE que genera dos filas, una por cada observacion del array Data.
+- Se corrigio un problema de encoding en app/services/normalizers.py provocado por un literal corrupto tipo A?o.
+- El archivo se dejo regrabado en UTF-8 limpio y se valido su importacion real con Python 3.12 dentro del contenedor Docker.
+
+Fase 7. Documentacion tecnica y guia de agentes
+- Se anadio PLAN_TECNICO_PLATAFORMA_DATOS_TERRITORIALES.md en la raiz del proyecto.
+- Este documento describe la evolucion del backend actual hacia una plataforma de datos territoriales de Espana,
+  integrando INE, IGN / CartoCiudad, PostgreSQL, PostGIS, FastAPI, n8n y una hoja de ruta por fases.
+- Se anadio AGENTS.md como guia operativa para futuros agentes y colaboradores tecnicos.
+- AGENTS.md recoge el contexto del proyecto, principios de arquitectura, buenas practicas de Python y FastAPI,
+  seguridad, observabilidad, persistencia, testing, Docker y prioridades para llegar a produccion.
+- AGENTS.md queda como unica fuente canonica de instrucciones para agentes.
+- README.md se actualizo para enlazar esta documentacion y dejar mas visible el mapa documental del proyecto.
+
+Fase 8. Endurecimiento de migraciones y operacion inicial
+- Se introdujo Alembic como mecanismo formal de versionado de esquema.
+- Se crearon las migraciones 0001_initial_schema y 0002_postgis_territorial.
+- Se elimino la dependencia de create_all en runtime; la aplicacion ya no crea tablas automaticamente al arrancar.
+- Se anadio PostgreSQL + PostGIS en la misma base y un nucleo territorial inicial con territorial_units, territorial_unit_codes y territorial_unit_aliases.
+- Se incorporo Redis como backend para coordinacion de jobs y se dejo un worker dedicado con arq.
+- Se anadieron readiness checks y metricas Prometheus para observabilidad operativa minima.
+- Se extrajo la orquestacion pesada del flujo Asturias a un servicio dedicado reutilizable por API y worker.
+- Se anadio el endpoint semantico /ine/series para consultar datos ya normalizados con filtros y paginacion.
+- Se detecto un problema de BOM en alembic.ini que rompia ConfigParser dentro del contenedor migrate; el archivo se regrabo en UTF-8 sin BOM.
+- Se anadio scripts/bootstrap_alembic.py para resolver de forma segura bases heredadas sin alembic_version.
+- El bootstrap ya no hace stamp a ciegas: valida tablas, columnas, tipos y nulabilidad antes de aceptar que la base coincide con la migracion inicial.
+- Se validaron dos escenarios reales con Docker:
+  - base heredada correcta: stamp seguro y upgrade a head completados.
+  - base inconsistente: fallo explicito sin hacer stamp.
+
+3. ARQUITECTURA ACTUAL
+----------------------
+La arquitectura sigue una separacion ligera pero util:
+
+- app/main.py
+  Punto de entrada real de la aplicacion. Construye FastAPI, registra rutas, middleware, excepciones,
+  lifespan de arranque/cierre, cliente HTTP compartido, cache y conexion a base de datos.
+
+- app/settings.py
+  Define Settings y centraliza variables de entorno como APP_NAME, APP_ENV, INE_BASE_URL,
+  HTTP_TIMEOUT_SECONDS, POSTGRES_DSN, ENABLE_CACHE, CACHE_TTL_SECONDS, API_KEY y LOG_LEVEL.
+
+- app/db.py
+  Inicializa SQLAlchemy async, crea engine y session factory, ofrece get_session y helpers
+  para crear el esquema y liberar recursos.
+
+- app/models.py
+  Define las tablas ingestion_raw e ine_series_normalized con indices y restriccion unica para deduplicacion logica.
+  En ine_series_normalized, la columna SQL real se llama metadata, pero el atributo Python del modelo es metadata_json.
+
+- app/schemas.py
+  Define modelos Pydantic de entrada y salida como HealthResponse, JSONPayload,
+  NormalizedSeriesItem y AsturiasResolutionResult.
+
+- app/dependencies.py
+  Reune dependencias FastAPI para cache, servicio INE, repositorios, resolver de Asturias,
+  sesion DB y seguridad por API key.
+
+- app/services/ine_client.py
+  Encapsula llamadas HTTP al INE, cache de respuestas, logging de upstream,
+  parseo JSON y errores tipados. Incluye acceso a tablas de operacion mediante TABLAS_OPERACION/{op_code}.
+
+- app/services/normalizers.py
+  Implementa la normalizacion defensiva de payloads del INE a filas normalizadas.
+  Ahora detecta explicitamente series en payloads raiz list o dict, hace flatten de observaciones de Data,
+  calcula estadisticas de shape para logging y usa fallbacks reales del INE como COD, FK_Unidad, Anyo, Ano y FK_Periodo.
+  En el flujo Asturias, conserva tambien el table_id de origen cuando esta disponible.
+
+- app/services/asturias_resolver.py
+  Intenta detectar automaticamente la variable geografica y el valor correspondiente a Asturias.
+  Soporta overrides manuales y cachea el resultado.
+
+- app/repositories/ingestion.py
+  Inserta respuestas raw en Postgres para trazabilidad.
+
+- app/repositories/series.py
+  Inserta o actualiza filas normalizadas usando upsert sobre conflicto logico.
+  Antes del upsert sanea los datos y los convierte a filas planas compatibles con SQLAlchemy 2.x.
+  Ejecuta la persistencia en batches pequenos para evitar sentencias SQL excesivas.
+
+- app/api/routes_health.py
+  Endpoint de salud.
+
+- app/api/routes_ine.py
+  Endpoints funcionales del dominio INE y su integracion con servicios y repositorios.
+  El endpoint Asturias incluye ahora una orquestacion de tablas reales de operacion,
+  limite opcional de tablas por request y filtrado real de series Asturias antes de normalizar.
+
+- app/core/logging.py
+  Logging estructurado JSON para logs consistentes y procesables.
+
+- app/core/cache.py
+  Cache TTL simple en memoria.
+
+- tests/
+  Suite de pruebas con MockTransport para no tocar la red real.
+  Incluye pruebas unitarias para la preparacion de filas de insercion normalizada
+  y pruebas funcionales del filtrado Asturias y del limite max_tables.
+
+4. FLUJOS PRINCIPALES
+---------------------
+Flujo de /health
+- La ruta responde con status ok.
+- Sirve para comprobar que la API esta levantada.
+
+Flujo de /ine/table/{table_id}
+- La ruta valida query params.
+- Llama al cliente del INE para DATOS_TABLA/{table_id}.
+- Guarda la respuesta raw en ingestion_raw.
+- Intenta normalizar las series y guardarlas en ine_series_normalized.
+- Devuelve el payload original al cliente.
+
+Flujo de /ine/operation/{op_code}/variables
+- Llama a VARIABLES_OPERACION/{op_code}.
+- Guarda la respuesta raw.
+- Devuelve el payload original.
+
+Flujo de /ine/operation/{op_code}/variable/{variable_id}/values
+- Llama a VALORES_VARIABLEOPERACION/{variable_id}/{op_code}.
+- Guarda la respuesta raw.
+- Devuelve el payload original.
+
+Flujo de /ine/operation/{op_code}/asturias
+- Si llegan geo_variable_id y asturias_value_id, los usa como override manual.
+- Si no, consulta variables de la operacion y detecta la variable geografica mas probable.
+- Luego consulta sus valores y trata de localizar Asturias automaticamente.
+- Cachea la resolucion.
+- Si se recibe max_tables, limita el numero de tablas a procesar.
+- Si no se recibe y el entorno es de desarrollo/local/test, limita automaticamente a 3 tablas.
+- Consulta TABLAS_OPERACION/{op_code} para descubrir las tablas reales asociadas a la operacion.
+- Extrae las tablas validas encontradas y prepara una consulta por tabla a DATOS_TABLA/{table_id}.
+- Aplica el filtro geografico g1={geo_variable_id}:{asturias_value_id} sobre cada tabla.
+- Guarda raw de cada respuesta de tabla tal y como llega del INE.
+- Valida despues del download que las series recuperadas correspondan realmente a Asturias.
+- Si una tabla es muy grande, registra advertencia y sigue procesando de forma controlada.
+- Tolera fallos parciales: si una tabla falla o no contiene series validas de Asturias, registra el problema y continua.
+- Normaliza y persiste las filas de cada tabla valida, conservando el table_id.
+- Devuelve una respuesta agregada con:
+  - operation_code
+  - resolution
+  - tables_found
+  - tables_selected
+  - results
+  - errors
+  - warnings
+  - summary
+
+5. PERSISTENCIA EN BASE DE DATOS
+--------------------------------
+Tabla ingestion_raw
+- Guarda el payload completo recibido del INE.
+- Permite auditoria, reingestion, debugging y trazabilidad.
+- Campos clave:
+  id, source_type, source_key, request_path, request_params, payload, fetched_at.
+- En el flujo Asturias se usan, entre otros, estos source_type:
+  - operation_tables
+  - operation_asturias_table
+  - operation_asturias
+
+Tabla ine_series_normalized
+- Guarda una vista inicial y mas explotable de ciertas series.
+- Esta pensada como base para consultas posteriores o analitica.
+- Campos clave:
+  id, operation_code, table_id, variable_id, geography_name, geography_code,
+  period, value, unit, metadata, raw_payload, inserted_at.
+- Deduplicacion:
+  existe una restriccion unica sobre operation_code + table_id + variable_id + geography_name + geography_code + period.
+  Si vuelve a llegar la misma serie logica, se actualizan value, unit, metadata y raw_payload.
+- Regla de insercion actual:
+  solo se insertan filas planas y serializables con columnas exactas del modelo.
+- El upsert se ejecuta en batches pequenos, por defecto de 500 filas.
+- Cada batch genera logs con batch_size, rows_inserted y table_id.
+- Ejemplo de fila valida para insercion:
+  {
+    "operation_code": "22",
+    "table_id": "2852",
+    "variable_id": "70",
+    "geography_name": "Principado de Asturias",
+    "geography_code": "8999",
+    "period": "2024M01",
+    "value": 101.5,
+    "unit": "indice",
+    "metadata": {"source": "test"},
+    "raw_payload": {"nested": {"value": 1}}
+  }
+
+6. NORMALIZACION
+----------------
+La normalizacion es pragmatica y defensiva:
+- No intenta cubrir todo el universo de payloads del INE.
+- Se centra solo en tablas y consultas Asturias.
+- Intenta extraer valor numerico aunque llegue con coma decimal o simbolos.
+- Conserva siempre raw_payload por fila para no perder contexto.
+- En el flujo Asturias, asocia cada fila con el table_id real de origen.
+- El resultado de la normalizacion llega como lista de NormalizedSeriesItem.
+- Antes de tocar la base de datos, esos items se convierten a filas SQL planas mediante prepare_upsert_rows(...).
+- Antes incluso de normalizar, el payload descargado se filtra para dejar solo series validadas como Asturias.
+- Si no puede normalizar una parte, lo registra y continua sin romper la API.
+
+7. CACHE
+--------
+La cache actual es en memoria y TTL configurable.
+Se usa para:
+- variables de operacion
+- valores de variables
+- resolucion de Asturias
+- respuestas del INE solicitadas desde los endpoints
+- tablas de operacion
+
+8. LOGGING
+----------
+El logging se emite en JSON y esta pensado para ser util en desarrollo y despliegue.
+Registra:
+- arranque y parada de la app
+- peticiones completadas
+- errores de request
+- llamadas al INE y errores upstream
+- aciertos de cache
+- inserciones en base de datos
+- fallos de normalizacion
+- resolucion de Asturias
+- tablas encontradas por operacion
+- tablas seleccionadas
+- filas recuperadas por tabla
+- filas filtradas por tabla
+- advertencias por tablas grandes
+- errores parciales por tabla
+- filas insertadas por batch de persistencia
+
+9. SEGURIDAD
+------------
+Si API_KEY esta configurada en entorno:
+- los endpoints del INE exigen cabecera X-API-Key correcta
+- /health permanece util como comprobacion general del servicio
+
+Si API_KEY esta vacia:
+- la API permanece abierta, lo que resulta comodo en local.
+
+10. TESTING
+-----------
+La suite actual cubre:
+- salud basica
+- consulta de tabla y normalizacion
+- validacion de query params
+- error upstream del INE
+- JSON invalido
+- resolucion automatica de Asturias
+- override manual de Asturias
+- flujo Asturias basado en tablas reales
+- resultados parciales cuando falla una tabla
+- error claro cuando fallan todas las tablas de una operacion
+- serializacion de items normalizados a filas planas insertables
+- filtrado de claves extra y valores no serializables antes del upsert
+- limite max_tables
+- filtrado real de series no Asturias tras la descarga
+
+Los tests usan httpx.MockTransport y repositorios dummy, por lo que no dependen ni del INE real ni de Postgres.
+
+11. LIMITACIONES ACTUALES
+-------------------------
+- No hay migraciones con Alembic; el esquema se crea con create_all al arrancar.
+- La cache es local al proceso y no sirve como cache compartida entre replicas.
+- La normalizacion del INE no puede ser totalmente generica; algunos payloads pueden no encajar.
+- TABLAS_OPERACION puede no exponer siempre una estructura totalmente homogenea entre operaciones.
+- No todas las tablas de una operacion tienen por que aceptar el mismo filtro geografico.
+- Aun con max_tables y batching, ciertas tablas pueden seguir siendo muy pesadas en operaciones grandes.
+- El entorno de trabajo actual no expone python ni py en PATH, por lo que la validacion automatica no pudo ejecutarse aqui.
+
+12. POSIBLES SIGUIENTES PASOS
+-----------------------------
+- Anadir Alembic para migraciones versionadas.
+- Sustituir cache en memoria por Redis.
+- Introducir jobs de ingesta periodica.
+- Exponer endpoints propios sobre la tabla normalizada.
+- Mejorar la normalizacion por operacion concreta del INE.
+- Anadir observabilidad adicional con metricas y trazas.
+- Afinar reglas de seleccion de tablas cuando una operacion tenga muchas tablas heterogeneas.
+- Anadir un modo asincrono o en background para operaciones muy grandes.
+
+13. INDICE DE ARCHIVOS Y RESPONSABILIDAD
+----------------------------------------
+- .env.example: ejemplo completo de variables de entorno.
+- Dockerfile: imagen de la API.
+- docker-compose.yml: despliegue local con API + Postgres.
+- DOCUMENTACION_EVOLUCION_PROYECTO.txt: memoria tecnica e instantanea del proyecto.
+- main.py: compatibilidad con el arranque antiguo.
+- README.md: guia funcional y tecnica del proyecto.
+- requirements.txt: dependencias Python.
+- app/__init__.py: marcador de paquete.
+- app/main.py: aplicacion FastAPI real.
+- app/settings.py: configuracion por entorno.
+- app/db.py: engine, sesiones y ciclo de vida DB.
+- app/models.py: modelos SQLAlchemy y tablas.
+- app/schemas.py: modelos Pydantic.
+- app/dependencies.py: dependencias FastAPI.
+- app/api/routes_health.py: endpoint de salud.
+- app/api/routes_ine.py: endpoints del dominio INE, flujo Asturias por tablas, limite max_tables y filtrado real de Asturias.
+- app/core/cache.py: cache TTL en memoria.
+- app/core/logging.py: logging estructurado.
+- app/repositories/ingestion.py: persistencia raw.
+- app/repositories/series.py: persistencia normalizada con serializacion previa segura y upserts por batches.
+- app/services/ine_client.py: cliente HTTP al INE y acceso a tablas de operacion.
+- app/services/normalizers.py: normalizacion de payloads.
+- app/services/asturias_resolver.py: resolucion automatica de Asturias.
+- tests/conftest.py: fixtures, repositorios dummy y override del cliente INE.
+- tests/test_health.py: prueba de salud.
+- tests/test_ine_table.py: pruebas de tabla y validacion.
+- tests/test_asturias.py: pruebas del flujo Asturias por tablas, override manual, limite max_tables y filtrado real.
+- tests/test_error_handling.py: pruebas de errores upstream y JSON invalido.
+- tests/test_series_repository.py: pruebas de la preparacion de filas para el upsert normalizado.`r`n- tests/test_normalizers.py: pruebas de flatten y normalizacion de payloads reales del INE con raiz list y observaciones en Data.`r`n- tests/test_normalizers.py: pruebas de flatten y normalizacion de payloads reales del INE con raiz list y observaciones en Data.
+
+14. VOLCADO COMPLETO DEL CONTENIDO ACTUAL DEL PROYECTO
+------------------------------------------------------
+A continuacion se incluye el contenido textual del proyecto para dejar una instantanea documental.
+Los archivos __init__.py vacios se indican expresamente como vacios.
+
+============================================================
+ARCHIVO: Dockerfile
+============================================================
+
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+EXPOSE 8000
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+
+
+
+============================================================
+ARCHIVO: docker-compose.yml
+============================================================
+
+services:
+  api:
+    build:
+      context: .
+    container_name: ine_asturias_api
+    ports:
+      - "8001:8000"
+    env_file:
+      - .env
+    environment:
+      POSTGRES_DSN: postgresql+asyncpg://postgres:postgres@db:5432/ine_asturias
+    depends_on:
+      db:
+        condition: service_healthy
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    volumes:
+      - .:/app
+
+  db:
+    image: postgres:16
+    container_name: ine_asturias_postgres
+    environment:
+      POSTGRES_DB: ine_asturias
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ine_asturias"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
+
+
+
+
+============================================================
+ARCHIVO: main.py
+============================================================
+
+from app.main import app
+
+
+
+
+============================================================
+ARCHIVO: README.md
+============================================================
+
+# ine_asturias_api
+
+`ine_asturias_api` es una API FastAPI que actua como proxy pragmatica de la API publica del INE, con enfoque en Asturias. Mantiene los endpoints originales, anade persistencia en Postgres, cache en memoria, resolucion automatica de Asturias, normalizacion inicial de series y una base mas seria para despliegue y evolucion.
+
+## Que hace
+
+- Expone endpoints HTTP sencillos sobre la API del INE.
+- Guarda respuestas raw en Postgres para trazabilidad.
+- Normaliza una primera capa de series para consultas de tabla y Asturias.
+- Intenta resolver Asturias automaticamente a partir de variables y valores de una operacion.
+- Descubre tablas reales de una operacion y consulta `DATOS_TABLA/{table_id}` en lugar de depender de metadatos para el dato final.
+- Valida despues de la descarga que las series normalizadas correspondan realmente a Asturias.
+- Usa cache TTL en memoria para reducir llamadas repetidas al INE.
+- Inserta datos normalizados en batches pequenos para evitar operaciones SQL gigantes.
+- Incluye logging estructurado, tests sin red real y soporte Docker.
+
+## Arquitectura
+
+La aplicacion sigue una separacion ligera por capas:
+
+- `app/api`: rutas HTTP.
+- `app/services`: cliente del INE, normalizacion y resolucion de Asturias.
+- `app/repositories`: persistencia raw y normalizada.
+- `app/core`: logging y cache.
+- `app/db.py`, `app/models.py`, `app/schemas.py`, `app/settings.py`: infraestructura compartida.
+
+## Estructura de carpetas
+
+```text
+.
+ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ app/
+ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡   ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ api/
+ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡   ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡   ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ routes_health.py
+ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡   ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡   ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ routes_ine.py
+ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡   ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ core/
+ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡   ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡   ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ cache.py
+ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡   ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡   ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ logging.py
+ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡   ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ repositories/
+ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡   ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡   ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ ingestion.py
+ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡   ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡   ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ series.py
+ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡   ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ services/
+ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡   ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡   ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ asturias_resolver.py
+ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡   ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡   ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ ine_client.py
+ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡   ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡   ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ normalizers.py
+ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡   ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ db.py
+ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡   ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ dependencies.py
+ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡   ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ main.py
+ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡   ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ models.py
+ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡   ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ schemas.py
+ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡   ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ settings.py
+ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ tests/
+ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡   ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ conftest.py
+ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡   ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ test_asturias.py
+ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡   ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ test_error_handling.py
+ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡   ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ test_health.py
+ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡   ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ test_ine_table.py
+ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡   ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ test_series_repository.py
+ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ .env.example
+ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ Dockerfile
+ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ docker-compose.yml
+ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ DOCUMENTACION_EVOLUCION_PROYECTO.txt
+ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ main.py
+ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ README.md
+ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ requirements.txt
+```
+
+`main.py` en la raiz se mantiene por compatibilidad y reexporta `app.main:app`.
+
+## Instalacion local
+
+### Con entorno virtual
+
+```bash
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+copy .env.example .env
+```
+
+Ajusta `POSTGRES_DSN` en `.env` si tu Postgres no coincide con el ejemplo.
+
+### Arranque local
+
+Comando recomendado:
+
+```bash
+uvicorn app.main:app --reload
+```
+
+Compatibilidad con la version anterior:
+
+```bash
+uvicorn main:app --reload
+```
+
+La API queda disponible en `http://127.0.0.1:8000`.
+
+## Uso con Docker
+
+1. Crea tu `.env` a partir de `.env.example`.
+2. Arranca los servicios:
+
+```bash
+docker compose up --build
+```
+
+Esto levanta:
+
+- API FastAPI en `http://127.0.0.1:8000`
+- Postgres en `localhost:5432`
+
+## Variables de entorno
+
+| Variable | Descripcion | Ejemplo |
+|---|---|---|
+| `APP_NAME` | Nombre logico de la app | `ine_asturias_api` |
+| `APP_ENV` | Entorno de ejecucion | `local` |
+| `INE_BASE_URL` | Base URL del INE | `https://servicios.ine.es/wstempus/js/ES` |
+| `HTTP_TIMEOUT_SECONDS` | Timeout HTTP hacia INE | `15` |
+| `POSTGRES_DSN` | Conexion async a Postgres | `postgresql+asyncpg://postgres:postgres@localhost:5432/ine_asturias` |
+| `ENABLE_CACHE` | Activa cache en memoria | `true` |
+| `CACHE_TTL_SECONDS` | TTL de cache | `300` |
+| `API_KEY` | Proteccion opcional por cabecera `X-API-Key` | vacio |
+| `LOG_LEVEL` | Nivel de log | `INFO` |
+
+## Endpoints
+
+### Salud
+
+```http
+GET /health
+```
+
+Respuesta:
+
+```json
+{
+  "status": "ok"
+}
+```
+
+### Datos de tabla
+
+```http
+GET /ine/table/{table_id}?nult=12&det=2&tip=AM&date=2024M12
+```
+
+Ejemplo:
+
+```bash
+curl "http://127.0.0.1:8000/ine/table/67258?nult=12&det=2&tip=AM"
+```
+
+### Variables de una operacion
+
+```http
+GET /ine/operation/{op_code}/variables
+```
+
+### Valores de una variable
+
+```http
+GET /ine/operation/{op_code}/variable/{variable_id}/values
+```
+
+### Datos de una operacion filtrados para Asturias
+
+Modo automatico:
+
+```http
+GET /ine/operation/{op_code}/asturias?periodicidad=1&nult=12&tip=AM
+```
+
+Modo con override manual:
+
+```http
+GET /ine/operation/{op_code}/asturias?geo_variable_id=115&asturias_value_id=33&periodicidad=1
+```
+
+Modo acotado para desarrollo o pruebas manuales:
+
+```http
+GET /ine/operation/{op_code}/asturias?max_tables=1
+```
+
+Notas del endpoint Asturias:
+
+- En entornos `local`, `dev`, `development` y `test`, si no indicas `max_tables`, la API limita automaticamente el procesamiento a 3 tablas por request.
+- El endpoint devuelve una respuesta agregada por tablas, con `results`, `errors`, `warnings` y `summary`.
+- Cada tabla se descarga en raw completa, pero la normalizacion posterior solo conserva series validadas como Asturias.
+- Si una tabla falla o no contiene filas validas de Asturias, no rompe toda la request.
+
+Si `API_KEY` esta configurada, los endpoints del INE requieren cabecera:
+
+```http
+X-API-Key: tu_clave
+```
+
+## Que guarda en Postgres
+
+### Tabla `ingestion_raw`
+
+Guarda cada respuesta upstream relevante del INE con:
+
+- tipo de fuente
+- clave de origen
+- path solicitado
+- parametros enviados
+- payload completo
+- fecha de captura
+
+### Tabla `ine_series_normalized`
+
+Guarda una normalizacion inicial de series procedentes de:
+
+- `/ine/table/{table_id}`
+- `/ine/operation/{op_code}/asturias`
+
+Campos almacenados:
+
+- codigo de operacion
+- id de tabla
+- id de variable
+- geografia
+- periodo
+- valor numerico cuando es parseable
+- unidad
+- metadatos auxiliares
+- raw payload asociado a cada fila
+
+La tabla normalizada usa una restriccion unica para evitar duplicados logicos y actualizar la fila existente cuando reaparece la misma combinacion de serie y periodo. La insercion se hace en batches pequenos para evitar sentencias SQL excesivas.
+
+## Cache
+
+La cache actual es en memoria y TTL configurable. Se usa para:
+
+- variables de operacion
+- valores de variable
+- resolucion automatica de Asturias
+- lecturas del INE usadas por los endpoints
+- tablas de operacion
+
+Es una base simple de MVP; no esta pensada para compartir estado entre replicas.
+
+## Testing
+
+Los tests no pegan a la red real. Usan `httpx.MockTransport` para simular el INE.
+
+Ejecuta:
+
+```bash
+pytest
+```
+
+Cobertura minima incluida:
+
+- `/health`
+- `/ine/table/{table_id}`
+- validacion de query params
+- error upstream del INE
+- JSON invalido
+- resolucion automatica de Asturias
+- override manual de Asturias
+- limite `max_tables`
+- filtrado real de series no Asturias tras la descarga
+- serializacion previa del upsert normalizado
+
+## Limitaciones conocidas
+
+- La normalizacion es intencionalmente defensiva y solo cubre tabla y Asturias.
+- El modelo del INE puede variar segun operacion; si cambia mucho el payload, algunas filas pueden no normalizarse y se registrara en logs.
+- La cache es local al proceso.
+- No hay migraciones con Alembic en esta version inicial; las tablas se crean al arrancar si existe `POSTGRES_DSN`.
+- El endpoint Asturias puede seguir siendo costoso en operaciones grandes, aunque ahora esta acotado mejor con `max_tables`, filtrado post-descarga y batches de insercion.
+
+## Compatibilidad
+
+Se mantiene la idea original del proyecto y los endpoints existentes. El cambio principal es interno: ahora hay capas, persistencia, cache, logging y resolucion automatica de Asturias. Ademas, `main.py` en raiz sigue disponible para no romper el arranque anterior.
+
+
+
+
+============================================================
+ARCHIVO: requirements.txt
+============================================================
+
+fastapi>=0.115.0,<1.0.0
+httpx>=0.27.0,<1.0.0
+pydantic>=2.9.0,<3.0.0
+pydantic-settings>=2.5.0,<3.0.0
+uvicorn>=0.30.0,<1.0.0
+sqlalchemy>=2.0.35,<3.0.0
+asyncpg>=0.29.0,<1.0.0
+pytest>=8.3.0,<9.0.0
+
+
+
+
+============================================================
+ARCHIVO: app\\__init__.py
+============================================================
+
+[archivo vacio intencionadamente]
+
+
+============================================================
+ARCHIVO: app\\main.py
+============================================================
+
+from __future__ import annotations
+
+import time
+from contextlib import asynccontextmanager
+
+import httpx
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+
+from app.api.routes_health import router as health_router
+from app.api.routes_ine import router as ine_router
+from app.core.cache import InMemoryTTLCache
+from app.core.logging import configure_logging, get_logger
+from app.db import create_db_schema, dispose_db, init_db
+from app.services.asturias_resolver import AsturiasResolutionError
+from app.services.ine_client import INEClientError
+from app.settings import get_settings
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    settings = get_settings()
+    configure_logging(settings.log_level)
+    logger = get_logger("app.lifecycle")
+
+    app.state.cache = InMemoryTTLCache(
+        enabled=settings.enable_cache,
+        default_ttl_seconds=settings.cache_ttl_seconds,
+    )
+    app.state.http_client = httpx.AsyncClient(
+        timeout=httpx.Timeout(settings.http_timeout_seconds, connect=min(settings.http_timeout_seconds, 5.0)),
+    )
+
+    init_db(settings)
+    if settings.postgres_dsn:
+        try:
+            await create_db_schema()
+            logger.info("database_ready", extra={"app_env": settings.app_env})
+        except Exception:
+            logger.exception("database_initialization_failed")
+    else:
+        logger.warning("database_disabled", extra={"reason": "POSTGRES_DSN not configured"})
+
+    logger.info(
+        "app_started",
+        extra={"app_name": settings.app_name, "app_env": settings.app_env, "cache_enabled": settings.enable_cache},
+    )
+    try:
+        yield
+    finally:
+        await app.state.http_client.aclose()
+        await dispose_db()
+        logger.info("app_stopped", extra={"app_name": settings.app_name, "app_env": settings.app_env})
+
+
+def create_app() -> FastAPI:
+    settings = get_settings()
+    app = FastAPI(
+        title=settings.app_name,
+        version="2.0.0",
+        description="FastAPI proxy and ingestion API for INE data focused on Asturias.",
+        lifespan=lifespan,
+    )
+
+    app.include_router(health_router)
+    app.include_router(ine_router)
+
+    @app.middleware("http")
+    async def request_timing_middleware(request: Request, call_next):
+        logger = get_logger("app.access")
+        started_at = time.perf_counter()
+
+        try:
+            response = await call_next(request)
+        except Exception:
+            duration_ms = round((time.perf_counter() - started_at) * 1000, 2)
+            logger.exception(
+                "request_failed",
+                extra={
+                    "method": request.method,
+                    "path": request.url.path,
+                    "query": dict(request.query_params),
+                    "duration_ms": duration_ms,
+                },
+            )
+            raise
+
+        duration_ms = round((time.perf_counter() - started_at) * 1000, 2)
+        response.headers["X-Process-Time-Ms"] = str(duration_ms)
+        logger.info(
+            "request_completed",
+            extra={
+                "method": request.method,
+                "path": request.url.path,
+                "status_code": response.status_code,
+                "duration_ms": duration_ms,
+            },
+        )
+        return response
+
+    @app.exception_handler(INEClientError)
+    async def ine_client_error_handler(_: Request, exc: INEClientError) -> JSONResponse:
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
+    @app.exception_handler(AsturiasResolutionError)
+    async def asturias_resolution_error_handler(
+        _: Request,
+        exc: AsturiasResolutionError,
+    ) -> JSONResponse:
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
+    return app
+
+
+app = create_app()
+
+
+
+
+============================================================
+ARCHIVO: app\\settings.py
+============================================================
+
+from functools import lru_cache
+
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    app_name: str = Field(default="ine_asturias_api", alias="APP_NAME")
+    app_env: str = Field(default="local", alias="APP_ENV")
+    ine_base_url: str = Field(
+        default="https://servicios.ine.es/wstempus/js/ES",
+        alias="INE_BASE_URL",
+    )
+    http_timeout_seconds: float = Field(default=15.0, alias="HTTP_TIMEOUT_SECONDS")
+    postgres_dsn: str | None = Field(default=None, alias="POSTGRES_DSN")
+    enable_cache: bool = Field(default=True, alias="ENABLE_CACHE")
+    cache_ttl_seconds: int = Field(default=300, alias="CACHE_TTL_SECONDS")
+    api_key: str | None = Field(default=None, alias="API_KEY")
+    log_level: str = Field(default="INFO", alias="LOG_LEVEL")
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        populate_by_name=True,
+        extra="ignore",
+    )
+
+
+@lru_cache(maxsize=1)
+def get_settings() -> Settings:
+    return Settings()
+
+
+
+
+============================================================
+ARCHIVO: app\\db.py
+============================================================
+
+from __future__ import annotations
+
+from collections.abc import AsyncIterator
+
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+from app.models import Base
+from app.settings import Settings
+
+
+_engine = None
+_session_factory: async_sessionmaker[AsyncSession] | None = None
+
+
+def init_db(settings: Settings) -> None:
+    global _engine, _session_factory
+
+    if _engine is not None or not settings.postgres_dsn:
+        return
+
+    _engine = create_async_engine(
+        settings.postgres_dsn,
+        pool_pre_ping=True,
+        future=True,
+    )
+    _session_factory = async_sessionmaker(_engine, expire_on_commit=False)
+
+
+async def create_db_schema() -> None:
+    if _engine is None:
+        return
+
+    async with _engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+
+
+async def dispose_db() -> None:
+    global _engine, _session_factory
+
+    if _engine is not None:
+        await _engine.dispose()
+    _engine = None
+    _session_factory = None
+
+
+async def get_session() -> AsyncIterator[AsyncSession | None]:
+    if _session_factory is None:
+        yield None
+        return
+
+    async with _session_factory() as session:
+        yield session
+
+
+
+
+============================================================
+ARCHIVO: app\\models.py
+============================================================
+
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any
+
+from sqlalchemy import DateTime, Float, Index, String, Text, UniqueConstraint, func
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+class IngestionRaw(Base):
+    __tablename__ = "ingestion_raw"
+    __table_args__ = (
+        Index("ix_ingestion_raw_lookup", "source_type", "source_key", "fetched_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    source_type: Mapped[str] = mapped_column(String(64), index=True)
+    source_key: Mapped[str] = mapped_column(String(255), index=True)
+    request_path: Mapped[str] = mapped_column(Text)
+    request_params: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    payload: Mapped[dict[str, Any] | list[Any]] = mapped_column(JSONB)
+    fetched_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        index=True,
+    )
+
+
+class INESeriesNormalized(Base):
+    __tablename__ = "ine_series_normalized"
+    __table_args__ = (
+        UniqueConstraint(
+            "operation_code",
+            "table_id",
+            "variable_id",
+            "geography_name",
+            "geography_code",
+            "period",
+            name="uq_ine_series_normalized_logical",
+        ),
+        Index(
+            "ix_ine_series_normalized_lookup",
+            "operation_code",
+            "table_id",
+            "geography_code",
+            "period",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    operation_code: Mapped[str] = mapped_column(String(64), default="", server_default="")
+    table_id: Mapped[str] = mapped_column(String(64), default="", server_default="")
+    variable_id: Mapped[str] = mapped_column(String(128), default="", server_default="")
+    geography_name: Mapped[str] = mapped_column(String(255), default="", server_default="")
+    geography_code: Mapped[str] = mapped_column(String(128), default="", server_default="")
+    period: Mapped[str] = mapped_column(String(128), default="", server_default="", index=True)
+    value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    unit: Mapped[str] = mapped_column(String(128), default="", server_default="")
+    metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, default=dict)
+    raw_payload: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    inserted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        index=True,
+    )
+
+
+
+
+============================================================
+ARCHIVO: app\\schemas.py
+============================================================
+
+from __future__ import annotations
+
+from typing import Any, Literal
+
+from pydantic import BaseModel, Field, RootModel
+
+
+class HealthResponse(BaseModel):
+    status: Literal["ok"]
+
+
+class JSONPayload(RootModel[dict[str, Any] | list[Any]]):
+    pass
+
+
+class NormalizedSeriesItem(BaseModel):
+    operation_code: str = ""
+    table_id: str = ""
+    variable_id: str = ""
+    geography_name: str = ""
+    geography_code: str = ""
+    period: str
+    value: float | None = None
+    unit: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    raw_payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class AsturiasResolutionResult(BaseModel):
+    geo_variable_id: str
+    asturias_value_id: str
+    variable_name: str | None = None
+    asturias_label: str | None = None
+
+
+
+
+============================================================
+ARCHIVO: app\\dependencies.py
+============================================================
+
+from __future__ import annotations
+
+from collections.abc import AsyncIterator
+
+from fastapi import Depends, Header, HTTPException, Request, status
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.cache import InMemoryTTLCache
+from app.db import get_session
+from app.repositories.ingestion import IngestionRepository
+from app.repositories.series import SeriesRepository
+from app.services.asturias_resolver import AsturiasResolver
+from app.services.ine_client import INEClientService
+from app.settings import Settings, get_settings
+
+
+async def get_db_session() -> AsyncIterator[AsyncSession | None]:
+    async for session in get_session():
+        yield session
+
+
+def get_cache(request: Request) -> InMemoryTTLCache:
+    return request.app.state.cache
+
+
+def get_ine_client_service(
+    request: Request,
+    settings: Settings = Depends(get_settings),
+    cache: InMemoryTTLCache = Depends(get_cache),
+) -> INEClientService:
+    return INEClientService(request.app.state.http_client, settings, cache)
+
+
+def get_asturias_resolver(
+    ine_client: INEClientService = Depends(get_ine_client_service),
+    cache: InMemoryTTLCache = Depends(get_cache),
+) -> AsturiasResolver:
+    return AsturiasResolver(ine_client=ine_client, cache=cache)
+
+
+def get_ingestion_repository(
+    session: AsyncSession | None = Depends(get_db_session),
+) -> IngestionRepository:
+    return IngestionRepository(session=session)
+
+
+def get_series_repository(
+    session: AsyncSession | None = Depends(get_db_session),
+) -> SeriesRepository:
+    return SeriesRepository(session=session)
+
+
+async def require_api_key(
+    settings: Settings = Depends(get_settings),
+    x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+) -> None:
+    if not settings.api_key:
+        return
+    if x_api_key != settings.api_key:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing API key.",
+        )
+
+
+
+
+============================================================
+ARCHIVO: app\\api\\__init__.py
+============================================================
+
+[archivo vacio intencionadamente]
+
+
+============================================================
+ARCHIVO: app\\api\\routes_health.py
+============================================================
+
+from fastapi import APIRouter
+
+from app.schemas import HealthResponse
+
+
+router = APIRouter(tags=["health"])
+
+
+@router.get("/health", response_model=HealthResponse)
+async def health_check() -> HealthResponse:
+    return HealthResponse(status="ok")
+
+
+
+
+============================================================
+ARCHIVO: app\\api\\routes_ine.py
+============================================================
+
+from __future__ import annotations
+
+import unicodedata
+from typing import Any, Literal
+
+from fastapi import APIRouter, Depends, Query
+
+from app.core.logging import get_logger
+from app.dependencies import (
+    get_asturias_resolver,
+    get_ingestion_repository,
+    get_ine_client_service,
+    get_series_repository,
+    require_api_key,
+)
+from app.repositories.ingestion import IngestionRepository
+from app.repositories.series import SeriesRepository
+from app.schemas import JSONPayload
+from app.services.asturias_resolver import AsturiasResolutionError, AsturiasResolver
+from app.services.ine_client import INEClientError, INEClientService
+from app.services.normalizers import normalize_asturias_payload, normalize_table_payload
+from app.settings import Settings, get_settings
+
+
+router = APIRouter(tags=["ine"], dependencies=[Depends(require_api_key)])
+logger = get_logger("app.api.routes_ine")
+DEV_MAX_TABLES_DEFAULT = 3
+LARGE_TABLE_WARNING_THRESHOLD = 50000
+
+
+@router.get("/ine/table/{table_id}", response_model=JSONPayload)
+async def get_table_data(
+    table_id: str,
+    nult: int | None = Query(default=None, ge=1),
+    det: Literal[0, 1, 2] | None = Query(default=None),
+    tip: Literal["A", "M", "AM"] | None = Query(default=None),
+    date: str | None = Query(default=None),
+    ine_client: INEClientService = Depends(get_ine_client_service),
+    ingestion_repo: IngestionRepository = Depends(get_ingestion_repository),
+    series_repo: SeriesRepository = Depends(get_series_repository),
+) -> JSONPayload:
+    params = _build_query_params(nult=nult, det=det, tip=tip, date=date)
+    payload = await ine_client.get_table(table_id, params)
+
+    await ingestion_repo.save_raw(
+        source_type="table",
+        source_key=table_id,
+        request_path=f"DATOS_TABLA/{table_id}",
+        request_params=params,
+        payload=payload,
+    )
+    await _normalize_and_store_table(series_repo=series_repo, payload=payload, table_id=table_id)
+    return JSONPayload(root=payload)
+
+
+@router.get("/ine/operation/{op_code}/variables", response_model=JSONPayload)
+async def get_operation_variables(
+    op_code: str,
+    ine_client: INEClientService = Depends(get_ine_client_service),
+    ingestion_repo: IngestionRepository = Depends(get_ingestion_repository),
+) -> JSONPayload:
+    payload = await ine_client.get_operation_variables(op_code)
+    await ingestion_repo.save_raw(
+        source_type="operation_variables",
+        source_key=op_code,
+        request_path=f"VARIABLES_OPERACION/{op_code}",
+        request_params={},
+        payload=payload,
+    )
+    return JSONPayload(root=payload)
+
+
+@router.get("/ine/operation/{op_code}/variable/{variable_id}/values", response_model=JSONPayload)
+async def get_variable_values(
+    op_code: str,
+    variable_id: str,
+    ine_client: INEClientService = Depends(get_ine_client_service),
+    ingestion_repo: IngestionRepository = Depends(get_ingestion_repository),
+) -> JSONPayload:
+    payload = await ine_client.get_variable_values(op_code, variable_id)
+    await ingestion_repo.save_raw(
+        source_type="variable_values",
+        source_key=f"{op_code}:{variable_id}",
+        request_path=f"VALORES_VARIABLEOPERACION/{variable_id}/{op_code}",
+        request_params={},
+        payload=payload,
+    )
+    return JSONPayload(root=payload)
+
+
+@router.get("/ine/operation/{op_code}/asturias", response_model=JSONPayload)
+async def get_asturias_operation_data(
+    op_code: str,
+    geo_variable_id: str | None = Query(default=None),
+    asturias_value_id: str | None = Query(default=None),
+    nult: int | None = Query(default=None, ge=1),
+    det: Literal[0, 1, 2] | None = Query(default=None),
+    tip: Literal["A", "M", "AM"] | None = Query(default=None),
+    periodicidad: str | None = Query(default=None),
+    max_tables: int | None = Query(default=None, ge=1, le=25),
+    settings: Settings = Depends(get_settings),
+    ine_client: INEClientService = Depends(get_ine_client_service),
+    resolver: AsturiasResolver = Depends(get_asturias_resolver),
+    ingestion_repo: IngestionRepository = Depends(get_ingestion_repository),
+    series_repo: SeriesRepository = Depends(get_series_repository),
+) -> JSONPayload:
+    effective_max_tables = _resolve_max_tables(max_tables, settings)
+    logger.info(
+        "asturias_operation_lookup_started",
+        extra={
+            "operation_code": op_code,
+            "max_tables_requested": max_tables,
+            "max_tables_effective": effective_max_tables,
+            "app_env": settings.app_env,
+        },
+    )
+
+    resolution = await resolver.resolve(
+        op_code=op_code,
+        geo_variable_id=geo_variable_id,
+        asturias_value_id=asturias_value_id,
+    )
+    logger.info(
+        "asturias_operation_resolution_ready",
+        extra={
+            "operation_code": op_code,
+            "geo_variable_id": resolution.geo_variable_id,
+            "asturias_value_id": resolution.asturias_value_id,
+        },
+    )
+
+    payload = await _get_operation_tables_and_data_for_asturias(
+        op_code=op_code,
+        resolution=resolution,
+        nult=nult,
+        det=det,
+        tip=tip,
+        periodicidad=periodicidad,
+        max_tables=effective_max_tables,
+        ine_client=ine_client,
+        ingestion_repo=ingestion_repo,
+        series_repo=series_repo,
+    )
+    return JSONPayload(root=payload)
+
+
+async def _get_operation_tables_and_data_for_asturias(
+    op_code: str,
+    resolution: Any,
+    nult: int | None,
+    det: Literal[0, 1, 2] | None,
+    tip: Literal["A", "M", "AM"] | None,
+    periodicidad: str | None,
+    max_tables: int | None,
+    ine_client: INEClientService,
+    ingestion_repo: IngestionRepository,
+    series_repo: SeriesRepository,
+) -> dict[str, Any]:
+    tables_payload = await ine_client.get_operation_tables(op_code)
+    await ingestion_repo.save_raw(
+        source_type="operation_tables",
+        source_key=op_code,
+        request_path=f"TABLAS_OPERACION/{op_code}",
+        request_params={},
+        payload=tables_payload,
+    )
+
+    table_candidates = _extract_table_candidates(tables_payload)
+    logger.info(
+        "asturias_operation_tables_discovered",
+        extra={
+            "operation_code": op_code,
+            "tables_found": len(table_candidates),
+            "table_ids": [item["table_id"] for item in table_candidates],
+        },
+    )
+
+    if not table_candidates:
+        raise AsturiasResolutionError(
+            detail={
+                "message": "No valid tables were found for this operation.",
+                "operation_code": op_code,
+            },
+            status_code=404,
+        )
+
+    if max_tables is not None:
+        table_candidates = table_candidates[:max_tables]
+
+    table_params = _build_query_params(
+        g1=f"{resolution.geo_variable_id}:{resolution.asturias_value_id}",
+        nult=nult,
+        det=det,
+        tip=tip,
+        p=periodicidad,
+    )
+
+    selected_table_ids = [item["table_id"] for item in table_candidates]
+    logger.info(
+        "asturias_operation_tables_selected",
+        extra={
+            "operation_code": op_code,
+            "selected_tables": selected_table_ids,
+            "request_params": table_params,
+            "max_tables_effective": max_tables,
+        },
+    )
+
+    results: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    warnings: list[dict[str, Any]] = []
+    normalized_rows = 0
+
+    for table in table_candidates:
+        table_id = table["table_id"]
+        table_name = table["table_name"]
+        request_path = f"DATOS_TABLA/{table_id}"
+        logger.info(
+            "asturias_table_fetch_started",
+            extra={
+                "operation_code": op_code,
+                "table_id": table_id,
+                "table_name": table_name,
+                "request_path": request_path,
+                "request_params": table_params,
+            },
+        )
+
+        try:
+            table_payload = await ine_client.get_table(table_id, table_params)
+        except INEClientError as exc:
+            error_detail = {
+                "table_id": table_id,
+                "table_name": table_name,
+                "request_path": request_path,
+                "request_params": table_params,
+                "error": exc.detail,
+            }
+            logger.warning(
+                "asturias_table_fetch_failed",
+                extra={
+                    "operation_code": op_code,
+                    "table_id": table_id,
+                    "error": exc.detail,
+                },
+            )
+            errors.append(error_detail)
+            continue
+        except Exception as exc:
+            error_detail = {
+                "table_id": table_id,
+                "table_name": table_name,
+                "request_path": request_path,
+                "request_params": table_params,
+                "error": str(exc),
+            }
+            logger.exception(
+                "asturias_table_fetch_unexpected_error",
+                extra={"operation_code": op_code, "table_id": table_id},
+            )
+            errors.append(error_detail)
+            continue
+
+        await ingestion_repo.save_raw(
+            source_type="operation_asturias_table",
+            source_key=f"{op_code}:{table_id}:{resolution.geo_variable_id}:{resolution.asturias_value_id}",
+            request_path=request_path,
+            request_params=table_params,
+            payload=table_payload,
+        )
+
+        raw_rows_retrieved = _count_retrieved_rows(table_payload)
+        if raw_rows_retrieved > LARGE_TABLE_WARNING_THRESHOLD:
+            warning_detail = {
+                "table_id": table_id,
+                "table_name": table_name,
+                "warning": "large_table_detected",
+                "raw_rows_retrieved": raw_rows_retrieved,
+            }
+            warnings.append(warning_detail)
+            logger.warning(
+                "asturias_table_large_payload",
+                extra={
+                    "operation_code": op_code,
+                    "table_id": table_id,
+                    "raw_rows_retrieved": raw_rows_retrieved,
+                },
+            )
+
+        filtered_payload, filtered_stats = _filter_payload_for_asturias(
+            table_payload,
+            asturias_value_id=resolution.asturias_value_id,
+            asturias_label=resolution.asturias_label or "Asturias",
+        )
+        logger.info(
+            "asturias_table_filter_completed",
+            extra={
+                "operation_code": op_code,
+                "table_id": table_id,
+                "raw_rows_retrieved": raw_rows_retrieved,
+                "filtered_rows_retrieved": filtered_stats["rows_kept"],
+                "series_kept": filtered_stats["series_kept"],
+                "series_discarded": filtered_stats["series_discarded"],
+            },
+        )
+
+        if filtered_stats["series_kept"] == 0:
+            warning_detail = {
+                "table_id": table_id,
+                "table_name": table_name,
+                "warning": "no_asturias_rows_after_validation",
+                "raw_rows_retrieved": raw_rows_retrieved,
+            }
+            warnings.append(warning_detail)
+            logger.warning(
+                "asturias_table_without_valid_rows",
+                extra={
+                    "operation_code": op_code,
+                    "table_id": table_id,
+                    "raw_rows_retrieved": raw_rows_retrieved,
+                },
+            )
+            continue
+
+        normalized_rows += await _normalize_and_store_asturias(
+            series_repo=series_repo,
+            payload=filtered_payload,
+            op_code=op_code,
+            geography_name=resolution.asturias_label or "Asturias",
+            geography_code=resolution.asturias_value_id,
+            table_id=table_id,
+        )
+
+        results.append(
+            {
+                "table_id": table_id,
+                "table_name": table_name,
+                "request_path": request_path,
+                "request_params": table_params,
+                "raw_rows_retrieved": raw_rows_retrieved,
+                "filtered_rows_retrieved": filtered_stats["rows_kept"],
+                "data": filtered_payload,
+                "table_metadata": table["metadata"],
+            }
+        )
+
+    if not results:
+        raise AsturiasResolutionError(
+            detail={
+                "message": "No table data could be recovered for Asturias in this operation.",
+                "operation_code": op_code,
+                "geo_variable_id": resolution.geo_variable_id,
+                "asturias_value_id": resolution.asturias_value_id,
+                "tables_found": selected_table_ids,
+                "errors": errors,
+                "warnings": warnings,
+            },
+            status_code=502,
+        )
+
+    aggregated_payload = {
+        "operation_code": op_code,
+        "resolution": {
+            "geo_variable_id": resolution.geo_variable_id,
+            "asturias_value_id": resolution.asturias_value_id,
+            "variable_name": resolution.variable_name,
+            "asturias_label": resolution.asturias_label,
+        },
+        "tables_found": [
+            {
+                "table_id": table["table_id"],
+                "table_name": table["table_name"],
+                "metadata": table["metadata"],
+            }
+            for table in table_candidates
+        ],
+        "tables_selected": selected_table_ids,
+        "results": results,
+        "errors": errors,
+        "warnings": warnings,
+        "summary": {
+            "tables_found": len(table_candidates),
+            "tables_selected": len(selected_table_ids),
+            "tables_succeeded": len(results),
+            "tables_failed": len(errors),
+            "warnings": len(warnings),
+            "normalized_rows": normalized_rows,
+            "max_tables_effective": max_tables,
+        },
+    }
+
+    await ingestion_repo.save_raw(
+        source_type="operation_asturias",
+        source_key=f"{op_code}:{resolution.geo_variable_id}:{resolution.asturias_value_id}",
+        request_path=f"TABLAS_OPERACION/{op_code} -> DATOS_TABLA/*",
+        request_params=table_params,
+        payload=aggregated_payload,
+    )
+    logger.info(
+        "asturias_operation_lookup_completed",
+        extra={
+            "operation_code": op_code,
+            "tables_succeeded": len(results),
+            "tables_failed": len(errors),
+            "warnings": len(warnings),
+            "normalized_rows": normalized_rows,
+        },
+    )
+    return aggregated_payload
+
+
+async def _normalize_and_store_table(
+    series_repo: SeriesRepository,
+    payload: dict[str, Any] | list[Any],
+    table_id: str,
+) -> None:
+    try:
+        items = normalize_table_payload(payload, table_id=table_id)
+    except Exception:
+        logger.exception("table_normalization_failed", extra={"table_id": table_id})
+        return
+
+    if not items:
+        logger.warning("table_normalization_empty", extra={"table_id": table_id})
+        return
+
+    logger.debug(
+        "table_normalization_preview",
+        extra={
+            "items_type": type(items).__name__,
+            "table_id": table_id,
+            "rows": len(items),
+            "sample_type": type(items[0]).__name__,
+            "sample_keys": sorted(items[0].model_dump().keys()),
+        },
+    )
+    await series_repo.upsert_many(items)
+
+
+async def _normalize_and_store_asturias(
+    series_repo: SeriesRepository,
+    payload: dict[str, Any] | list[Any],
+    op_code: str,
+    geography_name: str,
+    geography_code: str,
+    table_id: str,
+) -> int:
+    try:
+        items = normalize_asturias_payload(
+            payload,
+            op_code=op_code,
+            geography_name=geography_name,
+            geography_code=geography_code,
+            table_id=table_id,
+        )
+    except Exception:
+        logger.exception("asturias_normalization_failed", extra={"op_code": op_code, "table_id": table_id})
+        return 0
+
+    if not items:
+        logger.warning("asturias_normalization_empty", extra={"op_code": op_code, "table_id": table_id})
+        return 0
+
+    logger.debug(
+        "asturias_normalization_preview",
+        extra={
+            "items_type": type(items).__name__,
+            "op_code": op_code,
+            "table_id": table_id,
+            "rows": len(items),
+            "sample_type": type(items[0]).__name__,
+            "sample_keys": sorted(items[0].model_dump().keys()),
+        },
+    )
+    return await series_repo.upsert_many(items)
+
+
+def _extract_table_candidates(payload: dict[str, Any] | list[Any]) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    for record in _extract_records(payload):
+        table_id = _pick_first(record, ("IdTabla", "idTabla", "Id", "id", "Codigo", "codigo", "Cod", "cod"))
+        if not table_id or table_id in seen:
+            continue
+
+        seen.add(table_id)
+        candidates.append(
+            {
+                "table_id": table_id,
+                "table_name": _pick_first(
+                    record,
+                    ("Nombre", "name", "Descripcion", "description", "Titulo", "titulo"),
+                ),
+                "metadata": record,
+            }
+        )
+
+    return candidates
+
+
+def _filter_payload_for_asturias(
+    payload: dict[str, Any] | list[Any],
+    asturias_value_id: str,
+    asturias_label: str,
+) -> tuple[dict[str, Any] | list[Any], dict[str, int]]:
+    records = _extract_records(payload)
+    kept_records = [
+        record for record in records if _series_matches_asturias(record, asturias_value_id, asturias_label)
+    ]
+    filtered_payload = kept_records if isinstance(payload, list) else {**payload, "Data": kept_records}
+    return filtered_payload, {
+        "series_kept": len(kept_records),
+        "series_discarded": max(len(records) - len(kept_records), 0),
+        "rows_kept": _count_retrieved_rows(filtered_payload),
+    }
+
+
+def _series_matches_asturias(
+    series: dict[str, Any],
+    asturias_value_id: str,
+    asturias_label: str,
+) -> bool:
+    labels = {
+        _normalize_text(asturias_label),
+        "asturias",
+        "asturias principado de",
+        "principado de asturias",
+    }
+
+    for item in _ensure_list(series.get("MetaData") or series.get("metadata")):
+        if not isinstance(item, dict):
+            continue
+
+        for key in ("Id", "id", "Codigo", "codigo", "Code", "code"):
+            if str(item.get(key, "")) == str(asturias_value_id):
+                return True
+
+        for key in ("Nombre", "name", "Valor", "value", "Descripcion", "description"):
+            candidate = _normalize_text(str(item.get(key, "")))
+            if candidate and any(label in candidate or candidate in label for label in labels):
+                return True
+
+    for key in ("Nombre", "name", "Descripcion", "description", "Titulo", "titulo"):
+        candidate = _normalize_text(str(series.get(key, "")))
+        if candidate and any(label in candidate or candidate in label for label in labels):
+            return True
+
+    return False
+
+
+def _extract_records(payload: dict[str, Any] | list[Any]) -> list[dict[str, Any]]:
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+
+    if not isinstance(payload, dict):
+        return []
+
+    for key in ("Data", "data", "Tables", "tables", "Tablas", "tablas", "Resultados", "results"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            return [item for item in value if isinstance(item, dict)]
+
+    return [payload]
+
+
+def _count_retrieved_rows(payload: dict[str, Any] | list[Any]) -> int:
+    total = 0
+    for series in _extract_records(payload):
+        data_points = series.get("Data") or series.get("data")
+        if isinstance(data_points, list):
+            total += len(data_points)
+        else:
+            total += 1
+    return total
+
+
+def _pick_first(payload: dict[str, Any], keys: tuple[str, ...]) -> str:
+    for key in keys:
+        value = payload.get(key)
+        if value not in (None, ""):
+            return str(value)
+    return ""
+
+
+def _ensure_list(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    if value is None:
+        return []
+    return [value]
+
+
+def _normalize_text(value: str) -> str:
+    normalized = unicodedata.normalize("NFKD", value or "")
+    return normalized.encode("ascii", "ignore").decode("ascii").lower().replace(",", " ").strip()
+
+
+def _resolve_max_tables(max_tables: int | None, settings: Settings) -> int | None:
+    if max_tables is not None:
+        return max_tables
+
+    if settings.app_env.lower() in {"dev", "development", "local", "test"}:
+        return DEV_MAX_TABLES_DEFAULT
+
+    return None
+
+
+def _build_query_params(**kwargs: Any) -> dict[str, Any]:
+    return {key: value for key, value in kwargs.items() if value is not None}
+
+
+
+
+============================================================
+ARCHIVO: app\\core\\__init__.py
+============================================================
+
+[archivo vacio intencionadamente]
+
+
+============================================================
+ARCHIVO: app\\core\\cache.py
+============================================================
+
+import asyncio
+import time
+from dataclasses import dataclass
+from typing import Any, Awaitable, Callable
+
+
+@dataclass(slots=True)
+class CacheEntry:
+    value: Any
+    expires_at: float
+
+
+class InMemoryTTLCache:
+    def __init__(self, enabled: bool = True, default_ttl_seconds: int = 300) -> None:
+        self.enabled = enabled
+        self.default_ttl_seconds = default_ttl_seconds
+        self._store: dict[str, CacheEntry] = {}
+        self._lock = asyncio.Lock()
+
+    async def get(self, key: str) -> Any | None:
+        if not self.enabled:
+            return None
+
+        async with self._lock:
+            entry = self._store.get(key)
+            if entry is None:
+                return None
+            if entry.expires_at <= time.monotonic():
+                self._store.pop(key, None)
+                return None
+            return entry.value
+
+    async def set(self, key: str, value: Any, ttl_seconds: int | None = None) -> None:
+        if not self.enabled:
+            return
+
+        ttl = ttl_seconds or self.default_ttl_seconds
+        async with self._lock:
+            self._store[key] = CacheEntry(value=value, expires_at=time.monotonic() + ttl)
+
+    async def delete(self, key: str) -> None:
+        async with self._lock:
+            self._store.pop(key, None)
+
+    async def get_or_set(
+        self,
+        key: str,
+        factory: Callable[[], Awaitable[Any]],
+        ttl_seconds: int | None = None,
+    ) -> Any:
+        cached = await self.get(key)
+        if cached is not None:
+            return cached
+
+        value = await factory()
+        await self.set(key, value, ttl_seconds=ttl_seconds)
+        return value
+
+
+
+
+============================================================
+ARCHIVO: app\\core\\logging.py
+============================================================
+
+import json
+import logging
+from datetime import datetime, timezone
+from typing import Any
+
+
+_RESERVED_ATTRS = {
+    "args",
+    "asctime",
+    "created",
+    "exc_info",
+    "exc_text",
+    "filename",
+    "funcName",
+    "levelname",
+    "levelno",
+    "lineno",
+    "module",
+    "msecs",
+    "message",
+    "msg",
+    "name",
+    "pathname",
+    "process",
+    "processName",
+    "relativeCreated",
+    "stack_info",
+    "thread",
+    "threadName",
+}
+
+
+class JsonFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        payload: dict[str, Any] = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+        }
+
+        extras = {
+            key: value
+            for key, value in record.__dict__.items()
+            if key not in _RESERVED_ATTRS and not key.startswith("_")
+        }
+        if extras:
+            payload.update(extras)
+
+        if record.exc_info:
+            payload["exception"] = self.formatException(record.exc_info)
+
+        return json.dumps(payload, ensure_ascii=True, default=str)
+
+
+def configure_logging(level: str) -> None:
+    root = logging.getLogger()
+    handler = logging.StreamHandler()
+    handler.setFormatter(JsonFormatter())
+
+    root.handlers.clear()
+    root.addHandler(handler)
+    root.setLevel(level.upper())
+
+
+def get_logger(name: str) -> logging.Logger:
+    return logging.getLogger(name)
+
+
+
+
+============================================================
+ARCHIVO: app\\repositories\\__init__.py
+============================================================
+
+[archivo vacio intencionadamente]
+
+
+============================================================
+ARCHIVO: app\\repositories\\ingestion.py
+============================================================
+
+from __future__ import annotations
+
+from typing import Any
+
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.logging import get_logger
+from app.models import IngestionRaw
+
+
+class IngestionRepository:
+    def __init__(self, session: AsyncSession | None) -> None:
+        self.session = session
+        self.logger = get_logger("app.repositories.ingestion")
+
+    async def save_raw(
+        self,
+        source_type: str,
+        source_key: str,
+        request_path: str,
+        request_params: dict[str, Any],
+        payload: dict[str, Any] | list[Any],
+    ) -> int | None:
+        if self.session is None:
+            self.logger.debug(
+                "raw_ingestion_skipped",
+                extra={"reason": "database_disabled", "source_type": source_type},
+            )
+            return None
+
+        record = IngestionRaw(
+            source_type=source_type,
+            source_key=source_key,
+            request_path=request_path,
+            request_params=request_params,
+            payload=payload,
+        )
+        self.session.add(record)
+
+        try:
+            await self.session.commit()
+            await self.session.refresh(record)
+        except SQLAlchemyError:
+            await self.session.rollback()
+            self.logger.exception(
+                "raw_ingestion_failed",
+                extra={"source_type": source_type, "source_key": source_key},
+            )
+            return None
+
+        self.logger.info(
+            "raw_ingestion_saved",
+            extra={"source_type": source_type, "source_key": source_key, "record_id": record.id},
+        )
+        return record.id
+
+
+
+
+============================================================
+ARCHIVO: app\\repositories\\series.py
+============================================================
+
+from __future__ import annotations
+
+import json
+from collections.abc import Sequence
+from typing import Any
+
+from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.logging import get_logger
+from app.models import INESeriesNormalized
+from app.schemas import NormalizedSeriesItem
+
+
+UPSERT_COLUMN_NAMES = {
+    "operation_code",
+    "table_id",
+    "variable_id",
+    "geography_name",
+    "geography_code",
+    "period",
+    "value",
+    "unit",
+    "metadata",
+    "raw_payload",
+}
+
+CONFLICT_COLUMNS = [
+    "operation_code",
+    "table_id",
+    "variable_id",
+    "geography_name",
+    "geography_code",
+    "period",
+]
+
+DEFAULT_BATCH_SIZE = 500
+
+
+class SeriesRepository:
+    def __init__(self, session: AsyncSession | None) -> None:
+        self.session = session
+        self.logger = get_logger("app.repositories.series")
+
+    async def upsert_many(
+        self,
+        items: Sequence[NormalizedSeriesItem | dict[str, Any]],
+        batch_size: int = DEFAULT_BATCH_SIZE,
+    ) -> int:
+        if not items:
+            self.logger.debug("normalized_upsert_skipped", extra={"reason": "empty_items"})
+            return 0
+
+        if self.session is None:
+            self.logger.debug(
+                "normalized_upsert_skipped",
+                extra={"reason": "database_disabled", "rows": len(items)},
+            )
+            return 0
+
+        preview = self._items_preview(items)
+        self.logger.info("normalized_upsert_input_preview", extra=preview)
+
+        values = self.prepare_upsert_rows(items)
+        if not values:
+            self.logger.warning(
+                "normalized_upsert_empty_after_serialization",
+                extra={"rows": len(items)},
+            )
+            return 0
+
+        sample = values[0]
+        self.logger.info(
+            "normalized_upsert_prepared",
+            extra={
+                "rows": len(values),
+                "sample_keys": sorted(sample.keys()),
+                "sample_table_id": sample.get("table_id", ""),
+                "sample_period": sample.get("period", ""),
+                "batch_size": batch_size,
+            },
+        )
+
+        total_inserted = 0
+        for batch_index, batch in enumerate(self._chunked(values, batch_size), start=1):
+            table_id = batch[0].get("table_id", "") if batch else ""
+            statement = insert(INESeriesNormalized.__table__).values(batch)
+            statement = statement.on_conflict_do_update(
+                index_elements=CONFLICT_COLUMNS,
+                set_={
+                    "value": statement.excluded.value,
+                    "unit": statement.excluded.unit,
+                    "metadata": statement.excluded["metadata"],
+                    "raw_payload": statement.excluded.raw_payload,
+                },
+            )
+
+            try:
+                await self.session.execute(statement)
+                await self.session.commit()
+            except SQLAlchemyError:
+                await self.session.rollback()
+                self.logger.exception(
+                    "normalized_upsert_batch_failed",
+                    extra={
+                        "batch_index": batch_index,
+                        "batch_size": len(batch),
+                        "table_id": table_id,
+                    },
+                )
+                break
+
+            total_inserted += len(batch)
+            self.logger.info(
+                "normalized_upsert_batch_completed",
+                extra={
+                    "batch_index": batch_index,
+                    "batch_size": len(batch),
+                    "rows_inserted": len(batch),
+                    "table_id": table_id,
+                },
+            )
+
+        self.logger.info(
+            "normalized_upsert_completed",
+            extra={"rows": total_inserted, "batch_size": batch_size},
+        )
+        return total_inserted
+
+    @staticmethod
+    def prepare_upsert_rows(
+        items: Sequence[NormalizedSeriesItem | dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+
+        for item in items:
+            row = SeriesRepository._coerce_item_to_row(item)
+            if row is not None:
+                rows.append(row)
+
+        return rows
+
+    @staticmethod
+    def _coerce_item_to_row(item: NormalizedSeriesItem | dict[str, Any]) -> dict[str, Any] | None:
+        if isinstance(item, NormalizedSeriesItem):
+            payload = item.model_dump()
+        elif isinstance(item, dict):
+            payload = dict(item)
+        else:
+            payload = {
+                key: getattr(item, key)
+                for key in dir(item)
+                if not key.startswith("_") and not callable(getattr(item, key))
+            }
+
+        row = {
+            "operation_code": SeriesRepository._string_value(payload.get("operation_code")),
+            "table_id": SeriesRepository._string_value(payload.get("table_id")),
+            "variable_id": SeriesRepository._string_value(payload.get("variable_id")),
+            "geography_name": SeriesRepository._string_value(payload.get("geography_name")),
+            "geography_code": SeriesRepository._string_value(payload.get("geography_code")),
+            "period": SeriesRepository._string_value(payload.get("period")),
+            "value": SeriesRepository._float_value(payload.get("value")),
+            "unit": SeriesRepository._string_value(payload.get("unit")),
+            "metadata": SeriesRepository._json_value(
+                payload.get("metadata", payload.get("metadata_json", {}))
+            ),
+            "raw_payload": SeriesRepository._json_value(payload.get("raw_payload", {})),
+        }
+
+        filtered_row = {
+            key: value
+            for key, value in row.items()
+            if key in UPSERT_COLUMN_NAMES
+        }
+
+        if not filtered_row.get("period"):
+            return None
+
+        return filtered_row
+
+    @staticmethod
+    def _items_preview(items: Sequence[NormalizedSeriesItem | dict[str, Any]]) -> dict[str, Any]:
+        first_item = items[0]
+        if isinstance(first_item, NormalizedSeriesItem):
+            first_keys = sorted(first_item.model_dump().keys())
+        elif isinstance(first_item, dict):
+            first_keys = sorted(first_item.keys())
+        else:
+            first_keys = []
+
+        return {
+            "items_type": type(items).__name__,
+            "items_length": len(items),
+            "first_item_type": type(first_item).__name__,
+            "first_item_keys": first_keys,
+        }
+
+    @staticmethod
+    def _chunked(values: list[dict[str, Any]], batch_size: int) -> list[list[dict[str, Any]]]:
+        return [values[index : index + batch_size] for index in range(0, len(values), batch_size)]
+
+    @staticmethod
+    def _string_value(value: Any) -> str:
+        if value is None:
+            return ""
+        return str(value)
+
+    @staticmethod
+    def _float_value(value: Any) -> float | None:
+        if value in (None, ""):
+            return None
+        if isinstance(value, bool):
+            return float(value)
+        if isinstance(value, (int, float)):
+            return float(value)
+        try:
+            return float(str(value))
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _json_value(value: Any) -> dict[str, Any]:
+        if value is None:
+            return {}
+        if isinstance(value, dict):
+            return json.loads(json.dumps(value, default=str))
+        if isinstance(value, list):
+            return {"items": json.loads(json.dumps(value, default=str))}
+        if isinstance(value, (str, int, float, bool)):
+            return {"value": value}
+        return {"value": str(value)}
+
+
+
+
+============================================================
+ARCHIVO: app\\services\\__init__.py
+============================================================
+
+[archivo vacio intencionadamente]
+
+
+============================================================
+ARCHIVO: app\\services\\ine_client.py
+============================================================
+
+from __future__ import annotations
+
+import json
+import time
+from typing import Any
+
+import httpx
+
+from app.core.cache import InMemoryTTLCache
+from app.core.logging import get_logger
+from app.settings import Settings
+
+
+class INEClientError(Exception):
+    def __init__(self, status_code: int, detail: Any) -> None:
+        super().__init__(str(detail))
+        self.status_code = status_code
+        self.detail = detail
+
+
+class INEUpstreamError(INEClientError):
+    pass
+
+
+class INEInvalidPayloadError(INEClientError):
+    pass
+
+
+class INEClientService:
+    def __init__(
+        self,
+        http_client: httpx.AsyncClient,
+        settings: Settings,
+        cache: InMemoryTTLCache,
+    ) -> None:
+        self.http_client = http_client
+        self.settings = settings
+        self.cache = cache
+        self.logger = get_logger("app.services.ine_client")
+
+    async def get_table(self, table_id: str, params: dict[str, Any]) -> dict[str, Any] | list[Any]:
+        return await self._fetch_json(
+            f"DATOS_TABLA/{table_id}",
+            params=params,
+            cache_scope="table",
+        )
+
+    async def get_operation_variables(self, op_code: str) -> dict[str, Any] | list[Any]:
+        return await self._fetch_json(
+            f"VARIABLES_OPERACION/{op_code}",
+            cache_scope="operation_variables",
+        )
+
+    async def get_variable_values(self, op_code: str, variable_id: str) -> dict[str, Any] | list[Any]:
+        return await self._fetch_json(
+            f"VALORES_VARIABLEOPERACION/{variable_id}/{op_code}",
+            cache_scope="variable_values",
+        )
+
+    async def get_operation_tables(self, op_code: str) -> dict[str, Any] | list[Any]:
+        return await self._fetch_json(
+            f"TABLAS_OPERACION/{op_code}",
+            cache_scope="operation_tables",
+        )
+
+    async def get_operation_asturias_data(
+        self,
+        op_code: str,
+        params: dict[str, Any],
+    ) -> dict[str, Any] | list[Any]:
+        return await self._fetch_json(
+            f"DATOS_METADATAOPERACION/{op_code}",
+            params=params,
+            cache_scope="operation_metadata",
+        )
+
+    async def _fetch_json(
+        self,
+        path: str,
+        params: dict[str, Any] | None = None,
+        cache_scope: str = "ine",
+    ) -> dict[str, Any] | list[Any]:
+        cache_key = self._build_cache_key(cache_scope, path, params)
+        cached = await self.cache.get(cache_key)
+        if cached is not None:
+            self.logger.info(
+                "ine_cache_hit",
+                extra={"path": path, "cache_scope": cache_scope},
+            )
+            return cached
+
+        started_at = time.perf_counter()
+        url = f"{self.settings.ine_base_url.rstrip('/')}/{path}"
+
+        try:
+            response = await self.http_client.get(url, params=params)
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            duration_ms = round((time.perf_counter() - started_at) * 1000, 2)
+            self.logger.warning(
+                "ine_upstream_status_error",
+                extra={
+                    "path": path,
+                    "params": params or {},
+                    "status_code": exc.response.status_code,
+                    "duration_ms": duration_ms,
+                },
+            )
+            raise INEUpstreamError(
+                status_code=exc.response.status_code,
+                detail={
+                    "message": "The INE service returned an error.",
+                    "path": path,
+                    "params": params or {},
+                    "status_code": exc.response.status_code,
+                },
+            ) from exc
+        except httpx.RequestError as exc:
+            duration_ms = round((time.perf_counter() - started_at) * 1000, 2)
+            self.logger.error(
+                "ine_request_error",
+                extra={
+                    "path": path,
+                    "params": params or {},
+                    "duration_ms": duration_ms,
+                    "error": str(exc),
+                },
+            )
+            raise INEUpstreamError(
+                status_code=502,
+                detail={
+                    "message": "Could not connect to the INE service.",
+                    "path": path,
+                    "params": params or {},
+                },
+            ) from exc
+
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            self.logger.error(
+                "ine_invalid_json",
+                extra={"path": path, "params": params or {}},
+            )
+            raise INEInvalidPayloadError(
+                status_code=502,
+                detail={
+                    "message": "The INE service returned invalid JSON.",
+                    "path": path,
+                    "params": params or {},
+                },
+            ) from exc
+
+        if not isinstance(payload, (list, dict)):
+            self.logger.error(
+                "ine_unexpected_payload",
+                extra={
+                    "path": path,
+                    "params": params or {},
+                    "payload_type": type(payload).__name__,
+                },
+            )
+            raise INEInvalidPayloadError(
+                status_code=502,
+                detail={
+                    "message": "The INE service returned an unexpected JSON format.",
+                    "path": path,
+                    "params": params or {},
+                },
+            )
+
+        duration_ms = round((time.perf_counter() - started_at) * 1000, 2)
+        self.logger.info(
+            "ine_request_completed",
+            extra={
+                "path": path,
+                "params": params or {},
+                "status_code": response.status_code,
+                "duration_ms": duration_ms,
+            },
+        )
+
+        await self.cache.set(cache_key, payload)
+        return payload
+
+    @staticmethod
+    def _build_cache_key(
+        scope: str,
+        path: str,
+        params: dict[str, Any] | None,
+    ) -> str:
+        serialized_params = json.dumps(params or {}, sort_keys=True, default=str)
+        return f"{scope}:{path}:{serialized_params}"
+
+
+
+
+============================================================
+ARCHIVO: app\\services\\normalizers.py
+============================================================
+
+from __future__ import annotations
+
+import re
+import unicodedata
+from typing import Any
+
+from app.schemas import NormalizedSeriesItem
+
+
+_PERIOD_KEYS = ("Periodo", "NombrePeriodo", "period", "Period", "Fecha", "Date")
+_VALUE_KEYS = ("Valor", "value", "Value", "Dato", "data")
+_UNIT_KEYS = ("Unidad", "unit", "Unit")
+_NAME_KEYS = ("Nombre", "name", "Name", "Descripcion", "description")
+_ID_KEYS = ("Id", "id", "Codigo", "codigo", "Code", "code")
+_GEO_HINTS = ("geo", "geogr", "territ", "provincia", "municip", "autonom", "ccaa", "comunidad")
+
+
+def normalize_table_payload(payload: dict[str, Any] | list[Any], table_id: str) -> list[NormalizedSeriesItem]:
+    return _normalize_payload(payload, table_id=table_id)
+
+
+def normalize_asturias_payload(
+    payload: dict[str, Any] | list[Any],
+    op_code: str,
+    geography_name: str,
+    geography_code: str,
+    table_id: str = "",
+) -> list[NormalizedSeriesItem]:
+    return _normalize_payload(
+        payload,
+        operation_code=op_code,
+        table_id=table_id,
+        geography_name_override=geography_name,
+        geography_code_override=geography_code,
+    )
+
+
+def parse_numeric_value(raw_value: Any) -> float | None:
+    if raw_value is None:
+        return None
+    if isinstance(raw_value, bool):
+        return float(raw_value)
+    if isinstance(raw_value, (int, float)):
+        return float(raw_value)
+
+    value = str(raw_value).strip()
+    if not value or value in {"-", "..", "...", "null", "None"}:
+        return None
+
+    value = value.replace("%", "")
+    value = value.replace(" ", "")
+
+    if "," in value and "." in value:
+        if value.rfind(",") > value.rfind("."):
+            value = value.replace(".", "").replace(",", ".")
+        else:
+            value = value.replace(",", "")
+    elif "," in value:
+        value = value.replace(",", ".")
+
+    value = re.sub(r"[^0-9.-]", "", value)
+    if value in {"", ".", "-", "-."}:
+        return None
+
+    try:
+        return float(value)
+    except ValueError:
+        return None
+
+
+def _normalize_payload(
+    payload: dict[str, Any] | list[Any],
+    operation_code: str = "",
+    table_id: str = "",
+    geography_name_override: str | None = None,
+    geography_code_override: str | None = None,
+) -> list[NormalizedSeriesItem]:
+    rows: list[NormalizedSeriesItem] = []
+
+    for series in _ensure_list(payload):
+        if not isinstance(series, dict):
+            continue
+
+        meta_data = _ensure_list(series.get("MetaData") or series.get("metadata"))
+        variable_id = _extract_variable_id(series, meta_data)
+        geography_name, geography_code = _extract_geography(meta_data, series)
+        geography_name = geography_name_override or geography_name
+        geography_code = geography_code_override or geography_code
+        unit = _pick_string(series, _UNIT_KEYS)
+        series_name = _pick_string(series, _NAME_KEYS)
+        data_points = _ensure_list(series.get("Data") or series.get("data"))
+
+        if data_points:
+            for point in data_points:
+                if not isinstance(point, dict):
+                    continue
+                row = _build_row(
+                    point=point,
+                    series=series,
+                    meta_data=meta_data,
+                    operation_code=operation_code,
+                    table_id=table_id,
+                    variable_id=variable_id,
+                    geography_name=geography_name,
+                    geography_code=geography_code,
+                    unit=unit or _pick_string(point, _UNIT_KEYS),
+                    series_name=series_name,
+                )
+                if row is not None:
+                    rows.append(row)
+            continue
+
+        row = _build_row(
+            point=series,
+            series=series,
+            meta_data=meta_data,
+            operation_code=operation_code,
+            table_id=table_id,
+            variable_id=variable_id,
+            geography_name=geography_name,
+            geography_code=geography_code,
+            unit=unit,
+            series_name=series_name,
+        )
+        if row is not None:
+            rows.append(row)
+
+    return rows
+
+
+def _build_row(
+    point: dict[str, Any],
+    series: dict[str, Any],
+    meta_data: list[Any],
+    operation_code: str,
+    table_id: str,
+    variable_id: str,
+    geography_name: str,
+    geography_code: str,
+    unit: str,
+    series_name: str,
+) -> NormalizedSeriesItem | None:
+    period = _extract_period(point)
+    value = _extract_value(point)
+
+    if not period and value is None:
+        return None
+
+    metadata = {
+        "series_name": series_name,
+        "meta_data": meta_data,
+        "series_context": {
+            key: value
+            for key, value in series.items()
+            if key not in {"Data", "data", "MetaData", "metadata"}
+        },
+        "point_context": {
+            key: value
+            for key, value in point.items()
+            if key not in set(_VALUE_KEYS) | set(_PERIOD_KEYS)
+        },
+    }
+
+    raw_payload = {
+        "series_name": series_name,
+        "meta_data": meta_data,
+        "point": point,
+    }
+
+    return NormalizedSeriesItem(
+        operation_code=operation_code,
+        table_id=table_id,
+        variable_id=variable_id,
+        geography_name=geography_name,
+        geography_code=geography_code,
+        period=period or "unknown",
+        value=value,
+        unit=unit,
+        metadata=metadata,
+        raw_payload=raw_payload,
+    )
+
+
+def _extract_period(point: dict[str, Any]) -> str | None:
+    for key in _PERIOD_KEYS:
+        if key in point and point[key] not in (None, ""):
+            return str(point[key])
+
+    year_value = point.get("Anyo", point.get("AÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â±o"))
+    if year_value is not None:
+        return str(year_value)
+
+    return None
+
+
+def _extract_value(point: dict[str, Any]) -> float | None:
+    for key in _VALUE_KEYS:
+        if key in point:
+            parsed = parse_numeric_value(point[key])
+            if parsed is not None or point[key] is None:
+                return parsed
+    return None
+
+
+def _extract_variable_id(series: dict[str, Any], meta_data: list[Any]) -> str:
+    direct_value = _pick_string(series, ("IdVariable", "Variable", "variable"))
+    if direct_value:
+        return direct_value
+
+    for item in meta_data:
+        if not isinstance(item, dict):
+            continue
+        candidate_label = _pick_string(item, ("Variable", "variable", "Descripcion", "description", "Nombre", "name"))
+        if any(hint in _normalized_text(candidate_label) for hint in _GEO_HINTS):
+            continue
+        candidate_id = _pick_string(item, _ID_KEYS)
+        if candidate_id:
+            return candidate_id
+
+    return ""
+
+
+def _extract_geography(meta_data: list[Any], series: dict[str, Any]) -> tuple[str, str]:
+    for item in meta_data:
+        if not isinstance(item, dict):
+            continue
+        candidate_label = _pick_string(item, ("Variable", "variable", "Descripcion", "description", "Nombre", "name"))
+        if any(hint in _normalized_text(candidate_label) for hint in _GEO_HINTS):
+            return _pick_string(item, ("Nombre", "Valor", "value")), _pick_string(item, _ID_KEYS)
+
+    if _normalized_text(_pick_string(series, _NAME_KEYS)).find("asturias") >= 0:
+        return "Asturias", ""
+
+    return "", ""
+
+
+def _pick_string(payload: dict[str, Any], keys: tuple[str, ...]) -> str:
+    for key in keys:
+        value = payload.get(key)
+        if value not in (None, ""):
+            return str(value)
+    return ""
+
+
+def _ensure_list(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    if value is None:
+        return []
+    return [value]
+
+
+def _normalized_text(value: str) -> str:
+    normalized = unicodedata.normalize("NFKD", value or "")
+    ascii_value = normalized.encode("ascii", "ignore").decode("ascii")
+    return ascii_value.lower().strip()
+
+
+
+
+============================================================
+ARCHIVO: app\\services\\asturias_resolver.py
+============================================================
+
+from __future__ import annotations
+
+import json
+import unicodedata
+from typing import Any
+
+from app.core.cache import InMemoryTTLCache
+from app.core.logging import get_logger
+from app.schemas import AsturiasResolutionResult
+from app.services.ine_client import INEClientService
+
+
+_GEO_KEYWORDS = {
+    "comunidad": 10,
+    "autonoma": 10,
+    "ccaa": 9,
+    "territorial": 7,
+    "geo": 6,
+    "geografica": 6,
+    "provincia": 5,
+    "municipio": 4,
+}
+
+
+class AsturiasResolutionError(Exception):
+    def __init__(self, detail: Any, status_code: int = 422) -> None:
+        super().__init__(str(detail))
+        self.status_code = status_code
+        self.detail = detail
+
+
+class AsturiasResolver:
+    def __init__(self, ine_client: INEClientService, cache: InMemoryTTLCache) -> None:
+        self.ine_client = ine_client
+        self.cache = cache
+        self.logger = get_logger("app.services.asturias_resolver")
+
+    async def resolve(
+        self,
+        op_code: str,
+        geo_variable_id: str | None = None,
+        asturias_value_id: str | None = None,
+    ) -> AsturiasResolutionResult:
+        cache_key = self._cache_key(op_code, geo_variable_id, asturias_value_id)
+        cached = await self.cache.get(cache_key)
+        if cached is not None:
+            return AsturiasResolutionResult.model_validate(cached)
+
+        if geo_variable_id and asturias_value_id:
+            result = AsturiasResolutionResult(
+                geo_variable_id=geo_variable_id,
+                asturias_value_id=asturias_value_id,
+            )
+            await self.cache.set(cache_key, result.model_dump())
+            return result
+
+        geo_candidate = {"id": geo_variable_id, "name": None} if geo_variable_id else None
+        if geo_candidate is None:
+            variables_payload = await self.ine_client.get_operation_variables(op_code)
+            geo_candidate = self._detect_geo_variable(variables_payload)
+
+        if not geo_candidate:
+            raise AsturiasResolutionError(
+                detail={
+                    "message": "Could not resolve the geographic variable for this operation.",
+                    "hint": "Provide geo_variable_id manually.",
+                    "operation_code": op_code,
+                }
+            )
+
+        asturias_candidate = {"id": asturias_value_id, "name": None} if asturias_value_id else None
+        if asturias_candidate is None:
+            values_payload = await self.ine_client.get_variable_values(op_code, geo_candidate["id"])
+            asturias_candidate = self._detect_asturias_value(values_payload)
+
+        if not asturias_candidate:
+            raise AsturiasResolutionError(
+                detail={
+                    "message": "Could not resolve Asturias within the geographic variable values.",
+                    "hint": "Provide asturias_value_id manually.",
+                    "operation_code": op_code,
+                    "geo_variable_id": geo_candidate["id"],
+                }
+            )
+
+        result = AsturiasResolutionResult(
+            geo_variable_id=geo_candidate["id"],
+            asturias_value_id=asturias_candidate["id"],
+            variable_name=geo_candidate.get("name"),
+            asturias_label=asturias_candidate.get("name"),
+        )
+        await self.cache.set(cache_key, result.model_dump())
+        self.logger.info(
+            "asturias_resolution_completed",
+            extra={
+                "operation_code": op_code,
+                "geo_variable_id": result.geo_variable_id,
+                "asturias_value_id": result.asturias_value_id,
+            },
+        )
+        return result
+
+    def _detect_geo_variable(self, payload: dict[str, Any] | list[Any]) -> dict[str, str] | None:
+        candidates: list[tuple[int, dict[str, str]]] = []
+        for record in self._iter_records(payload):
+            record_id = self._pick_first(record, ("Id", "id", "Codigo", "codigo"))
+            if not record_id:
+                continue
+            name = self._pick_first(record, ("Nombre", "name", "Variable", "Descripcion", "description"))
+            normalized_name = self._normalize_text(name)
+            score = max((weight for key, weight in _GEO_KEYWORDS.items() if key in normalized_name), default=0)
+            if score > 0:
+                candidates.append((score, {"id": str(record_id), "name": name}))
+
+        if not candidates:
+            return None
+
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        return candidates[0][1]
+
+    def _detect_asturias_value(self, payload: dict[str, Any] | list[Any]) -> dict[str, str] | None:
+        candidates: list[tuple[int, dict[str, str]]] = []
+        for record in self._iter_records(payload):
+            record_id = self._pick_first(record, ("Id", "id", "Codigo", "codigo"))
+            if not record_id:
+                continue
+            name = self._pick_first(record, ("Nombre", "name", "Descripcion", "description", "Valor"))
+            normalized_name = self._normalize_text(name)
+            if "asturias" not in normalized_name:
+                continue
+            score = 20 if normalized_name == "principado de asturias" else 10
+            candidates.append((score, {"id": str(record_id), "name": name}))
+
+        if not candidates:
+            return None
+
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        return candidates[0][1]
+
+    def _iter_records(self, payload: dict[str, Any] | list[Any]) -> list[dict[str, Any]]:
+        if isinstance(payload, list):
+            return [item for item in payload if isinstance(item, dict)]
+        if isinstance(payload, dict):
+            return [payload]
+        return []
+
+    @staticmethod
+    def _pick_first(payload: dict[str, Any], keys: tuple[str, ...]) -> str:
+        for key in keys:
+            value = payload.get(key)
+            if value not in (None, ""):
+                return str(value)
+        return ""
+
+    @staticmethod
+    def _normalize_text(value: str) -> str:
+        normalized = unicodedata.normalize("NFKD", value or "")
+        return normalized.encode("ascii", "ignore").decode("ascii").lower().strip()
+
+    @staticmethod
+    def _cache_key(
+        op_code: str,
+        geo_variable_id: str | None,
+        asturias_value_id: str | None,
+    ) -> str:
+        payload = {
+            "op_code": op_code,
+            "geo_variable_id": geo_variable_id,
+            "asturias_value_id": asturias_value_id,
+        }
+        return f"asturias_resolution:{json.dumps(payload, sort_keys=True)}"
+
+
+
+
+============================================================
+ARCHIVO: tests\\__init__.py
+============================================================
+
+[archivo vacio intencionadamente]
+
+
+============================================================
+ARCHIVO: tests\\conftest.py
+============================================================
+
+from __future__ import annotations
+
+from collections.abc import Callable
+
+import httpx
+import pytest
+from fastapi.testclient import TestClient
+
+from app.core.cache import InMemoryTTLCache
+from app.dependencies import get_ingestion_repository, get_ine_client_service, get_series_repository
+from app.main import app
+from app.schemas import NormalizedSeriesItem
+from app.services.ine_client import INEClientService
+from app.settings import Settings
+
+
+class DummyIngestionRepository:
+    def __init__(self) -> None:
+        self.records: list[dict] = []
+
+    async def save_raw(self, **kwargs):
+        self.records.append(kwargs)
+        return len(self.records)
+
+
+class DummySeriesRepository:
+    def __init__(self) -> None:
+        self.items: list[NormalizedSeriesItem] = []
+
+    async def upsert_many(self, items):
+        self.items.extend(items)
+        return len(items)
+
+
+@pytest.fixture
+def client():
+    with TestClient(app) as test_client:
+        yield test_client
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def dummy_ingestion_repo() -> DummyIngestionRepository:
+    repo = DummyIngestionRepository()
+    app.dependency_overrides[get_ingestion_repository] = lambda: repo
+    return repo
+
+
+@pytest.fixture
+def dummy_series_repo() -> DummySeriesRepository:
+    repo = DummySeriesRepository()
+    app.dependency_overrides[get_series_repository] = lambda: repo
+    return repo
+
+
+def override_ine_service(handler: Callable[[httpx.Request], httpx.Response], enable_cache: bool = True) -> None:
+    transport = httpx.MockTransport(handler)
+    http_client = httpx.AsyncClient(transport=transport)
+    settings = Settings(
+        ine_base_url="https://mocked.ine",
+        enable_cache=enable_cache,
+        cache_ttl_seconds=60,
+    )
+    cache = InMemoryTTLCache(enabled=enable_cache, default_ttl_seconds=60)
+    service = INEClientService(http_client=http_client, settings=settings, cache=cache)
+    app.dependency_overrides[get_ine_client_service] = lambda: service
+
+
+
+
+============================================================
+ARCHIVO: tests\\test_health.py
+============================================================
+
+def test_health_endpoint_returns_ok(client):
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+
+
+
+============================================================
+ARCHIVO: tests\\test_ine_table.py
+============================================================
+
+import httpx
+
+from tests.conftest import override_ine_service
+
+
+TABLE_PAYLOAD = [
+    {
+        "Nombre": "Indice general Asturias",
+        "MetaData": [
+            {"Variable": "Comunidad autonoma", "Nombre": "Asturias", "Id": "33"},
+            {"Variable": "Indicador", "Nombre": "Indice general", "Id": "IPC_GENERAL"},
+        ],
+        "Data": [
+            {"Periodo": "2024M01", "Valor": "101,5", "Unidad": "indice"},
+            {"Periodo": "2024M02", "Valor": "102,7", "Unidad": "indice"},
+        ],
+    }
+]
+
+
+def test_ine_table_returns_payload_and_normalizes(client, dummy_ingestion_repo, dummy_series_repo):
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/DATOS_TABLA/12345"
+        assert request.url.params["nult"] == "2"
+        assert request.url.params["det"] == "2"
+        assert request.url.params["tip"] == "AM"
+        assert request.url.params["date"] == "2024M02"
+        return httpx.Response(200, json=TABLE_PAYLOAD)
+
+    override_ine_service(handler)
+
+    response = client.get("/ine/table/12345?nult=2&det=2&tip=AM&date=2024M02")
+
+    assert response.status_code == 200
+    assert response.json() == TABLE_PAYLOAD
+    assert len(dummy_ingestion_repo.records) == 1
+    assert dummy_ingestion_repo.records[0]["source_type"] == "table"
+    assert len(dummy_series_repo.items) == 2
+    assert dummy_series_repo.items[0].table_id == "12345"
+    assert dummy_series_repo.items[0].geography_name == "Asturias"
+    assert dummy_series_repo.items[0].value == 101.5
+
+
+def test_ine_table_validates_query_params(client):
+    response = client.get("/ine/table/12345?nult=0&det=7&tip=INVALID")
+
+    assert response.status_code == 422
+
+
+
+
+============================================================
+ARCHIVO: tests\\test_asturias.py
+============================================================
+
+import httpx
+
+from tests.conftest import override_ine_service
+
+
+TABLE_1_PAYLOAD = [
+    {
+        "Nombre": "Serie Asturias tabla 501",
+        "MetaData": [
+            {"Variable": "Territorio", "Nombre": "Principado de Asturias", "Id": "8999"},
+            {"Variable": "Indicador", "Nombre": "Poblacion", "Id": "POB"},
+        ],
+        "Data": [
+            {"Periodo": "2024", "Valor": "1012345", "Unidad": "personas"}
+        ],
+    }
+]
+
+TABLE_2_PAYLOAD = [
+    {
+        "Nombre": "Serie Asturias tabla 502",
+        "MetaData": [
+            {"Variable": "Territorio", "Nombre": "Principado de Asturias", "Id": "8999"},
+            {"Variable": "Indicador", "Nombre": "Indice", "Id": "IDX"},
+        ],
+        "Data": [
+            {"Periodo": "2024M01", "Valor": "101,5", "Unidad": "indice"},
+            {"Periodo": "2024M02", "Valor": "102,1", "Unidad": "indice"},
+        ],
+    }
+]
+
+MIXED_TABLE_PAYLOAD = [
+    {
+        "Nombre": "Serie Asturias",
+        "MetaData": [
+            {"Variable": "Territorio", "Nombre": "Asturias, Principado de", "Id": "33"},
+            {"Variable": "Indicador", "Nombre": "Indice general", "Id": "IPC"},
+        ],
+        "Data": [
+            {"Periodo": "2024M01", "Valor": "101,5", "Unidad": "indice"}
+        ],
+    },
+    {
+        "Nombre": "Serie Zaragoza",
+        "MetaData": [
+            {"Variable": "Territorio", "Nombre": "Zaragoza", "Id": "50"},
+            {"Variable": "Indicador", "Nombre": "Indice general", "Id": "IPC"},
+        ],
+        "Data": [
+            {"Periodo": "2024M01", "Valor": "99,4", "Unidad": "indice"}
+        ],
+    },
+]
+
+
+def test_asturias_endpoint_resolves_automatically_through_tables(client, dummy_ingestion_repo, dummy_series_repo):
+    called_paths = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        called_paths.append(request.url.path)
+        if request.url.path == "/VARIABLES_OPERACION/OP_AST":
+            return httpx.Response(
+                200,
+                json=[
+                    {"Id": "200", "Nombre": "Indicador"},
+                    {"Id": "115", "Nombre": "Comunidad autonoma"},
+                ],
+            )
+        if request.url.path == "/VALORES_VARIABLEOPERACION/115/OP_AST":
+            return httpx.Response(
+                200,
+                json=[
+                    {"Id": "28", "Nombre": "Madrid"},
+                    {"Id": "33", "Nombre": "Principado de Asturias"},
+                ],
+            )
+        if request.url.path == "/TABLAS_OPERACION/OP_AST":
+            return httpx.Response(
+                200,
+                json=[
+                    {"IdTabla": "501", "Nombre": "Tabla principal"},
+                    {"IdTabla": "502", "Nombre": "Tabla secundaria"},
+                ],
+            )
+        if request.url.path == "/DATOS_TABLA/501":
+            assert request.url.params["g1"] == "115:33"
+            assert request.url.params["p"] == "1"
+            return httpx.Response(200, json=TABLE_1_PAYLOAD)
+        if request.url.path == "/DATOS_TABLA/502":
+            assert request.url.params["g1"] == "115:33"
+            assert request.url.params["p"] == "1"
+            return httpx.Response(200, json=TABLE_2_PAYLOAD)
+        raise AssertionError(f"Unexpected path: {request.url.path}")
+
+    override_ine_service(handler)
+
+    response = client.get("/ine/operation/OP_AST/asturias?periodicidad=1&nult=1")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["operation_code"] == "OP_AST"
+    assert payload["resolution"]["geo_variable_id"] == "115"
+    assert payload["resolution"]["asturias_value_id"] == "33"
+    assert payload["tables_selected"] == ["501", "502"]
+    assert len(payload["results"]) == 2
+    assert payload["results"][0]["table_id"] == "501"
+    assert payload["results"][1]["table_id"] == "502"
+    assert payload["results"][0]["raw_rows_retrieved"] == 1
+    assert payload["results"][1]["filtered_rows_retrieved"] == 2
+    assert payload["summary"]["tables_succeeded"] == 2
+    assert payload["summary"]["tables_failed"] == 0
+    assert payload["summary"]["max_tables_effective"] == 3
+    assert len(dummy_ingestion_repo.records) == 4
+    assert dummy_ingestion_repo.records[0]["source_type"] == "operation_tables"
+    assert dummy_ingestion_repo.records[1]["source_type"] == "operation_asturias_table"
+    assert dummy_ingestion_repo.records[2]["source_type"] == "operation_asturias_table"
+    assert dummy_ingestion_repo.records[3]["source_type"] == "operation_asturias"
+    assert len(dummy_series_repo.items) == 3
+    assert dummy_series_repo.items[0].operation_code == "OP_AST"
+    assert dummy_series_repo.items[0].table_id == "501"
+    assert dummy_series_repo.items[1].table_id == "502"
+    assert called_paths == [
+        "/VARIABLES_OPERACION/OP_AST",
+        "/VALORES_VARIABLEOPERACION/115/OP_AST",
+        "/TABLAS_OPERACION/OP_AST",
+        "/DATOS_TABLA/501",
+        "/DATOS_TABLA/502",
+    ]
+
+
+def test_asturias_endpoint_accepts_manual_override_and_returns_partial_results(
+    client,
+    dummy_ingestion_repo,
+    dummy_series_repo,
+):
+    called_paths = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        called_paths.append(request.url.path)
+        if request.url.path == "/TABLAS_OPERACION/OP_AST":
+            return httpx.Response(
+                200,
+                json=[
+                    {"IdTabla": "501", "Nombre": "Tabla principal"},
+                    {"IdTabla": "502", "Nombre": "Tabla secundaria"},
+                ],
+            )
+        if request.url.path == "/DATOS_TABLA/501":
+            assert request.url.params["g1"] == "999:33"
+            return httpx.Response(200, json=TABLE_1_PAYLOAD)
+        if request.url.path == "/DATOS_TABLA/502":
+            return httpx.Response(503, json={"error": "upstream table error"})
+        raise AssertionError(f"Unexpected path: {request.url.path}")
+
+    override_ine_service(handler)
+
+    response = client.get(
+        "/ine/operation/OP_AST/asturias?geo_variable_id=999&asturias_value_id=33&tip=AM"
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["resolution"]["geo_variable_id"] == "999"
+    assert payload["resolution"]["asturias_value_id"] == "33"
+    assert payload["summary"]["tables_succeeded"] == 1
+    assert payload["summary"]["tables_failed"] == 1
+    assert len(payload["errors"]) == 1
+    assert payload["errors"][0]["table_id"] == "502"
+    assert len(dummy_series_repo.items) == 1
+    assert dummy_series_repo.items[0].table_id == "501"
+    assert called_paths == [
+        "/TABLAS_OPERACION/OP_AST",
+        "/DATOS_TABLA/501",
+        "/DATOS_TABLA/502",
+    ]
+
+
+def test_asturias_endpoint_respects_max_tables_limit(client, dummy_ingestion_repo, dummy_series_repo):
+    called_paths = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        called_paths.append(request.url.path)
+        if request.url.path == "/VARIABLES_OPERACION/OP_AST":
+            return httpx.Response(200, json=[{"Id": "115", "Nombre": "Comunidad autonoma"}])
+        if request.url.path == "/VALORES_VARIABLEOPERACION/115/OP_AST":
+            return httpx.Response(200, json=[{"Id": "33", "Nombre": "Principado de Asturias"}])
+        if request.url.path == "/TABLAS_OPERACION/OP_AST":
+            return httpx.Response(
+                200,
+                json=[
+                    {"IdTabla": "501", "Nombre": "Tabla 1"},
+                    {"IdTabla": "502", "Nombre": "Tabla 2"},
+                    {"IdTabla": "503", "Nombre": "Tabla 3"},
+                ],
+            )
+        if request.url.path == "/DATOS_TABLA/501":
+            return httpx.Response(200, json=TABLE_1_PAYLOAD)
+        raise AssertionError(f"Unexpected path: {request.url.path}")
+
+    override_ine_service(handler)
+
+    response = client.get("/ine/operation/OP_AST/asturias?max_tables=1")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["tables_selected"] == ["501"]
+    assert payload["summary"]["max_tables_effective"] == 1
+    assert len(payload["results"]) == 1
+    assert len(dummy_series_repo.items) == 1
+    assert called_paths == [
+        "/VARIABLES_OPERACION/OP_AST",
+        "/VALORES_VARIABLEOPERACION/115/OP_AST",
+        "/TABLAS_OPERACION/OP_AST",
+        "/DATOS_TABLA/501",
+    ]
+
+
+def test_asturias_endpoint_filters_non_asturias_series_after_download(client, dummy_ingestion_repo, dummy_series_repo):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/VARIABLES_OPERACION/OP_AST":
+            return httpx.Response(200, json=[{"Id": "115", "Nombre": "Comunidad autonoma"}])
+        if request.url.path == "/VALORES_VARIABLEOPERACION/115/OP_AST":
+            return httpx.Response(200, json=[{"Id": "33", "Nombre": "Asturias, Principado de"}])
+        if request.url.path == "/TABLAS_OPERACION/OP_AST":
+            return httpx.Response(200, json=[{"IdTabla": "501", "Nombre": "Tabla 1"}])
+        if request.url.path == "/DATOS_TABLA/501":
+            return httpx.Response(200, json=MIXED_TABLE_PAYLOAD)
+        raise AssertionError(f"Unexpected path: {request.url.path}")
+
+    override_ine_service(handler)
+
+    response = client.get("/ine/operation/OP_AST/asturias?max_tables=1")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["results"][0]["raw_rows_retrieved"] == 2
+    assert payload["results"][0]["filtered_rows_retrieved"] == 1
+    assert len(payload["results"][0]["data"]) == 1
+    assert payload["results"][0]["data"][0]["Nombre"] == "Serie Asturias"
+    assert len(dummy_series_repo.items) == 1
+    assert dummy_series_repo.items[0].geography_name == "Asturias, Principado de"
+
+
+def test_asturias_endpoint_returns_clear_error_if_all_tables_fail(client, dummy_ingestion_repo, dummy_series_repo):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/VARIABLES_OPERACION/OP_AST":
+            return httpx.Response(200, json=[{"Id": "115", "Nombre": "Comunidad autonoma"}])
+        if request.url.path == "/VALORES_VARIABLEOPERACION/115/OP_AST":
+            return httpx.Response(200, json=[{"Id": "33", "Nombre": "Principado de Asturias"}])
+        if request.url.path == "/TABLAS_OPERACION/OP_AST":
+            return httpx.Response(200, json=[{"IdTabla": "501", "Nombre": "Tabla principal"}])
+        if request.url.path == "/DATOS_TABLA/501":
+            return httpx.Response(503, json={"error": "upstream table error"})
+        raise AssertionError(f"Unexpected path: {request.url.path}")
+
+    override_ine_service(handler)
+
+    response = client.get("/ine/operation/OP_AST/asturias")
+
+    assert response.status_code == 502
+    payload = response.json()
+    assert payload["detail"]["message"] == "No table data could be recovered for Asturias in this operation."
+    assert payload["detail"]["tables_found"] == ["501"]
+    assert len(payload["detail"]["errors"]) == 1
+    assert dummy_ingestion_repo.records[0]["source_type"] == "operation_tables"
+    assert dummy_series_repo.items == []
+
+
+
+
+============================================================
+ARCHIVO: tests\\test_error_handling.py
+============================================================
+
+import httpx
+
+from tests.conftest import override_ine_service
+
+
+def test_upstream_ine_error_is_returned(client, dummy_ingestion_repo, dummy_series_repo):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, json={"error": "temporarily unavailable"})
+
+    override_ine_service(handler)
+
+    response = client.get("/ine/table/999")
+
+    assert response.status_code == 503
+    assert response.json()["detail"]["message"] == "The INE service returned an error."
+    assert dummy_ingestion_repo.records == []
+    assert dummy_series_repo.items == []
+
+
+def test_invalid_json_from_ine_returns_502(client, dummy_ingestion_repo, dummy_series_repo):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="not-json", headers={"content-type": "application/json"})
+
+    override_ine_service(handler)
+
+    response = client.get("/ine/table/999")
+
+    assert response.status_code == 502
+    assert response.json()["detail"]["message"] == "The INE service returned invalid JSON."
+    assert dummy_ingestion_repo.records == []
+    assert dummy_series_repo.items == []
+
+
+
+
+============================================================
+ARCHIVO: tests\\test_series_repository.py
+============================================================
+
+from app.repositories.series import SeriesRepository
+from app.schemas import NormalizedSeriesItem
+
+
+def test_prepare_upsert_rows_returns_plain_insertable_dicts():
+    items = [
+        NormalizedSeriesItem(
+            operation_code="22",
+            table_id="2852",
+            variable_id="70",
+            geography_name="Principado de Asturias",
+            geography_code="8999",
+            period="2024M01",
+            value=101.5,
+            unit="indice",
+            metadata={"source": "test"},
+            raw_payload={"nested": {"value": 1}},
+        )
+    ]
+
+    rows = SeriesRepository.prepare_upsert_rows(items)
+
+    assert len(rows) == 1
+    assert rows[0] == {
+        "operation_code": "22",
+        "table_id": "2852",
+        "variable_id": "70",
+        "geography_name": "Principado de Asturias",
+        "geography_code": "8999",
+        "period": "2024M01",
+        "value": 101.5,
+        "unit": "indice",
+        "metadata": {"source": "test"},
+        "raw_payload": {"nested": {"value": 1}},
+    }
+
+
+def test_prepare_upsert_rows_filters_non_serializable_or_extra_values():
+    raw_object = object()
+    items = [
+        {
+            "operation_code": 22,
+            "table_id": 2852,
+            "variable_id": None,
+            "geography_name": "Asturias",
+            "geography_code": 8999,
+            "period": "2024",
+            "value": "101.5",
+            "unit": None,
+            "metadata_json": {"note": raw_object},
+            "raw_payload": [1, 2, 3],
+            "unexpected": "ignored",
+        }
+    ]
+
+    rows = SeriesRepository.prepare_upsert_rows(items)
+
+    assert len(rows) == 1
+    assert set(rows[0].keys()) == {
+        "operation_code",
+        "table_id",
+        "variable_id",
+        "geography_name",
+        "geography_code",
+        "period",
+        "value",
+        "unit",
+        "metadata",
+        "raw_payload",
+    }
+    assert rows[0]["operation_code"] == "22"
+    assert rows[0]["table_id"] == "2852"
+    assert rows[0]["variable_id"] == ""
+    assert rows[0]["value"] == 101.5
+    assert rows[0]["metadata"] == {"note": str(raw_object)}
+    assert rows[0]["raw_payload"] == {"items": [1, 2, 3]}
+
+
+
+
+
+
+
+

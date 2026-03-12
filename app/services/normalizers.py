@@ -1,0 +1,374 @@
+﻿from __future__ import annotations
+
+import re
+import unicodedata
+from dataclasses import dataclass, field
+from typing import Any
+
+from app.schemas import NormalizedSeriesItem
+
+
+_PERIOD_KEYS = ("Periodo", "NombrePeriodo", "period", "Period", "Date")
+_VALUE_KEYS = ("Valor", "value", "Value", "Dato", "data")
+_UNIT_KEYS = ("Unidad", "unit", "Unit", "FK_Unidad")
+_NAME_KEYS = ("Nombre", "name", "Name", "Descripcion", "description", "COD", "Cod", "Codigo")
+_ID_KEYS = ("Id", "id", "Codigo", "codigo", "Code", "code")
+_VARIABLE_KEYS = ("IdVariable", "Variable", "variable", "COD", "Cod", "CodigoSerie", "codigoSerie")
+_GEO_HINTS = ("geo", "geogr", "territ", "provincia", "municip", "autonom", "ccaa", "comunidad")
+_SERIES_COLLECTION_KEYS = ("Resultados", "results", "Series", "series", "Data", "data")
+_SERIES_HINT_KEYS = ("COD", "Cod", "Codigo", "Nombre", "name", "MetaData", "metadata", "FK_Unidad", "FK_Escala")
+_OBSERVATION_HINT_KEYS = ("Valor", "value", "Value", "Dato", "data", "Fecha", "Date", "Anyo", "Ano", "FK_Periodo")
+
+
+@dataclass(slots=True)
+class NormalizationOutcome:
+    items: list[NormalizedSeriesItem] = field(default_factory=list)
+    discarded_counts: dict[str, int] = field(default_factory=dict)
+    payload_type: str = "unknown"
+    series_detected: int = 0
+    observations_total: int = 0
+
+
+def normalize_table_payload(payload: dict[str, Any] | list[Any], table_id: str) -> list[NormalizedSeriesItem]:
+    return normalize_table_payload_with_stats(payload, table_id).items
+
+
+def normalize_table_payload_with_stats(
+    payload: dict[str, Any] | list[Any],
+    table_id: str,
+) -> NormalizationOutcome:
+    return _normalize_payload(payload, table_id=table_id)
+
+
+def normalize_asturias_payload(
+    payload: dict[str, Any] | list[Any],
+    op_code: str,
+    geography_name: str,
+    geography_code: str,
+    table_id: str = "",
+) -> list[NormalizedSeriesItem]:
+    return normalize_asturias_payload_with_stats(
+        payload,
+        op_code,
+        geography_name,
+        geography_code,
+        table_id,
+    ).items
+
+
+def normalize_asturias_payload_with_stats(
+    payload: dict[str, Any] | list[Any],
+    op_code: str,
+    geography_name: str,
+    geography_code: str,
+    table_id: str = "",
+) -> NormalizationOutcome:
+    return _normalize_payload(
+        payload,
+        operation_code=op_code,
+        table_id=table_id,
+        geography_name_override=geography_name,
+        geography_code_override=geography_code,
+    )
+
+
+def inspect_payload_shape(payload: dict[str, Any] | list[Any]) -> dict[str, Any]:
+    series_items = _extract_series_items(payload)
+    observations_total = 0
+
+    for series in series_items:
+        data_points = _extract_data_points(series)
+        observations_total += len(data_points) if data_points else 1
+
+    return {
+        "payload_type": type(payload).__name__,
+        "series_detected": len(series_items),
+        "observations_total": observations_total,
+    }
+
+
+def parse_numeric_value(raw_value: Any) -> float | None:
+    if raw_value is None:
+        return None
+    if isinstance(raw_value, bool):
+        return float(raw_value)
+    if isinstance(raw_value, (int, float)):
+        return float(raw_value)
+
+    value = str(raw_value).strip()
+    if not value or value in {"-", "..", "...", "null", "None"}:
+        return None
+
+    value = value.replace("%", "")
+    value = value.replace(" ", "")
+
+    if "," in value and "." in value:
+        if value.rfind(",") > value.rfind("."):
+            value = value.replace(".", "").replace(",", ".")
+        else:
+            value = value.replace(",", "")
+    elif "," in value:
+        value = value.replace(",", ".")
+
+    value = re.sub(r"[^0-9.-]", "", value)
+    if value in {"", ".", "-", "-."}:
+        return None
+
+    try:
+        return float(value)
+    except ValueError:
+        return None
+
+
+def _normalize_payload(
+    payload: dict[str, Any] | list[Any],
+    operation_code: str = "",
+    table_id: str = "",
+    geography_name_override: str | None = None,
+    geography_code_override: str | None = None,
+) -> NormalizationOutcome:
+    outcome = NormalizationOutcome()
+    shape = inspect_payload_shape(payload)
+    outcome.payload_type = shape["payload_type"]
+    outcome.series_detected = shape["series_detected"]
+    outcome.observations_total = shape["observations_total"]
+
+    series_items = _extract_series_items(payload)
+
+    for series in series_items:
+        meta_data = _ensure_list(series.get("MetaData") or series.get("metadata"))
+        variable_id = _extract_variable_id(series, meta_data)
+        geography_name, geography_code = _extract_geography(meta_data, series)
+        geography_name = geography_name_override or geography_name
+        geography_code = geography_code_override or geography_code
+        unit = _pick_string(series, _UNIT_KEYS)
+        series_name = _extract_series_name(series)
+        data_points = _extract_data_points(series)
+
+        if data_points:
+            for point in data_points:
+                row, discard_reason = _build_row(
+                    point=point,
+                    series=series,
+                    meta_data=meta_data,
+                    operation_code=operation_code,
+                    table_id=table_id,
+                    variable_id=variable_id,
+                    geography_name=geography_name,
+                    geography_code=geography_code,
+                    unit=unit or _pick_string(point, _UNIT_KEYS),
+                    series_name=series_name,
+                )
+                if row is not None:
+                    outcome.items.append(row)
+                elif discard_reason is not None:
+                    outcome.discarded_counts[discard_reason] = outcome.discarded_counts.get(discard_reason, 0) + 1
+            continue
+
+        row, discard_reason = _build_row(
+            point=series,
+            series=series,
+            meta_data=meta_data,
+            operation_code=operation_code,
+            table_id=table_id,
+            variable_id=variable_id,
+            geography_name=geography_name,
+            geography_code=geography_code,
+            unit=unit,
+            series_name=series_name,
+        )
+        if row is not None:
+            outcome.items.append(row)
+        elif discard_reason is not None:
+            outcome.discarded_counts[discard_reason] = outcome.discarded_counts.get(discard_reason, 0) + 1
+
+    return outcome
+
+
+def _extract_series_items(payload: dict[str, Any] | list[Any]) -> list[dict[str, Any]]:
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+
+    if not isinstance(payload, dict):
+        return []
+
+    if _looks_like_series_record(payload) or _looks_like_observation(payload):
+        return [payload]
+
+    for key in _SERIES_COLLECTION_KEYS:
+        value = payload.get(key)
+        if not isinstance(value, list):
+            continue
+
+        candidate_series = [item for item in value if isinstance(item, dict)]
+        if not candidate_series:
+            continue
+        return candidate_series
+
+    return [payload]
+
+
+def _extract_data_points(series: dict[str, Any]) -> list[dict[str, Any]]:
+    value = series.get("Data") or series.get("data")
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
+
+
+def _build_row(
+    point: dict[str, Any],
+    series: dict[str, Any],
+    meta_data: list[Any],
+    operation_code: str,
+    table_id: str,
+    variable_id: str,
+    geography_name: str,
+    geography_code: str,
+    unit: str,
+    series_name: str,
+) -> tuple[NormalizedSeriesItem | None, str | None]:
+    period = _extract_period(point)
+    value = _extract_value(point)
+
+    if not period and value is None:
+        return None, "missing_period_and_value"
+
+    metadata = {
+        "series_name": series_name,
+        "series_code": _pick_string(series, ("COD", "Cod", "Codigo")),
+        "meta_data": meta_data,
+        "series_context": {
+            key: value
+            for key, value in series.items()
+            if key not in {"Data", "data", "MetaData", "metadata"}
+        },
+        "point_context": {
+            key: value
+            for key, value in point.items()
+            if key not in set(_VALUE_KEYS) | set(_PERIOD_KEYS) | {"Fecha", "Anyo", "Ano", "FK_Periodo"}
+        },
+    }
+
+    raw_payload = {
+        "series_name": series_name,
+        "series_code": _pick_string(series, ("COD", "Cod", "Codigo")),
+        "meta_data": meta_data,
+        "series": {
+            key: value
+            for key, value in series.items()
+            if key not in {"Data", "data"}
+        },
+        "point": point,
+    }
+
+    return (
+        NormalizedSeriesItem(
+            operation_code=operation_code,
+            table_id=table_id,
+            variable_id=variable_id,
+            geography_name=geography_name,
+            geography_code=geography_code,
+            period=period or "unknown",
+            value=value,
+            unit=unit,
+            metadata=metadata,
+            raw_payload=raw_payload,
+        ),
+        None,
+    )
+
+
+def _extract_period(point: dict[str, Any]) -> str | None:
+    for key in _PERIOD_KEYS:
+        if key in point and point[key] not in (None, ""):
+            return str(point[key])
+
+    year_value = point.get("Anyo", point.get("Ano"))
+    if year_value not in (None, ""):
+        return str(year_value)
+
+    date_value = point.get("Fecha")
+    if date_value not in (None, ""):
+        return str(date_value)
+
+    fk_period_value = point.get("FK_Periodo")
+    if fk_period_value not in (None, ""):
+        return str(fk_period_value)
+
+    return None
+
+
+def _extract_value(point: dict[str, Any]) -> float | None:
+    for key in _VALUE_KEYS:
+        if key in point:
+            parsed = parse_numeric_value(point[key])
+            if parsed is not None or point[key] is None:
+                return parsed
+    return None
+
+
+def _extract_variable_id(series: dict[str, Any], meta_data: list[Any]) -> str:
+    direct_value = _pick_string(series, _VARIABLE_KEYS)
+    if direct_value:
+        return direct_value
+
+    for item in meta_data:
+        if not isinstance(item, dict):
+            continue
+        candidate_label = _pick_string(item, ("Variable", "variable", "Descripcion", "description", "Nombre", "name"))
+        if any(hint in _normalized_text(candidate_label) for hint in _GEO_HINTS):
+            continue
+        candidate_id = _pick_string(item, _ID_KEYS)
+        if candidate_id:
+            return candidate_id
+
+    return ""
+
+
+def _extract_geography(meta_data: list[Any], series: dict[str, Any]) -> tuple[str, str]:
+    for item in meta_data:
+        if not isinstance(item, dict):
+            continue
+        candidate_label = _pick_string(item, ("Variable", "variable", "Descripcion", "description", "Nombre", "name"))
+        if any(hint in _normalized_text(candidate_label) for hint in _GEO_HINTS):
+            return _pick_string(item, ("Nombre", "Valor", "value")), _pick_string(item, _ID_KEYS)
+
+    series_name = _normalized_text(_extract_series_name(series))
+    if "asturias" in series_name:
+        return "Asturias", ""
+
+    return "", ""
+
+
+def _extract_series_name(series: dict[str, Any]) -> str:
+    return _pick_string(series, _NAME_KEYS)
+
+
+def _looks_like_series_record(payload: dict[str, Any]) -> bool:
+    return any(key in payload for key in _SERIES_HINT_KEYS)
+
+
+def _looks_like_observation(payload: dict[str, Any]) -> bool:
+    return any(key in payload for key in _OBSERVATION_HINT_KEYS)
+
+
+def _pick_string(payload: dict[str, Any], keys: tuple[str, ...]) -> str:
+    for key in keys:
+        value = payload.get(key)
+        if value not in (None, ""):
+            return str(value)
+    return ""
+
+
+def _ensure_list(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    if value is None:
+        return []
+    return [value]
+
+
+def _normalized_text(value: str) -> str:
+    normalized = unicodedata.normalize("NFKD", value or "")
+    ascii_value = normalized.encode("ascii", "ignore").decode("ascii")
+    return ascii_value.lower().strip()

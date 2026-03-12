@@ -1,0 +1,103 @@
+services:
+  db:
+    image: postgis/postgis:16-3.4@sha256:44126d872ac91993766c341e369c539e8196614321765d36a6f1bab0419a5fa5
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-ine_asturias}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    ports:
+      - "${POSTGRES_HOST_PORT:-5433}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-ine_asturias}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine@sha256:8b81dd37ff027bec4e516d41acfbe9fe2460070dc6d4a4570a2ac5b9d59df065
+    ports:
+      - "${REDIS_HOST_PORT:-6379}:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  migrate:
+    build:
+      context: .
+    environment: &app_env
+      APP_NAME: ${APP_NAME:-ine_asturias_api}
+      APP_ENV: ${APP_ENV:-local}
+      INE_BASE_URL: ${INE_BASE_URL:-https://servicios.ine.es/wstempus/js/ES}
+      HTTP_TIMEOUT_SECONDS: ${HTTP_TIMEOUT_SECONDS:-15}
+      POSTGRES_DSN: ${POSTGRES_DSN:-postgresql+asyncpg://postgres:postgres@db:5432/ine_asturias}
+      ENABLE_CACHE: ${ENABLE_CACHE:-true}
+      CACHE_TTL_SECONDS: ${CACHE_TTL_SECONDS:-300}
+      API_KEY: ${API_KEY:-}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      JOB_QUEUE_NAME: ${JOB_QUEUE_NAME:-ine_jobs}
+      JOB_RESULT_TTL_SECONDS: ${JOB_RESULT_TTL_SECONDS:-86400}
+      WORKER_HEARTBEAT_TTL_SECONDS: ${WORKER_HEARTBEAT_TTL_SECONDS:-60}
+      WORKER_METRICS_PORT: ${WORKER_METRICS_PORT:-9001}
+      WORKER_METRICS_URL: ${WORKER_METRICS_URL:-http://worker:9001/metrics}
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    depends_on:
+      db:
+        condition: service_healthy
+    command: python scripts/bootstrap_alembic.py
+
+  api:
+    build:
+      context: .
+    ports:
+      - "${API_HOST_PORT:-8001}:8000"
+    environment:
+      <<: *app_env
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    init: true
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+
+  worker:
+    build:
+      context: .
+    environment:
+      <<: *app_env
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    init: true
+    expose:
+      - "${WORKER_METRICS_PORT:-9001}"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    command: arq app.worker.WorkerSettings
+
+volumes:
+  postgres_data:
+  redis_data:

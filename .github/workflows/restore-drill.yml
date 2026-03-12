@@ -1,0 +1,81 @@
+﻿name: Restore Drill
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  restore-drill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Prepare local environment file
+        run: cp .env.example .env
+
+      - name: Start infrastructure for backup seed
+        run: docker compose up --build -d db redis
+
+      - name: Apply migrations
+        run: docker compose run --rm migrate
+
+      - name: Start API and worker
+        run: docker compose up --build -d api worker
+
+      - name: Seed data with smoke test
+        run: docker compose run --rm api python scripts/smoke_stack.py --base-url http://api:8000 | tee artifacts-seed-smoke.txt
+
+      - name: Create backup artifact for drill
+        run: |
+          mkdir -p backups artifacts
+          docker compose exec -T db pg_dump -U postgres -d ine_asturias -Fc -f /tmp/ine_asturias_ci.dump
+          docker compose cp db:/tmp/ine_asturias_ci.dump backups/ine_asturias_ci.dump
+          mv artifacts-seed-smoke.txt artifacts/seed-smoke.txt
+
+      - name: Run restore drill
+        shell: pwsh
+        run: ./scripts/restore_drill.ps1 -BackupPath backups/ine_asturias_ci.dump
+
+      - name: Verify restored stack with smoke test
+        run: docker compose run --rm api python scripts/smoke_stack.py --base-url http://api:8000 | tee artifacts/smoke-test.txt
+
+      - name: Verify restored data integrity
+        run: docker compose run --rm api python scripts/verify_restore.py --base-url http://api:8000 --postgres-dsn postgresql://postgres:postgres@db:5432/ine_asturias --min-ingestion-rows 1 --min-normalized-rows 1 | tee artifacts/verify-restore.txt
+
+      - name: Capture compose status
+        if: always()
+        run: docker compose ps > artifacts/compose-ps.txt
+
+      - name: Capture service logs
+        if: always()
+        run: |
+          docker compose logs --no-color api > artifacts/api.log || true
+          docker compose logs --no-color worker > artifacts/worker.log || true
+          docker compose logs --no-color migrate > artifacts/migrate.log || true
+          docker compose logs --no-color db > artifacts/db.log || true
+
+      - name: Upload restore drill artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: restore-drill-artifacts
+          path: |
+            backups/ine_asturias_ci.dump
+            artifacts/seed-smoke.txt
+            artifacts/smoke-test.txt
+            artifacts/verify-restore.txt
+            artifacts/compose-ps.txt
+            artifacts/api.log
+            artifacts/worker.log
+            artifacts/migrate.log
+            artifacts/db.log
+          if-no-files-found: error
+
+      - name: Tear down stack
+        if: always()
+        run: docker compose down -v
