@@ -18,18 +18,22 @@ from app.dependencies import (
     get_operation_ingestion_service,
     get_series_repository,
     get_table_catalog_repository,
+    get_territorial_repository,
     require_api_key,
 )
 from app.repositories.catalog import TableCatalogRepository
 from app.repositories.ingestion import IngestionRepository
 from app.repositories.series import SeriesRepository
+from app.repositories.territorial import INE_TERRITORIAL_SOURCE_SYSTEM, TerritorialRepository
 from app.schemas import (
     BackgroundJobAcceptedResponse,
     BackgroundJobStatusResponse,
     CatalogOperationSummaryResponse,
     CatalogTableItemResponse,
+    INESeriesFiltersResponse,
     INESeriesListItemResponse,
     INESeriesListResponse,
+    INESeriesTerritorialResolutionResponse,
     JSONPayload,
 )
 from app.services.asturias_resolver import AsturiasResolutionError, AsturiasResolver
@@ -44,7 +48,12 @@ DEV_MAX_TABLES_DEFAULT = 3
 BACKGROUND_JOB_TYPE = "operation_asturias_ingestion"
 
 
-@router.get("/ine/table/{table_id}", response_model=JSONPayload)
+@router.get(
+    "/ine/table/{table_id}",
+    response_model=JSONPayload,
+    tags=["ine-provider"],
+    summary="Fetch and persist a raw INE table",
+)
 async def get_table_data(
     table_id: str,
     nult: int | None = Query(default=None, ge=1),
@@ -69,7 +78,12 @@ async def get_table_data(
     return JSONPayload(root=payload)
 
 
-@router.get("/ine/operation/{op_code}/variables", response_model=JSONPayload)
+@router.get(
+    "/ine/operation/{op_code}/variables",
+    response_model=JSONPayload,
+    tags=["ine-provider"],
+    summary="Fetch raw INE operation variables",
+)
 async def get_operation_variables(
     op_code: str,
     ine_client: INEClientService = Depends(get_ine_client_service),
@@ -86,7 +100,12 @@ async def get_operation_variables(
     return JSONPayload(root=payload)
 
 
-@router.get("/ine/operation/{op_code}/variable/{variable_id}/values", response_model=JSONPayload)
+@router.get(
+    "/ine/operation/{op_code}/variable/{variable_id}/values",
+    response_model=JSONPayload,
+    tags=["ine-provider"],
+    summary="Fetch raw INE values for an operation variable",
+)
 async def get_variable_values(
     op_code: str,
     variable_id: str,
@@ -104,7 +123,12 @@ async def get_variable_values(
     return JSONPayload(root=payload)
 
 
-@router.get("/ine/catalog/operation/{op_code}", response_model=list[CatalogTableItemResponse])
+@router.get(
+    "/ine/catalog/operation/{op_code}",
+    response_model=list[CatalogTableItemResponse],
+    tags=["ine-catalog"],
+    summary="List catalogued INE tables for an operation",
+)
 async def get_catalog_for_operation(
     op_code: str,
     catalog_repo: TableCatalogRepository = Depends(get_table_catalog_repository),
@@ -114,7 +138,10 @@ async def get_catalog_for_operation(
 
 
 @router.get(
-    "/ine/catalog/operation/{op_code}/summary", response_model=CatalogOperationSummaryResponse
+    "/ine/catalog/operation/{op_code}/summary",
+    response_model=CatalogOperationSummaryResponse,
+    tags=["ine-catalog"],
+    summary="Summarize catalog coverage for an INE operation",
 )
 async def get_catalog_summary_for_operation(
     op_code: str,
@@ -124,7 +151,12 @@ async def get_catalog_summary_for_operation(
     return CatalogOperationSummaryResponse(**summary)
 
 
-@router.get("/ine/jobs/{job_id}", response_model=BackgroundJobStatusResponse)
+@router.get(
+    "/ine/jobs/{job_id}",
+    response_model=BackgroundJobStatusResponse,
+    tags=["ine-jobs"],
+    summary="Get the status of an INE background job",
+)
 async def get_job_status(
     job_id: str,
     job_store: BaseJobStore = Depends(get_job_store),
@@ -138,22 +170,78 @@ async def get_job_status(
     return BackgroundJobStatusResponse(**job)
 
 
-@router.get("/ine/series", response_model=INESeriesListResponse)
+@router.get(
+    "/ine/series",
+    response_model=INESeriesListResponse,
+    tags=["ine-semantic"],
+    summary="List normalized INE series",
+    description=(
+        "Semantic query endpoint over normalized INE observations. "
+        "It uses INE geography codes as the current canonical external territorial code system."
+    ),
+)
 async def list_normalized_ine_series(
     operation_code: str | None = Query(default=None),
     table_id: str | None = Query(default=None),
     geography_code: str | None = Query(default=None),
+    geography_name: str | None = Query(default=None, min_length=1),
+    geography_code_system: str = Query(default="ine", min_length=1),
     variable_id: str | None = Query(default=None),
     period_from: str | None = Query(default=None),
     period_to: str | None = Query(default=None),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
     series_repo: SeriesRepository = Depends(get_series_repository),
+    territorial_repo: TerritorialRepository = Depends(get_territorial_repository),
 ) -> INESeriesListResponse:
+    if period_from and period_to and period_from > period_to:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "message": "period_from cannot be greater than period_to.",
+                "period_from": period_from,
+                "period_to": period_to,
+            },
+        )
+
+    if geography_code_system != INE_TERRITORIAL_SOURCE_SYSTEM:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "message": "Unsupported geography_code_system.",
+                "geography_code_system": geography_code_system,
+                "supported_values": [INE_TERRITORIAL_SOURCE_SYSTEM],
+            },
+        )
+
+    effective_geography_code = geography_code
+    effective_geography_name = geography_name
+    territorial_resolution: INESeriesTerritorialResolutionResponse | None = None
+
+    if geography_name and not geography_code:
+        territorial_lookup = await territorial_repo.get_unit_by_name(geography_name)
+        if (
+            territorial_lookup is not None
+            and territorial_lookup.get("canonical_code")
+            and territorial_lookup["canonical_code"].get("source_system")
+            == INE_TERRITORIAL_SOURCE_SYSTEM
+        ):
+            effective_geography_code = territorial_lookup["canonical_code"]["code_value"]
+            effective_geography_name = None
+            territorial_resolution = INESeriesTerritorialResolutionResponse(
+                input_name=geography_name,
+                resolved_geography_code=effective_geography_code,
+                matched_by=territorial_lookup.get("matched_by"),
+                canonical_name=territorial_lookup.get("canonical_name"),
+                source_system=territorial_lookup["canonical_code"].get("source_system"),
+            )
+
     result = await series_repo.list_normalized(
         operation_code=operation_code,
         table_id=table_id,
-        geography_code=geography_code,
+        geography_code=effective_geography_code,
+        geography_name=effective_geography_name,
+        geography_code_system=geography_code_system,
         variable_id=variable_id,
         period_from=period_from,
         period_to=period_to,
@@ -165,6 +253,11 @@ async def list_normalized_ine_series(
         total=result["total"],
         page=result["page"],
         page_size=result["page_size"],
+        pages=result["pages"],
+        has_next=result["has_next"],
+        has_previous=result["has_previous"],
+        filters=INESeriesFiltersResponse(**result["filters"]),
+        territorial_resolution=territorial_resolution,
     )
 
 
@@ -172,6 +265,8 @@ async def list_normalized_ine_series(
     "/ine/operation/{op_code}/asturias",
     response_model=JSONPayload,
     responses={202: {"model": BackgroundJobAcceptedResponse}},
+    tags=["ine-ingestion"],
+    summary="Ingest Asturias-scoped data for an INE operation",
 )
 async def get_asturias_operation_data(
     request: Request,

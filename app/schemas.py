@@ -29,6 +29,7 @@ class NormalizedSeriesItem(BaseModel):
     operation_code: str = ""
     table_id: str = ""
     variable_id: str = ""
+    territorial_unit_id: int | None = None
     geography_name: str = ""
     geography_code: str = ""
     period: str
@@ -113,8 +114,165 @@ class INESeriesListItemResponse(BaseModel):
     inserted_at: datetime | None = None
 
 
+class INESeriesFiltersResponse(BaseModel):
+    operation_code: str | None = None
+    table_id: str | None = None
+    geography_code: str | None = None
+    geography_name: str | None = None
+    geography_code_system: Literal["ine"] = "ine"
+    variable_id: str | None = None
+    period_from: str | None = None
+    period_to: str | None = None
+
+
+class INESeriesTerritorialResolutionResponse(BaseModel):
+    input_name: str
+    resolved_geography_code: str | None = None
+    matched_by: Literal["code", "alias", "canonical_name"] | None = None
+    canonical_name: str | None = None
+    source_system: str | None = None
+
+
 class INESeriesListResponse(BaseModel):
     items: list[INESeriesListItemResponse] = Field(default_factory=list)
     total: int
     page: int
     page_size: int
+    pages: int
+    has_next: bool
+    has_previous: bool
+    filters: INESeriesFiltersResponse
+    territorial_resolution: INESeriesTerritorialResolutionResponse | None = None
+
+
+class TerritorialCanonicalCodeStrategyResponse(BaseModel):
+    source_system: str
+    code_type: str
+
+
+class TerritorialUnitCodeResponse(BaseModel):
+    source_system: str
+    code_type: str
+    code_value: str
+    is_primary: bool = False
+
+
+class TerritorialUnitAliasResponse(BaseModel):
+    source_system: str
+    alias: str
+    normalized_alias: str
+    alias_type: str
+
+
+class TerritorialUnitLookupResponse(BaseModel):
+    id: int
+    parent_id: int | None = None
+    unit_level: str
+    canonical_name: str
+    display_name: str
+    country_code: str
+    is_active: bool
+    canonical_code_strategy: TerritorialCanonicalCodeStrategyResponse | None = None
+    canonical_code: TerritorialUnitCodeResponse | None = None
+    matched_by: Literal["code", "alias", "canonical_name"]
+    matched_code: TerritorialUnitCodeResponse | None = None
+    matched_alias: TerritorialUnitAliasResponse | None = None
+
+
+class TerritorialUnitSummaryResponse(BaseModel):
+    id: int
+    parent_id: int | None = None
+    unit_level: str
+    canonical_name: str
+    display_name: str
+    country_code: str
+    is_active: bool
+    canonical_code_strategy: TerritorialCanonicalCodeStrategyResponse | None = None
+    canonical_code: TerritorialUnitCodeResponse | None = None
+
+
+class TerritorialUnitDetailResponse(TerritorialUnitSummaryResponse):
+    codes: list[TerritorialUnitCodeResponse] = Field(default_factory=list)
+    aliases: list[TerritorialUnitAliasResponse] = Field(default_factory=list)
+    attributes: dict[str, Any] = Field(default_factory=dict)
+
+
+class TerritorialUnitListFiltersResponse(BaseModel):
+    unit_level: str
+    country_code: str | None = None
+    parent_id: int | None = None
+    active_only: bool = True
+
+
+class TerritorialUnitListResponse(BaseModel):
+    items: list[TerritorialUnitSummaryResponse] = Field(default_factory=list)
+    total: int
+    page: int
+    page_size: int
+    pages: int
+    has_next: bool
+    has_previous: bool
+    filters: TerritorialUnitListFiltersResponse
+
+
+class GeocodingCoordinatesResponse(BaseModel):
+    lat: float
+    lon: float
+
+
+class GeocodingTerritorialContextResponse(BaseModel):
+    country_code: str | None = None
+    autonomous_community_code: str | None = None
+    province_code: str | None = None
+    municipality_code: str | None = None
+    country_name: str | None = None
+    autonomous_community_name: str | None = None
+    province_name: str | None = None
+    municipality_name: str | None = None
+
+
+class GeocodingTerritorialResolutionResponse(BaseModel):
+    territorial_unit_id: int | None = None
+    matched_by: Literal["code", "alias", "canonical_name"] | None = None
+    canonical_name: str | None = None
+    canonical_code: str | None = None
+    source_system: str | None = None
+    unit_level: str | None = None
+
+
+class GeocodeResultResponse(BaseModel):
+    label: str
+    entity_type: str
+    coordinates: GeocodingCoordinatesResponse
+    address: str | None = None
+    postal_code: str | None = None
+    territorial_context: GeocodingTerritorialContextResponse = Field(default_factory=GeocodingTerritorialContextResponse)
+    territorial_resolution: GeocodingTerritorialResolutionResponse | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class GeocodeResponse(BaseModel):
+    source: str
+    query: str
+    cached: bool = False
+    result: GeocodeResultResponse | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ReverseGeocodeResultResponse(BaseModel):
+    label: str
+    entity_type: str
+    coordinates: GeocodingCoordinatesResponse
+    address: str | None = None
+    postal_code: str | None = None
+    territorial_context: GeocodingTerritorialContextResponse = Field(default_factory=GeocodingTerritorialContextResponse)
+    territorial_resolution: GeocodingTerritorialResolutionResponse | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ReverseGeocodeResponse(BaseModel):
+    source: str
+    query_coordinates: GeocodingCoordinatesResponse
+    cached: bool = False
+    result: ReverseGeocodeResultResponse | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)

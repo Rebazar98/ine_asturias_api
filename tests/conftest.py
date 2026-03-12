@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -13,6 +13,7 @@ from app.dependencies import (
     get_ine_client_service,
     get_series_repository,
     get_table_catalog_repository,
+    get_territorial_repository,
 )
 from app.main import app
 from app.schemas import NormalizedSeriesItem
@@ -42,6 +43,8 @@ class DummySeriesRepository:
         operation_code=None,
         table_id=None,
         geography_code=None,
+        geography_name=None,
+        geography_code_system="ine",
         variable_id=None,
         period_from=None,
         period_to=None,
@@ -55,6 +58,8 @@ class DummySeriesRepository:
             rows = [item for item in rows if item.table_id == table_id]
         if geography_code:
             rows = [item for item in rows if item.geography_code == geography_code]
+        if geography_name:
+            rows = [item for item in rows if item.geography_name.lower() == geography_name.lower()]
         if variable_id:
             rows = [item for item in rows if item.variable_id == variable_id]
         if period_from:
@@ -66,6 +71,7 @@ class DummySeriesRepository:
         start = (page - 1) * page_size
         end = start + page_size
         paged = rows[start:end]
+        pages = (total + page_size - 1) // page_size if total else 0
         return {
             "items": [
                 {
@@ -86,6 +92,19 @@ class DummySeriesRepository:
             "total": total,
             "page": page,
             "page_size": page_size,
+            "pages": pages,
+            "has_next": page < pages,
+            "has_previous": page > 1,
+            "filters": {
+                "operation_code": operation_code,
+                "table_id": table_id,
+                "geography_code": geography_code,
+                "geography_name": geography_name,
+                "geography_code_system": geography_code_system,
+                "variable_id": variable_id,
+                "period_from": period_from,
+                "period_to": period_to,
+            },
         }
 
 
@@ -94,7 +113,9 @@ class DummyTableCatalogRepository:
         self.rows: dict[tuple[str, str], dict] = {}
         self._next_id = 1
 
-    async def upsert_discovered_tables(self, operation_code, tables, request_path, resolution_context=None):
+    async def upsert_discovered_tables(
+        self, operation_code, tables, request_path, resolution_context=None
+    ):
         count = 0
         for table in tables:
             key = (operation_code, str(table["table_id"]))
@@ -136,7 +157,24 @@ class DummyTableCatalogRepository:
             count += 1
         return count
 
-    async def update_table_status(self, operation_code, table_id, table_name, request_path, resolution_context=None, has_asturias_data=None, validation_status="unknown", normalized_rows=0, raw_rows_retrieved=0, filtered_rows_retrieved=0, series_kept=0, series_discarded=0, metadata=None, notes="", last_warning=""):
+    async def update_table_status(
+        self,
+        operation_code,
+        table_id,
+        table_name,
+        request_path,
+        resolution_context=None,
+        has_asturias_data=None,
+        validation_status="unknown",
+        normalized_rows=0,
+        raw_rows_retrieved=0,
+        filtered_rows_retrieved=0,
+        series_kept=0,
+        series_discarded=0,
+        metadata=None,
+        notes="",
+        last_warning="",
+    ):
         key = (operation_code, str(table_id))
         existing = self.rows.get(key)
         if existing is None:
@@ -190,6 +228,66 @@ class DummyTableCatalogRepository:
         }
 
 
+class DummyTerritorialRepository:
+    def __init__(self) -> None:
+        self.by_name: dict[str, dict] = {}
+        self.by_canonical_code: dict[tuple[str, str], dict] = {}
+        self.detail_by_canonical_code: dict[tuple[str, str], dict] = {}
+        self.units_by_level: dict[str, list[dict]] = {}
+
+    async def get_unit_by_name(
+        self, name: str, source_system=None, alias_type=None, unit_level=None
+    ):
+        if unit_level is not None:
+            return self.by_name.get((unit_level, name))
+        return self.by_name.get(name)
+
+    async def get_unit_by_canonical_code(self, unit_level: str, code_value: str):
+        return self.by_canonical_code.get((unit_level, code_value))
+
+    async def get_unit_detail_by_canonical_code(self, *, unit_level: str, code_value: str):
+        return self.detail_by_canonical_code.get((unit_level, code_value))
+
+    async def list_units(
+        self,
+        *,
+        unit_level: str,
+        page: int = 1,
+        page_size: int = 50,
+        country_code: str | None = None,
+        parent_id: int | None = None,
+        active_only: bool = True,
+    ):
+        rows = list(self.units_by_level.get(unit_level, []))
+        if country_code:
+            rows = [row for row in rows if row.get("country_code") == country_code]
+        if parent_id is not None:
+            rows = [row for row in rows if row.get("parent_id") == parent_id]
+        if active_only:
+            rows = [row for row in rows if row.get("is_active", True)]
+
+        total = len(rows)
+        start = (page - 1) * page_size
+        end = start + page_size
+        paged = rows[start:end]
+        pages = (total + page_size - 1) // page_size if total else 0
+        return {
+            "items": paged,
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "pages": pages,
+            "has_next": page < pages,
+            "has_previous": page > 1,
+            "filters": {
+                "unit_level": unit_level,
+                "country_code": country_code,
+                "parent_id": parent_id,
+                "active_only": active_only,
+            },
+        }
+
+
 @pytest.fixture
 def client(monkeypatch):
     monkeypatch.setenv("APP_ENV", "test")
@@ -224,7 +322,16 @@ def dummy_catalog_repo() -> DummyTableCatalogRepository:
     return repo
 
 
-def override_ine_service(handler: Callable[[httpx.Request], httpx.Response], enable_cache: bool = True) -> None:
+@pytest.fixture
+def dummy_territorial_repo() -> DummyTerritorialRepository:
+    repo = DummyTerritorialRepository()
+    app.dependency_overrides[get_territorial_repository] = lambda: repo
+    return repo
+
+
+def override_ine_service(
+    handler: Callable[[httpx.Request], httpx.Response], enable_cache: bool = True
+) -> None:
     transport = httpx.MockTransport(handler)
     http_client = httpx.AsyncClient(transport=transport)
     settings = Settings(
@@ -235,8 +342,3 @@ def override_ine_service(handler: Callable[[httpx.Request], httpx.Response], ena
     cache = InMemoryTTLCache(enabled=enable_cache, default_ttl_seconds=60)
     service = INEClientService(http_client=http_client, settings=settings, cache=cache)
     app.dependency_overrides[get_ine_client_service] = lambda: service
-
-
-
-
-

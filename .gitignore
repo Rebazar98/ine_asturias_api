@@ -1,5 +1,10 @@
 .env
+.env.local
+.env.staging.local
+.env.rc.local
+.env.*.local
 backups/
+tmp_restore_drill_artifacts/
 __pycache__/
 .pytest_cache/
 .ruff_cache/

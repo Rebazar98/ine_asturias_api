@@ -1,4 +1,4 @@
-﻿from app.repositories.series import SeriesRepository
+from app.repositories.series import SeriesRepository
 from app.schemas import NormalizedSeriesItem
 
 
@@ -8,6 +8,7 @@ def test_prepare_upsert_rows_returns_plain_insertable_dicts():
             operation_code="22",
             table_id="2852",
             variable_id="70",
+            territorial_unit_id=44,
             geography_name="Principado de Asturias",
             geography_code="8999",
             period="2024M01",
@@ -25,6 +26,7 @@ def test_prepare_upsert_rows_returns_plain_insertable_dicts():
         "operation_code": "22",
         "table_id": "2852",
         "variable_id": "70",
+        "territorial_unit_id": 44,
         "geography_name": "Principado de Asturias",
         "geography_code": "8999",
         "period": "2024M01",
@@ -42,6 +44,7 @@ def test_prepare_upsert_rows_filters_non_serializable_or_extra_values():
             "operation_code": 22,
             "table_id": 2852,
             "variable_id": None,
+            "territorial_unit_id": "44",
             "geography_name": "Asturias",
             "geography_code": 8999,
             "period": "2024",
@@ -60,6 +63,7 @@ def test_prepare_upsert_rows_filters_non_serializable_or_extra_values():
         "operation_code",
         "table_id",
         "variable_id",
+        "territorial_unit_id",
         "geography_name",
         "geography_code",
         "period",
@@ -71,6 +75,7 @@ def test_prepare_upsert_rows_filters_non_serializable_or_extra_values():
     assert rows[0]["operation_code"] == "22"
     assert rows[0]["table_id"] == "2852"
     assert rows[0]["variable_id"] == ""
+    assert rows[0]["territorial_unit_id"] == 44
     assert rows[0]["value"] == 101.5
     assert rows[0]["metadata"] == {"note": str(raw_object)}
     assert rows[0]["raw_payload"] == {"items": [1, 2, 3]}

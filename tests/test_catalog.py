@@ -25,9 +25,7 @@ NO_ASTURIAS_TABLE_PAYLOAD = [
             {"Variable": "Provincia", "Nombre": "Zaragoza", "Id": "50"},
             {"Variable": "Indicador", "Nombre": "Poblacion", "Id": "POB"},
         ],
-        "Data": [
-            {"Periodo": "2024", "Valor": "968503", "Unidad": "personas"}
-        ],
+        "Data": [{"Periodo": "2024", "Valor": "968503", "Unidad": "personas"}],
     }
 ]
 
@@ -67,7 +65,10 @@ def test_catalog_is_populated_and_updated_during_asturias_pipeline(
     assert payload["summary"]["tables_succeeded"] == 1
     assert payload["summary"]["warnings"] == 1
 
-    catalog_rows = {row["table_id"]: row for row in (awaitable_to_sync(dummy_catalog_repo.list_by_operation("OP_AST")))}
+    catalog_rows = {
+        row["table_id"]: row
+        for row in (awaitable_to_sync(dummy_catalog_repo.list_by_operation("OP_AST")))
+    }
     assert set(catalog_rows) == {"501", "502"}
     assert catalog_rows["501"]["validation_status"] == "has_data"
     assert catalog_rows["501"]["has_asturias_data"] is True
@@ -88,7 +89,11 @@ def test_catalog_endpoints_return_operation_rows_and_summary(
             "22",
             [
                 {"table_id": "2852", "table_name": "Tabla valida", "metadata": {"IdTabla": "2852"}},
-                {"table_id": "2855", "table_name": "Tabla descartada", "metadata": {"IdTabla": "2855"}},
+                {
+                    "table_id": "2855",
+                    "table_name": "Tabla descartada",
+                    "metadata": {"IdTabla": "2855"},
+                },
             ],
             "TABLAS_OPERACION/22",
             {"asturias_label": "Asturias"},
@@ -189,7 +194,9 @@ def test_skip_known_no_data_avoids_reprocessing_catalogued_tables(
 
     override_ine_service(handler)
 
-    response = client.get("/ine/operation/OP_AST/asturias?background=false&skip_known_no_data=true&max_tables=2")
+    response = client.get(
+        "/ine/operation/OP_AST/asturias?background=false&skip_known_no_data=true&max_tables=2"
+    )
 
     assert response.status_code == 200
     payload = response.json()

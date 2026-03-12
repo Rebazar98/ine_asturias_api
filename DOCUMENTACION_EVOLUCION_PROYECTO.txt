@@ -3510,3 +3510,806 @@ def test_prepare_upsert_rows_filters_non_serializable_or_extra_values():
 
 
 
+FASE 8. CIERRE DEL PRIMER RELEASE CANDIDATE REAL
+------------------------------------------------
+
+Estado alcanzado:
+- RC local validado con `scripts/release_candidate.ps1`
+- `Restore Drill` validado en GitHub Actions con artefactos reales
+- `Security Scan` validado en GitHub Actions
+- sin hallazgos `HIGH` o `CRITICAL` en el primer scan revisado
+
+Entregable documental asociado:
+- `ACTA_RC1.md`
+
+  Objetivo de esta fase:
+
+FASE 9. ARRANQUE DE FASE 2: CIERRE FINAL DE RELEASE READINESS
+-------------------------------------------------------------
+
+Estado alcanzado en este arranque de fase:
+- Se creo `FASE2_STAGING_OPERATIVO_BACKLOG.md` como documento de contexto para la siguiente etapa operativa del proyecto.
+- Se inicio el Bloque A de la fase 2 siguiendo el orden definido tras RC-001.
+
+Subfase A1. Compatibilidad futura de GitHub Actions
+- Se actualizaron los workflows principales a versiones de `actions/*` alineadas con Node 24:
+  - `actions/checkout@v5`
+  - `actions/setup-python@v6`
+  - `actions/upload-artifact@v6`
+- El workflow de security scan se mantiene con el contenedor oficial `aquasec/trivy` para reducir dependencia adicional de acciones JavaScript y limitar el alcance del cambio a compatibilidad de runtime.
+
+Archivos implicados:
+- `.github/workflows/ci.yml`
+- `.github/workflows/restore-drill.yml`
+- `.github/workflows/security-scan.yml`
+- `README.md`
+- `RELEASE_PROCESS.md`
+
+Subfase A2. Tratamiento operativo del `collation version mismatch`
+- Se amplio la documentacion para distinguir claramente dos procedimientos:
+  - entorno local desechable: backup opcional, `docker compose down -v`, recreacion de volumen y migraciones;
+  - entorno staging/persistente: backup previo, identificacion y reconstruccion de objetos afectados, `ALTER DATABASE ... REFRESH COLLATION VERSION`, y validacion posterior.
+- Se dejo explicitado que este cambio NO debe automatizarse de forma destructiva ni ejecutarse a ciegas en entornos persistentes.
+- Se fijo la validacion posterior obligatoria:
+  - `/health`
+  - `/health/ready`
+  - smoke test
+  - verificacion minima de integridad/restore cuando corresponda
+
+Archivos implicados:
+- `README.md`
+- `DOCUMENTACION_EVOLUCION_PROYECTO.txt`
+
+Subfase A3. Rutina de continuidad post-RC
+- Se formalizo una rutina de continuidad para repetir `CI`, `Restore Drill` y `Security Scan` cuando cambien workflows, dependencias, imagenes base, digests o updates de Dependabot.
+- Se definieron disparadores, secuencia recomendada, evidencia minima y criterio de continuidad aprobada.
+- La continuidad ya no queda como una recomendacion informal; queda integrada en el proceso operativo del repositorio.
+
+Archivos implicados:
+- `RELEASE_PROCESS.md`
+- `README.md`
+- `DOCUMENTACION_EVOLUCION_PROYECTO.txt`
+
+Subfase A4. Versionado y changelog minimo
+- Se introdujo `CHANGELOG.md` como historial operativo de versiones y release candidates.
+- Se adopto versionado semantico simple para el proyecto.
+- Se registro `0.1.0-rc1` como primera entrada formal asociada a RC-001.
+- Se incorporo `APP_VERSION` a la configuracion para reflejar la version operativa actual en la app y en los logs de arranque/parada.
+- Se sustituyo la version dura `3.0.0` del objeto FastAPI por la version gestionada desde configuracion.
+
+Archivos implicados:
+- `CHANGELOG.md`
+- `README.md`
+- `RELEASE_PROCESS.md`
+- `app/settings.py`
+- `app/main.py`
+- `.env.example`
+- `.env.staging.example`
+
+Subfase B1. Documento base de despliegue de staging
+- Se creo `DEPLOYMENT_STAGING.md` como guia operativa inicial para usar staging como entorno reproducible de ensayo.
+- El documento cubre:
+  - prerequisitos
+  - variables de entorno
+  - despliegue con Docker Compose
+  - verificacion de migraciones
+  - checks de salud
+  - smoke test
+  - evidencia minima esperada
+- Se dejo recomendado el uso de un fichero local no versionado, por ejemplo `.env.staging.local`, a partir de `.env.staging.example`.
+
+Archivos implicados:
+- `DEPLOYMENT_STAGING.md`
+- `README.md`
+
+Subfase B2. Rollback de staging
+- Se amplio `DEPLOYMENT_STAGING.md` con un bloque de rollback operativo.
+- Se definieron tres niveles:
+  - rollback de contenedores
+  - downgrade de migraciones solo si existe camino reversible y probado
+  - restore desde backup como mecanismo oficial cuando no exista downgrade seguro
+- Se fijo una validacion posterior obligatoria para cualquier rollback o restore en staging:
+  - `/health`
+  - `/health/ready`
+  - smoke test
+  - `verify_restore.py`
+
+Archivos implicados:
+- `DEPLOYMENT_STAGING.md`
+- `README.md`
+
+Subfase B3. Separacion real de secretos
+- Se reforzo el flujo de configuracion local y staging para evitar reutilizacion accidental de `.env` local en staging.
+- Se ampliaron las exclusiones de Git para ficheros de entorno reales no versionados:
+  - `.env.local`
+  - `.env.staging.local`
+  - `.env.rc.local`
+  - patrones `*.local`
+- Se actualizaron las plantillas `.env.example` y `.env.staging.example` con instrucciones mas explicitas sobre uso correcto y prohibicion de commitear secretos reales.
+- Se documento el naming recomendado de ficheros locales de entorno y la regla de que staging DEBE usar su propio fichero de variables.
+
+Archivos implicados:
+- `.gitignore`
+- `.env.example`
+- `.env.staging.example`
+- `README.md`
+- `DEPLOYMENT_STAGING.md`
+
+Subfase B4. Ensayo completo de staging
+- Se amplio `DEPLOYMENT_STAGING.md` para definir un ensayo completo y repetible de staging.
+- El procedimiento ya cubre, de forma secuencial:
+  - preparacion de backup
+  - deploy
+  - migrate
+  - health
+  - smoke
+  - rollback controlado
+  - restore verification
+- Se fijo la evidencia minima del ensayo completo y un criterio operativo para considerar staging como entorno de ensayo real.
+- El procedimiento reutiliza los scripts ya existentes (`smoke_stack.py`, `verify_restore.py`, `restore_drill.ps1`) en lugar de abrir herramientas nuevas.
+
+Archivos implicados:
+- `DEPLOYMENT_STAGING.md`
+- `README.md`
+
+Subfase B5. Criterio de aceptacion de staging operativo real
+- Se formalizo en `DEPLOYMENT_STAGING.md` un criterio explicito para decidir cuando staging deja de ser solo un entorno arrancable y pasa a ser un entorno operativo real de ensayo.
+- Se definieron nueve condiciones minimas de aceptacion y una checklist corta de gate operativo.
+- Se enlazo el criterio desde `RELEASE_PROCESS.md` para evitar validar RCs sobre un staging que todavia no cumpla su propio nivel de aceptacion.
+
+Archivos implicados:
+- `DEPLOYMENT_STAGING.md`
+- `RELEASE_PROCESS.md`
+- `DOCUMENTACION_EVOLUCION_PROYECTO.txt`
+
+FASE 10. ARRANQUE DEL BLOQUE C: CONSOLIDACION DEL DOMINIO INE
+-------------------------------------------------------------
+
+Subfase C1. Estabilizacion de `/ine/series`
+- Se amplio el contrato de `/ine/series` para hacerlo mas explicito y estable:
+  - `pages`
+  - `has_next`
+  - `has_previous`
+  - `filters`
+- Se mantuvo compatibilidad hacia atras preservando `items`, `total`, `page` y `page_size`.
+
+Subfase C2. Separacion semantica de endpoints
+- Sin romper rutas actuales, se introdujeron tags y summaries especificos para diferenciar:
+  - endpoints cercanos al proveedor (`ine-provider`)
+  - endpoints de catalogo (`ine-catalog`)
+  - endpoints de jobs (`ine-jobs`)
+  - endpoint semantico (`ine-semantic`)
+  - endpoint de ingestion/orquestacion (`ine-ingestion`)
+
+Subfase C3. Normalizacion de filtros territoriales y temporales
+- `/ine/series` ahora acepta `geography_name` como filtro case-insensitive exacto de apoyo.
+- Se anadio validacion explicita para impedir `period_from > period_to`.
+- Se documento `geography_code` como filtro principal para consulta semantica.
+
+Subfase C4. Estrategia minima de cruce territorial
+- Se hizo explicito en codigo que el sistema territorial de referencia para INE sera `source_system=ine`.
+- Se anadio helper `get_unit_by_ine_code()` en `TerritorialRepository` para reflejar esa estrategia de cruce.
+- Se documento que `geography_code_system=ine` es el codigo externo canonico actual para el dominio INE.
+
+Subfase C5. Refuerzo de tests del dominio INE
+- Se ampliaron tests del endpoint semantico para cubrir:
+  - metadata de paginacion
+  - filtro `geography_name`
+  - validacion de rango temporal
+- Se actualizaron los dummies de repositorio para reflejar el contrato semantico nuevo.
+
+Archivos implicados:
+- `app/api/routes_ine.py`
+- `app/schemas.py`
+- `app/repositories/series.py`
+- `app/repositories/territorial.py`
+- `tests/conftest.py`
+- `tests/test_series_endpoint.py`
+- `README.md`
+
+Estado de Fase 2 tras esta actualizacion:
+- A1 completado
+- A2 completado
+- A3 completado
+- A4 completado
+- B1 completado
+- B2 completado
+- B3 completado
+- B4 completado
+- B5 completado
+- C1 completado
+- C2 completado
+- C3 completado
+- C4 completado
+- C5 completado
+- D1 completado
+- D2 completado
+
+FASE 11. ARRANQUE DEL BLOQUE D: PREPARACION DE INTEGRACIONES FUTURAS
+-------------------------------------------------------------------
+
+Subfase D1. Patron de adapter para CartoCiudad / IGN
+- Se documento el patron arquitectonico que debera seguir la siguiente integracion geografica del proyecto.
+- Se fijo que IGN / CartoCiudad NO deben entrar como llamadas HTTP dispersas ni como logica incrustada en routers.
+- Se definio que el adapter futuro debe vivir en `app/services`, con responsabilidades acotadas a:
+  - `base_url`, parametros y semantica del proveedor
+  - manejo de timeouts y errores HTTP
+  - traduccion a errores de dominio internos
+  - devolucion de `dict` / `list` sin persistencia ni normalizacion analitica directa
+  - construccion de cache keys para geocodificacion y reverse geocoding
+- Se dejo explicito que la persistencia futura de cache o catalogos geograficos debera vivir en repositories y no dentro del adapter.
+- Se documento tambien la condicion tecnica previa para abrir esa fase:
+  - staging operativo real validado
+  - dominio INE semantico consolidado
+  - estrategia de cruce con `territorial_unit_codes` definida
+  - codigo territorial canonico ya decidido
+
+Archivos implicados:
+- `PLAN_TECNICO_PLATAFORMA_DATOS_TERRITORIALES.md`
+- `AGENTS.md`
+- `FASE2_STAGING_OPERATIVO_BACKLOG.md`
+- `DOCUMENTACION_EVOLUCION_PROYECTO.txt`
+
+Subfase D2. Condicion de entrada para nuevas fuentes
+- Se definio una condicion de entrada formal para evitar abrir CartoCiudad / IGN antes de tiempo.
+- Queda explicitado que NO basta con haber aceptado RC-001.
+- Antes de abrir una nueva fuente deben cumplirse, como minimo:
+  - staging operativo real validado;
+  - continuidad post-RC revalidada cuando haya cambios relevantes;
+  - contrato semantico de `/ine/series` estabilizado;
+  - estrategia de cruce con `territorial_unit_codes` ya documentada;
+  - ausencia de regresiones abiertas en el dominio INE actual.
+- Se fijo que esta condicion actua como gate real del roadmap y no como recomendacion informal.
+
+Archivos implicados:
+- `PLAN_TECNICO_PLATAFORMA_DATOS_TERRITORIALES.md`
+- `RELEASE_PROCESS.md`
+- `FASE2_STAGING_OPERATIVO_BACKLOG.md`
+- `DOCUMENTACION_EVOLUCION_PROYECTO.txt`
+
+Estado de Fase 2 tras esta actualizacion:
+- Bloque A completo
+- Bloque B completo
+- Bloque C completo
+- Bloque D completo
+
+FASE 12. APERTURA DE FASE 3: MODELO TERRITORIAL OPERATIVO
+---------------------------------------------------------
+
+- Se creo `FASE3_MODELO_TERRITORIAL_BACKLOG.md` para convertir la siguiente etapa del proyecto en un backlog ejecutable.
+- La nueva fase NO abre nuevas fuentes externas.
+- La nueva fase se centra en:
+  - hacer operativo el nucleo territorial;
+  - fijar codigo territorial canonico;
+  - alinear `/ine/series` con ese modelo;
+  - preparar PostGIS para uso real;
+  - reforzar staging antes de abrir integraciones futuras.
+
+Archivos implicados:
+- `FASE3_MODELO_TERRITORIAL_BACKLOG.md`
+- `README.md`
+- `DOCUMENTACION_EVOLUCION_PROYECTO.txt`
+
+FASE 13. ARRANQUE DE FASE 3: FIJACION DE CODIGO TERRITORIAL CANONICO
+--------------------------------------------------------------------
+
+Subfase F3-1. Codigo territorial canonico por nivel
+- Se fijo una estrategia explicita de codigo territorial canonico para el nucleo interno del proyecto.
+- La decision actual queda asi:
+  - `country` -> `source_system=iso3166`, `code_type=alpha2`
+  - `autonomous_community` -> `source_system=ine`, `code_type=autonomous_community`
+  - `province` -> `source_system=ine`, `code_type=province`
+  - `municipality` -> `source_system=ine`, `code_type=municipality`
+- Se dejo explicito que el codigo canonico territorial debe vivir en `territorial_unit_codes` y marcarse con `is_primary=true`.
+- Se mantuvo la compatibilidad del dominio INE actual:
+  - `/ine/series` sigue usando `geography_code_system=ine`
+  - el cruce completo con el modelo territorial se deja para las siguientes subfases
+- Se anadieron helpers en el repositorio territorial para reflejar ya en codigo esta estrategia.
+- Se anadieron tests unitarios del mapping canonico del repositorio territorial.
+
+Archivos implicados:
+- `app/repositories/territorial.py`
+- `tests/test_territorial_repository.py`
+- `README.md`
+- `AGENTS.md`
+- `FASE3_MODELO_TERRITORIAL_BACKLOG.md`
+- `DOCUMENTACION_EVOLUCION_PROYECTO.txt`
+
+Subfase F3-2. Repositorio territorial para lookup y cruce
+- Se endurecio `TerritorialRepository` para convertirlo en una pieza util del dominio y no solo preparatoria.
+- Se mantuvieron los lookups por codigo externo y se anadieron capacidades nuevas:
+  - `get_unit_by_canonical_code(...)`
+  - `get_unit_by_alias(...)`
+  - `list_codes(...)`
+- Los lookups ahora devuelven una estructura mas rica y estable:
+  - datos base de la unidad territorial
+  - estrategia de codigo canonico por nivel
+  - codigo canonico resuelto
+  - forma concreta de matching (`matched_by`)
+  - codigo o alias que produjo la coincidencia
+- Se anadieron contratos tipados en `app/schemas.py` para reflejar estas respuestas territoriales y dejar preparada su reutilizacion futura en services o endpoints.
+- Se anadieron tests unitarios para:
+  - lookup por codigo canonico
+  - lookup por alias normalizado
+  - serializacion de codigos asociados a una unidad
+
+Archivos implicados:
+- `app/repositories/territorial.py`
+- `app/schemas.py`
+- `tests/test_territorial_repository.py`
+- `README.md`
+- `FASE3_MODELO_TERRITORIAL_BACKLOG.md`
+- `DOCUMENTACION_EVOLUCION_PROYECTO.txt`
+
+Subfase F3-3. Reglas de matching territorial y aliases
+- Se fijo una normalizacion minima de nombres territoriales en el propio repositorio mediante `normalize_territorial_name(...)`.
+- El matching territorial deja de depender de alias ya normalizados desde fuera:
+  - `get_unit_by_alias(...)` acepta valor bruto y normaliza internamente;
+  - `get_unit_by_name(...)` intenta primero coincidencia por `normalized_name` y luego hace fallback a aliases.
+- La serializacion de lookup distingue ahora entre:
+  - `matched_by=code`
+  - `matched_by=alias`
+  - `matched_by=canonical_name`
+- Se dejo explicito en documentacion que:
+  - `canonical_name` es la fuente de verdad semantica;
+  - `display_name` es presentacion;
+  - `territorial_unit_aliases` debe contener variantes, nombres cortos y nombres de proveedor;
+  - el matching territorial no debe vivir en routers ni en services dispersos.
+- Se ampliaron los tests del repositorio territorial para cubrir:
+  - normalizacion de nombres
+  - coincidencia por nombre canonico
+  - fallback a alias normalizado
+
+Archivos implicados:
+- `app/repositories/territorial.py`
+- `app/schemas.py`
+- `tests/test_territorial_repository.py`
+- `README.md`
+- `AGENTS.md`
+- `FASE3_MODELO_TERRITORIAL_BACKLOG.md`
+- `DOCUMENTACION_EVOLUCION_PROYECTO.txt`
+
+Subfase F3-4. Cruce de `/ine/series` con el modelo territorial
+- Se alineo el endpoint semantico `/ine/series` con el nucleo territorial sin romper compatibilidad con el dominio INE actual.
+- El endpoint acepta ya `geography_code_system`, pero en esta fase solo soporta `ine` como sistema externo de referencia.
+- Cuando se consulta por `geography_name` y no por `geography_code`, la API intenta resolver primero ese nombre contra `TerritorialRepository`.
+- Si la resolucion territorial devuelve un codigo canonico de `source_system=ine`, el endpoint:
+  - traduce el filtro a `geography_code`
+  - evita depender del nombre libre
+  - devuelve `territorial_resolution` en la respuesta
+- Si no existe resolucion territorial valida, `/ine/series` mantiene el comportamiento anterior y filtra por `geography_name`.
+- Se amplio la suite de tests del endpoint para cubrir:
+  - sistema de codigos soportado
+  - resolucion territorial por nombre
+  - compatibilidad con el filtro actual por codigo INE
+
+Archivos implicados:
+- `app/api/routes_ine.py`
+- `app/repositories/series.py`
+- `app/schemas.py`
+- `tests/conftest.py`
+- `tests/test_series_endpoint.py`
+- `README.md`
+- `FASE3_MODELO_TERRITORIAL_BACKLOG.md`
+- `DOCUMENTACION_EVOLUCION_PROYECTO.txt`
+
+Subfase F3-8. Refuerzo de tests de integracion territoriales
+- Se reforzo la cobertura del dominio territorial en dos niveles:
+  - endpoint semantico `/ine/series`
+  - repositorio territorial contra PostgreSQL real
+- Se amplio `tests/test_series_endpoint.py` con un caso de resolucion por nombre canonico territorial.
+- Se anadio `tests/integration/test_territorial_repository_integration.py` para validar:
+  - insercion temporal de unidad territorial
+  - lookup por codigo canonico
+  - lookup por nombre canonico
+  - lookup por alias
+  - listado de aliases
+- La prueba de integracion es segura para CI y entornos locales con Docker:
+  - usa `POSTGRES_DSN` o `INTEGRATION_POSTGRES_DSN`
+  - se salta si no hay DSN configurado
+  - limpia los registros creados al terminar
+
+Archivos implicados:
+- `tests/test_series_endpoint.py`
+- `tests/integration/test_territorial_repository_integration.py`
+- `FASE3_MODELO_TERRITORIAL_BACKLOG.md`
+- `DOCUMENTACION_EVOLUCION_PROYECTO.txt`
+
+Subfase F3-5. Persistencia normalizada preparada para soporte territorial futuro
+- Se tomo una decision de persistencia explicita para evitar deuda futura:
+  - `ine_series_normalized` mantiene su clave logica actual basada en el dominio INE;
+  - se anade una referencia interna opcional `territorial_unit_id` para soportar el cruce con el modelo territorial en fases posteriores.
+- Se implemento la columna nullable `territorial_unit_id` en el modelo ORM y se anadio migracion Alembic dedicada.
+- Se dejo claro que:
+  - `territorial_unit_id` no sustituye a `geography_code`;
+  - no entra en la clave logica actual;
+  - no se hace backfill automatico en esta fase.
+- Se actualizo `SeriesRepository.prepare_upsert_rows(...)` para aceptar `territorial_unit_id` cuando exista y mantenerlo en los `upserts`.
+- Se ampliaron los tests del repositorio de series para cubrir la serializacion y persistencia previa de este nuevo campo.
+
+Archivos implicados:
+- `app/models.py`
+- `app/schemas.py`
+- `app/repositories/series.py`
+- `alembic/versions/0003_territorial_series_ref.py`
+- `tests/test_series_repository.py`
+- `CHANGELOG.md`
+- `README.md`
+- `AGENTS.md`
+- `FASE3_MODELO_TERRITORIAL_BACKLOG.md`
+- `DOCUMENTACION_EVOLUCION_PROYECTO.txt`
+
+Subfase F3-6. Convenciones PostGIS operativas
+- Se hicieron explicitas en codigo las convenciones espaciales base del proyecto:
+  - SRID canonico `4326`
+  - limites territoriales en `MULTIPOLYGON`
+  - centroides en `POINT`
+- Se mantuvo la nulabilidad de `geometry` y `centroid` para permitir una carga geografica incremental y validada en una fase posterior.
+- Se anadieron indices `GIST` base sobre `territorial_units.geometry` y `territorial_units.centroid` mediante migracion Alembic.
+- Se anadieron tests ligeros del modelo para verificar:
+  - convenciones de SRID y tipos geometricos
+  - declaracion de indices espaciales
+- Se alineo la documentacion tecnica y operativa para que futuras cargas geoespaciales respeten este contrato base.
+
+Archivos implicados:
+- `app/models.py`
+- `alembic/versions/0004_postgis_conventions.py`
+- `tests/test_spatial_conventions.py`
+- `README.md`
+- `AGENTS.md`
+- `PLAN_TECNICO_PLATAFORMA_DATOS_TERRITORIALES.md`
+- `CHANGELOG.md`
+- `FASE3_MODELO_TERRITORIAL_BACKLOG.md`
+- `DOCUMENTACION_EVOLUCION_PROYECTO.txt`
+
+Subfase F3-7. Contrato de carga geoespacial futura
+- Se dejo fijado el contrato que deberan respetar futuras cargas geoespaciales antes de abrir una nueva fuente geografica.
+- Se documento que el formato de intercambio inicial previsto sera `GeoJSON FeatureCollection`.
+- Se dejo explicito que:
+  - el SRID canonico sigue siendo `4326`;
+  - los limites administrativos deben acabar en `MULTIPOLYGON`;
+  - los centroides deben acabar en `POINT`;
+  - no deben aceptarse geometrias vacias ni sin validacion topologica.
+- Se definio tambien la validacion minima futura en staging:
+  - carga en entorno de ensayo o tablas temporales;
+  - comprobacion de SRID, tipo geometrico y validez (`ST_IsValid`);
+  - verificacion del cruce con `territorial_unit_codes`;
+  - repeticion de `/health`, `/health/ready`, smoke test y restore verification tras la carga.
+- Se dejo explicito que esta subfase NO abre aun una nueva integracion con IGN o CartoCiudad; solo fija el contrato operativo que esas futuras cargas deberan respetar.
+
+Archivos implicados:
+- `PLAN_TECNICO_PLATAFORMA_DATOS_TERRITORIALES.md`
+- `AGENTS.md`
+- `DEPLOYMENT_STAGING.md`
+- `README.md`
+- `FASE3_MODELO_TERRITORIAL_BACKLOG.md`
+- `DOCUMENTACION_EVOLUCION_PROYECTO.txt`
+
+Subfase F3-9. Ensayo de staging con modelo territorial
+- Se revalido staging tras endurecer el modelo territorial, la referencia interna `territorial_unit_id` y las convenciones PostGIS.
+- Se ejecuto el flujo operativo real sobre un entorno separado de staging:
+  - `docker compose --env-file .env.staging.local -p ine_asturias_staging up --build -d`
+  - `docker compose --env-file .env.staging.local -p ine_asturias_staging run --rm migrate`
+  - comprobaciones de `/health`, `/health/ready` y `/metrics`
+  - `scripts/smoke_stack.py`
+  - `scripts/verify_restore.py`
+- Resultado validado:
+  - Alembic en `0004_postgis_conventions`
+  - `/health OK`
+  - `/health/ready OK`
+  - `/metrics OK`
+  - smoke test completado con job real
+  - `ingestion_raw=3`
+  - `ine_series_normalized=75`
+  - `/ine/series total=75`
+- Se detecto una observacion operativa relevante:
+  - en arranques completamente frios, el `migrate` que cuelga del `up` puede fallar por una carrera corta de conexion con PostgreSQL aunque `db` termine sano;
+  - el criterio operativo correcto sigue siendo relanzar `docker compose ... run --rm migrate` y tomar ese resultado explicito como verificacion canonica de migraciones en staging.
+- Con esta validacion, staging queda revalidado como entorno operativo tras la consolidacion territorial y geoespacial de Fase 3.
+
+Archivos implicados:
+- `DEPLOYMENT_STAGING.md`
+- `RELEASE_PROCESS.md`
+- `FASE3_MODELO_TERRITORIAL_BACKLOG.md`
+- `DOCUMENTACION_EVOLUCION_PROYECTO.txt`
+
+FASE 14. CIERRE DE FASE 3 Y APERTURA DE FASE 4
+----------------------------------------------
+
+- La Fase 3 queda cerrada con backlog completo y validacion operativa de staging tras la consolidacion territorial y geoespacial.
+- Se crea `FASE4_API_TERRITORIAL_BACKLOG.md` como siguiente etapa ejecutable del proyecto.
+- La Fase 4 ya puede abrir la primera integracion geografica, pero lo hara de forma controlada:
+  - primero contrato semantico;
+  - luego adapter y cache persistente;
+  - despues endpoints geograficos y cruce con el modelo territorial;
+  - y finalmente revalidacion de staging y RC.
+- La nueva fase NO reabre arquitectura base ni cambia el patron por capas ya estabilizado.
+
+Archivos implicados:
+- `FASE4_API_TERRITORIAL_BACKLOG.md`
+- `README.md`
+- `DOCUMENTACION_EVOLUCION_PROYECTO.txt`
+
+FASE 15. ARRANQUE DE FASE 4: CONTRATO SEMANTICO DE GEOCODIFICACION
+------------------------------------------------------------------
+
+Subfase F4-1. Contrato semantico de `geocode` y `reverse_geocode`
+- Se fijaron los primeros contratos semanticos futuros para geocodificacion y reverse geocoding sin abrir aun endpoints ni providers reales.
+- Se anadieron modelos Pydantic para:
+  - coordenadas
+  - contexto territorial
+  - resolucion territorial
+  - respuesta de `geocode`
+  - respuesta de `reverse_geocode`
+- Se dejo documentado que los futuros endpoints geograficos NO deberan replicar el payload crudo del proveedor.
+- Se fijo una semantica compartida para ambos contratos:
+  - `source`
+  - `cached`
+  - `coordinates`
+  - `entity_type`
+  - `territorial_context`
+  - `territorial_resolution`
+  - `metadata`
+- Se definio la diferencia minima entre ambos:
+  - `query` para `geocode`
+  - `query_coordinates` para `reverse_geocode`
+- Se anadieron tests de esquema para asegurar que el contrato tipado ya es utilizable antes de implementar el adapter.
+
+Archivos implicados:
+- `app/schemas.py`
+- `tests/test_geocoding_schemas.py`
+- `README.md`
+- `AGENTS.md`
+- `FASE4_API_TERRITORIAL_BACKLOG.md`
+- `DOCUMENTACION_EVOLUCION_PROYECTO.txt`
+
+Subfase F4-2. Adapter CartoCiudad dedicado
+- Se introdujo `app/services/cartociudad_client.py` como primer adapter geografico real del proyecto.
+- El adapter sigue el patron definido en fases anteriores:
+  - encapsula `base_url`
+  - maneja `find?q=...` y `reverseGeocode?lat=&lon=...`
+  - traduce errores HTTP y JSON invalido a errores de dominio propios
+  - construye claves de cache y reutiliza `InMemoryTTLCache`
+  - devuelve solo `dict` / `list`
+- Se anadio configuracion de entorno `CARTOCIUDAD_BASE_URL`.
+- Se expuso dependencia dedicada en `app/dependencies.py` para fases posteriores.
+- Se anadieron tests unitarios del adapter para:
+  - `find`
+  - `reverseGeocode`
+  - cache hit
+  - error HTTP
+  - JSON invalido
+  - payload inesperado
+- En esta subfase todavia NO se han abierto endpoints publicos ni persistencia geoespacial.
+
+Archivos implicados:
+- `app/services/cartociudad_client.py`
+- `app/settings.py`
+- `app/dependencies.py`
+- `.env.example`
+- `.env.staging.example`
+- `tests/test_cartociudad_client.py`
+- `README.md`
+- `AGENTS.md`
+- `FASE4_API_TERRITORIAL_BACKLOG.md`
+- `DOCUMENTACION_EVOLUCION_PROYECTO.txt`
+
+Subfase F4-3. Persistencia de cache geoespacial
+- Se anadieron las tablas `geocode_cache` y `reverse_geocode_cache` como capa persistente reutilizable para geocodificacion y reverse geocoding.
+- Ambas tablas guardan:
+  - `provider`
+  - clave logica normalizada (`normalized_query` o `coordinate_key`)
+  - `payload`
+  - `metadata`
+  - `cached_at`
+  - `expires_at`
+- Se creo `app/repositories/geocoding.py` con:
+  - normalizacion de consultas de geocode
+  - normalizacion de coordenadas y `coordinate_key` estable
+  - lectura de cache no expirada
+  - `upsert` con expiracion y logging estructurado
+- Se anadio la migracion `0005_geocoding_cache` para introducir esta persistencia sin romper el esquema actual.
+- Se reforzo la validacion con dos capas:
+  - tests unitarios de helpers y claves de cache
+  - test de integracion real contra PostgreSQL para `upsert` y lectura
+- En esta subfase todavia NO se integra la cache persistente en endpoints publicos; queda preparada para F4-4 y F4-5.
+
+Archivos implicados:
+- `app/models.py`
+- `app/repositories/geocoding.py`
+- `alembic/versions/0005_geocoding_cache.py`
+- `tests/test_geocoding_repository.py`
+- `tests/integration/test_geocoding_repository_integration.py`
+- `README.md`
+- `AGENTS.md`
+- `CHANGELOG.md`
+- `FASE4_API_TERRITORIAL_BACKLOG.md`
+- `DOCUMENTACION_EVOLUCION_PROYECTO.txt`
+
+Subfase F4-4. Endpoint semantico `GET /geocode`
+- Se creo `app/api/routes_territorial.py` para abrir la primera familia publica de endpoints territoriales sin mezclarla con `routes_ine.py`.
+- Se implemento `GET /geocode` como endpoint semantico con este flujo:
+  - consulta primero `geocode_cache`;
+  - si hay hit persistente, responde con `cached=true`;
+  - si no lo hay, usa el adapter de CartoCiudad;
+  - persiste el payload crudo en cache persistente;
+  - normaliza la respuesta a contrato propio del proyecto.
+- Se anadio `app/services/cartociudad_normalizers.py` para evitar parsing manual en el router y fijar la traduccion inicial de payload CartoCiudad a contrato semantico.
+- Se conecto `routes_territorial` en `app/main.py` y se anadieron handlers de error para:
+  - `CartoCiudadClientError`
+  - `CartoCiudadNormalizationError`
+- Se incorporaron tests de endpoint para:
+  - caso feliz con persistencia en cache
+  - hit de cache persistente
+  - validacion de parametros
+  - fallo upstream
+- En esta subfase `territorial_resolution` sigue siendo `null`; el cruce contra el modelo territorial queda para F4-6.
+
+Archivos implicados:
+- `app/api/routes_territorial.py`
+- `app/services/cartociudad_normalizers.py`
+- `app/dependencies.py`
+- `app/main.py`
+- `tests/test_geocode_endpoint.py`
+- `README.md`
+- `CHANGELOG.md`
+- `FASE4_API_TERRITORIAL_BACKLOG.md`
+- `DOCUMENTACION_EVOLUCION_PROYECTO.txt`
+
+Subfase F4-5. Endpoint semantico `GET /reverse_geocode`
+- Se amplio `app/api/routes_territorial.py` con `GET /reverse_geocode` siguiendo el mismo patron de `GET /geocode`.
+- El flujo implementado es:
+  - consulta previa de `reverse_geocode_cache`;
+  - fallback al adapter CartoCiudad si no hay hit persistente;
+  - persistencia del payload crudo en cache geoespacial;
+  - normalizacion a contrato semantico propio.
+- Se amplio `app/services/cartociudad_normalizers.py` para traducir tambien respuestas de reverse geocoding:
+  - `query_coordinates`
+  - `cached`
+  - `result`
+  - `metadata`
+- Se anadieron tests de endpoint para:
+  - caso feliz
+  - hit de cache persistente
+  - validacion de coordenadas
+  - fallo upstream
+- En esta subfase `territorial_resolution` sigue siendo `null` a proposito; el matching con el modelo territorial queda para F4-6.
+
+Archivos implicados:
+- `app/api/routes_territorial.py`
+- `app/services/cartociudad_normalizers.py`
+- `tests/test_geocode_endpoint.py`
+- `README.md`
+- `CHANGELOG.md`
+- `FASE4_API_TERRITORIAL_BACKLOG.md`
+- `DOCUMENTACION_EVOLUCION_PROYECTO.txt`
+
+Subfase F4-6. Alineacion de geocodificacion con el modelo territorial
+- Se conectaron `GET /geocode` y `GET /reverse_geocode` con `TerritorialRepository` para enriquecer las respuestas geograficas cuando existe match fiable contra el modelo territorial interno.
+- El matching se mantiene fuera del adapter HTTP y reutiliza `attach_territorial_resolution(...)` dentro de `app/services/cartociudad_normalizers.py`.
+- La prioridad de resolucion aplicada es:
+  - municipio por codigo;
+  - municipio por nombre;
+  - provincia por codigo;
+  - provincia por nombre;
+  - comunidad autonoma por codigo;
+  - comunidad autonoma por nombre;
+  - pais por codigo;
+  - pais por nombre.
+- Si no existe match fiable, `territorial_resolution` se mantiene en `null` sin romper el contrato semantico.
+- Se ampliaron los tests de endpoint para cubrir:
+  - resolucion por codigo canonico en `GET /geocode`;
+  - resolucion por nombre canonico en `GET /reverse_geocode`;
+  - el mismo comportamiento cuando la respuesta viene de cache persistente.
+
+Archivos implicados:
+- `app/api/routes_territorial.py`
+- `tests/conftest.py`
+- `tests/test_geocode_endpoint.py`
+- `README.md`
+- `CHANGELOG.md`
+- `FASE4_API_TERRITORIAL_BACKLOG.md`
+- `DOCUMENTACION_EVOLUCION_PROYECTO.txt`
+
+Subfase F4-7. Primera capa publica de lectura territorial
+- Se abrio la primera capa publica de lectura territorial directamente sobre el modelo interno:
+  - `GET /territorios/comunidades-autonomas`
+  - `GET /territorios/provincias`
+  - `GET /municipio/{codigo_ine}`
+- Para soportar estos endpoints se ampliaron `app/repositories/territorial.py` y `app/schemas.py` con:
+  - listado paginado por nivel territorial;
+  - detalle territorial por codigo canonico;
+  - contratos estables de lista y detalle.
+- `GET /territorios/provincias` admite filtro por `autonomous_community_code` y devuelve `404` claro cuando el codigo de comunidad no existe.
+- `GET /municipio/{codigo_ine}` devuelve detalle de municipio por codigo canonico INE, incluyendo codigos, aliases y atributos internos.
+- Se anadieron tests especificos de contrato en `tests/test_territorial_endpoints.py`.
+
+Archivos implicados:
+- `app/api/routes_territorial.py`
+- `app/repositories/territorial.py`
+- `app/schemas.py`
+- `tests/conftest.py`
+- `tests/test_territorial_endpoints.py`
+- `README.md`
+- `CHANGELOG.md`
+- `FASE4_API_TERRITORIAL_BACKLOG.md`
+- `DOCUMENTACION_EVOLUCION_PROYECTO.txt`
+
+Subfase F4-8. Refuerzo de tests integrados de la capa territorial y geografica
+- Se anadieron tests de integracion reales en `tests/integration/test_territorial_api_integration.py` para cubrir:
+  - `GET /geocode` usando cache persistente real y resolucion territorial interna;
+  - `GET /reverse_geocode` con respuesta de provider simulada, persistencia real en cache y resolucion territorial;
+  - `GET /municipio/{codigo_ine}` contra Postgres real.
+- Se reforzo tambien la cobertura de contrato publico con:
+  - `tests/test_territorial_endpoints.py`
+  - `tests/test_geocode_endpoint.py`
+- La validacion de F4-8 se hizo sobre:
+  - endpoints geograficos;
+  - endpoints territoriales;
+  - cache persistente;
+  - matching territorial;
+  - contratos publicos.
+
+Archivos implicados:
+- `tests/integration/test_territorial_api_integration.py`
+- `tests/test_territorial_endpoints.py`
+- `tests/test_geocode_endpoint.py`
+- `README.md`
+- `FASE4_API_TERRITORIAL_BACKLOG.md`
+- `DOCUMENTACION_EVOLUCION_PROYECTO.txt`
+
+Subfase F4-9. Revalidacion de staging y RC con la nueva capa territorial
+- Se revalido el entorno de staging sobre la topologia separada `ine_asturias_staging` con la primera capa territorial/geografica ya integrada.
+- Se ejecuto el flujo operativo real:
+  - `docker compose --env-file .env.staging.local -p ine_asturias_staging up --build -d`
+  - `docker compose --env-file .env.staging.local -p ine_asturias_staging run --rm migrate`
+  - comprobacion de `/health`, `/health/ready` y `/metrics`
+  - `scripts/smoke_stack.py`
+  - `scripts/verify_restore.py`
+- Resultado validado:
+  - `alembic_version=0005_geocoding_cache`
+  - `/health OK`
+  - `/health/ready OK`
+  - `/metrics OK`
+  - smoke test correcto con job real
+  - `ingestion_raw=6`
+  - `ine_series_normalized=75`
+  - `/ine/series total=75`
+- Se apago despues el stack de staging sin borrar volumenes para dejar el entorno limpio.
+- Con esta subfase queda cerrada Fase 4: la API territorial unificada y la primera integracion geografica quedan validadas sin romper staging ni el proceso RC.
+
+Refuerzo posterior de validacion automatizada
+- Se amplio la bateria de validacion con dos piezas adicionales:
+  - una prueba de integracion real para los listados territoriales (`/territorios/comunidades-autonomas` y `/territorios/provincias`) contra PostgreSQL;
+  - una comprobacion extra en `scripts/smoke_stack.py` para verificar que la capa publica territorial responde con el contrato esperado antes de lanzar el job del INE.
+- Con este ajuste, la validacion operativa ya no cubre solo salud, jobs y series normalizadas, sino tambien la primera capa publica territorial del proyecto.
+
+Archivos implicados:
+- `DEPLOYMENT_STAGING.md`
+- `RELEASE_PROCESS.md`
+- `README.md`
+- `CHANGELOG.md`
+- `FASE4_API_TERRITORIAL_BACKLOG.md`
+- `DOCUMENTACION_EVOLUCION_PROYECTO.txt`
+
+FASE 16. APERTURA DE FASE 5
+---------------------------
+
+- Se crea `FASE5_AUTOMATIZACION_ANALITICA_BACKLOG.md` como siguiente etapa ejecutable tras el cierre completo de Fase 4.
+- La Fase 5 no abre nuevas fuentes externas ni cambia la arquitectura principal.
+- El foco se desplaza a:
+  - consumo productivo de la API propia;
+  - informes y jobs analiticos reutilizables;
+  - patrones claros para n8n y agentes;
+  - observabilidad de flujos analiticos;
+  - revalidacion final de staging y RC con esta nueva capa.
+- La etapa se apoya explicitamente en:
+  - dominio INE consolidado;
+  - modelo territorial operativo;
+  - primera capa geografica publica ya validada;
+  - staging y proceso RC revalidados.
+
+Archivos implicados:
+- `FASE5_AUTOMATIZACION_ANALITICA_BACKLOG.md`
+- `README.md`
+- `DOCUMENTACION_EVOLUCION_PROYECTO.txt`

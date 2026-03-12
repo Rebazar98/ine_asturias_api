@@ -9,15 +9,22 @@ Documentacion disponible en la raiz del proyecto:
 - `README.md`: guia funcional y operativa del backend actual.
 - `DOCUMENTACION_EVOLUCION_PROYECTO.txt`: registro historico y memoria tecnica del proyecto.
 - `PLAN_TECNICO_PLATAFORMA_DATOS_TERRITORIALES.md`: roadmap de evolucion hacia plataforma territorial multi-fuente.
+- `FASE2_STAGING_OPERATIVO_BACKLOG.md`: contexto de trabajo y backlog ejecutable para la fase de staging operativo real.
+- `FASE3_MODELO_TERRITORIAL_BACKLOG.md`: backlog ejecutable para la fase de modelo territorial operativo y base geoespacial interna.
+- `FASE4_API_TERRITORIAL_BACKLOG.md`: backlog ejecutable para la fase de API territorial unificada y primera integracion geografica.
+- `FASE5_AUTOMATIZACION_ANALITICA_BACKLOG.md`: backlog ejecutable para la fase de automatizacion, analitica operativa y consumo productivo.
 - `AGENTS.md`: guia de arquitectura y reglas operativas para agentes y colaboradores tecnicos.
 - `RELEASE_PROCESS.md`: proceso operativo para preparar y validar un release candidate.
+- `DEPLOYMENT_STAGING.md`: guia operativa para desplegar y verificar un entorno de staging reproducible.
+- `CHANGELOG.md`: historial de versiones y release candidates aceptados.
 - `SECURITY_EXCEPTION_TEMPLATE.md`: plantilla minima para registrar excepciones temporales de seguridad.
+- `ACTA_RC1.md`: acta del primer Release Candidate real y siguiente bloque recomendado de evolucion.
 
 ## Arquitectura actual
 
 - `app/api`: routers FastAPI.
 - `app/services`: cliente INE, resolucion de Asturias, normalizacion y orquestacion de ingesta.
-- `app/repositories`: persistencia raw, normalizada, catalogo y base territorial.
+- `app/repositories`: persistencia raw, normalizada, catalogo, base territorial y cache geoespacial persistente.
 - `app/core`: logging JSON, cache TTL, jobs, metricas y utilidades de Redis.
 - `app/models.py`: modelos SQLAlchemy, incluyendo el nucleo territorial preparado para PostGIS.
 - `alembic/`: migraciones versionadas.
@@ -40,6 +47,7 @@ Documentacion disponible en la raiz del proyecto:
 | Variable | Descripcion | Ejemplo |
 |---|---|---|
 | `APP_NAME` | Nombre logico de la app | `ine_asturias_api` |
+| `APP_VERSION` | Version operativa actual de la aplicacion | `0.1.0-rc1` |
 | `APP_ENV` | Entorno de ejecucion | `local` |
 | `INE_BASE_URL` | Base URL del INE | `https://servicios.ine.es/wstempus/js/ES` |
 | `HTTP_TIMEOUT_SECONDS` | Timeout HTTP hacia el proveedor | `15` |
@@ -68,11 +76,16 @@ Usa `.env.example` como plantilla local y `.env.staging.example` como base de un
 - `requirements.txt` mantiene solo dependencias directas y versionadas de forma exacta.
 - `requirements.lock` congela el conjunto efectivo usado por Docker y CI.
 - Docker y CI DEBEN instalar desde `requirements.lock`.
+- El proyecto usa versionado semantico simple y registra hitos operativos en [CHANGELOG.md](C:/Users/user/OneDrive/Documents/Playground/CHANGELOG.md).
 - Politica de actualizacion recomendada:
   1. editar `requirements.txt` de forma intencional,
   2. reconstruir la imagen base,
   3. regenerar `requirements.lock` con `docker compose run --rm api pip freeze`,
   4. rerun `ruff`, `pytest`, `docker compose run --rm migrate` y `scripts/smoke_stack.py`.
+
+Version actual recomendada:
+
+- `0.1.0-rc1`: primer Release Candidate operativo aceptado.
 
 ## Imagenes base y seguridad ligera
 
@@ -88,6 +101,7 @@ La capa ligera adoptada en esta fase es:
 - [dependabot.yml](C:/Users/user/OneDrive/Documents/Playground/.github/dependabot.yml) para pip, docker y github-actions, con frecuencia semanal.
 - [security-scan.yml](C:/Users/user/OneDrive/Documents/Playground/.github/workflows/security-scan.yml) para escaneo manual o semanal de la imagen API con Trivy y artefacto 	rivy-report.
 - pip check en CI y en build para detectar incompatibilidades declarativas de dependencias.
+- Los workflows oficiales usan versiones de `actions/*` alineadas con Node 24 (`checkout@v5`, `setup-python@v6`, `upload-artifact@v6`) para reducir riesgo de rotura futura en GitHub Actions.
 
 Cobertura real:
 
@@ -118,6 +132,9 @@ Migraciones incluidas:
 
 - `0001_initial_schema`: tablas actuales de ingesta raw, series normalizadas y catalogo INE.
 - `0002_postgis_territorial`: activacion de PostGIS y nucleo territorial base.
+- `0003_territorial_series_ref`: referencia territorial opcional en `ine_series_normalized`.
+- `0004_postgis_conventions`: convenciones espaciales e indices `GIST` base.
+- `0005_geocoding_cache`: tablas `geocode_cache` y `reverse_geocode_cache` para cache geoespacial persistente.
 
 ### Bootstrap seguro para bases existentes
 
@@ -160,6 +177,11 @@ GET /ine/jobs/{job_id}
 
 ```http
 GET /ine/series?operation_code=22&geography_code=33&page=1&page_size=50
+GET /geocode?query=Oviedo
+GET /reverse_geocode?lat=43.3614&lon=-5.8494
+GET /territorios/comunidades-autonomas
+GET /territorios/provincias?autonomous_community_code=03
+GET /municipio/33044
 ```
 
 Filtros soportados en `/ine/series`:
@@ -167,11 +189,120 @@ Filtros soportados en `/ine/series`:
 - `operation_code`
 - `table_id`
 - `geography_code`
+- `geography_name`
 - `variable_id`
 - `period_from`
 - `period_to`
 - `page`
 - `page_size`
+
+Contrato semantico actual:
+
+- `/ine/series` consulta solo datos ya normalizados en `ine_series_normalized`
+- `geography_code` usa actualmente el sistema de codigos territoriales del INE como codigo externo canonico para consulta
+- `/ine/series` acepta ya `geography_code_system`, pero en esta fase solo soporta `ine`
+- `geography_name` funciona como filtro exacto case-insensitive de apoyo, no como codigo canonico
+- cuando `geography_name` puede resolverse contra el modelo territorial interno, el endpoint traduce ese nombre a `geography_code` de INE y devuelve `territorial_resolution`
+- la respuesta incluye metadata de paginacion:
+  - `total`
+  - `page`
+  - `page_size`
+  - `pages`
+  - `has_next`
+  - `has_previous`
+  - `filters`
+  - `territorial_resolution`
+
+### Geocodificacion semantica
+
+```http
+GET /geocode?query=Oviedo
+GET /reverse_geocode?lat=43.3614&lon=-5.8494
+```
+
+Contrato actual de `/geocode`:
+
+- usa CartoCiudad como provider geografico inicial;
+- consulta primero `geocode_cache` como cache persistente;
+- si no hay hit persistente, hace fallback al adapter del provider;
+- persiste el payload crudo normalizado en `geocode_cache`;
+- devuelve contrato semantico propio:
+  - `source`
+  - `query`
+  - `cached`
+  - `result`
+  - `metadata`
+
+La respuesta NO replica el shape crudo del provider. En esta fase:
+
+- `territorial_resolution` se rellena cuando el payload de CartoCiudad puede cruzarse de forma fiable con el modelo territorial interno;
+- si no existe match fiable, `territorial_resolution` queda `null`;
+- `cached=true` indica hit de cache persistente del endpoint.
+
+Contrato actual de `/reverse_geocode`:
+
+- usa CartoCiudad como provider geografico inicial;
+- consulta primero `reverse_geocode_cache` como cache persistente;
+- si no hay hit persistente, hace fallback al adapter del provider;
+- persiste el payload crudo normalizado en `reverse_geocode_cache`;
+- devuelve contrato semantico consistente con `/geocode`:
+  - `source`
+  - `query_coordinates`
+  - `cached`
+  - `result`
+  - `metadata`
+
+En esta fase:
+
+- `territorial_resolution` se rellena cuando el payload puede resolverse contra `territorial_units` y `territorial_unit_codes`;
+- si no existe match fiable, el contrato mantiene `territorial_resolution=null`;
+- `cached=true` indica hit de cache persistente del endpoint;
+- `lat` y `lon` se validan en rango geodesico antes de consultar provider o cache.
+
+Estrategia territorial actual:
+
+- el cruce territorial futuro debe apoyarse en `territorial_unit_codes`
+- para el dominio INE actual, el source system canonico previsto es `ine`
+- mientras no se abran nuevas fuentes geograficas, `/ine/series` mantiene `geography_code_system=ine` como referencia explicita
+
+Estrategia de codigo canonico por nivel en la fase actual:
+
+- `country` -> `source_system=iso3166`, `code_type=alpha2`
+- `autonomous_community` -> `source_system=ine`, `code_type=autonomous_community`
+- `province` -> `source_system=ine`, `code_type=province`
+- `municipality` -> `source_system=ine`, `code_type=municipality`
+
+Regla operativa:
+
+- el codigo canonico territorial vive en `territorial_unit_codes` y debe marcarse como `is_primary=true` para el nivel correspondiente;
+- `geography_code` de `/ine/series` sigue siendo el codigo externo canonico del dominio INE mientras no se introduzca el cruce territorial semantico completo;
+- los aliases no sustituyen al codigo canonico: solo apoyan matching y resolucion de nombres.
+- `ine_series_normalized` incorpora ya `territorial_unit_id` como referencia interna opcional para fases futuras, pero la clave logica actual y los filtros semanticos siguen apoyandose en `geography_code` del INE;
+- el backfill de `territorial_unit_id` no se hace automaticamente en esta fase: se dejara para un paso explicito de enriquecimiento territorial.
+
+Reglas actuales de matching territorial:
+
+- `canonical_name` es la fuente de verdad semantica y debe representarse tambien en `normalized_name` usando normalizacion interna;
+- `display_name` es solo la etiqueta de presentacion y no debe usarse como criterio de matching por si sola;
+- `territorial_unit_aliases` debe almacenar variantes linguisticas, nombres de proveedor, nombres cortos y nombres alternativos;
+- la normalizacion minima de nombres se hace con `normalize_territorial_name(...)`, que elimina acentos, puntuacion irrelevante y espacios redundantes;
+- el matching territorial no debe vivir en routers ni en services ad hoc: debe resolverse mediante `TerritorialRepository`.
+
+Capacidades actuales del repositorio territorial:
+
+- lookup por codigo canonico mediante `get_unit_by_canonical_code(...)`
+- lookup por codigo externo mediante `get_unit_by_code(...)` y `get_unit_by_ine_code(...)`
+- lookup por nombre canonico o nombre de entrada mediante `get_unit_by_name(...)`
+- lookup por alias mediante `get_unit_by_alias(...)`
+- listado estable de codigos asociados a una unidad mediante `list_codes(...)`
+- listado paginado por nivel territorial mediante `list_units(...)`
+- detalle territorial por codigo canonico mediante `get_unit_detail_by_canonical_code(...)`
+
+Endpoints territoriales publicos actuales:
+
+- `GET /territorios/comunidades-autonomas` devuelve comunidades autonomas desde el modelo interno con paginacion basica.
+- `GET /territorios/provincias` devuelve provincias y admite filtro por `autonomous_community_code`.
+- `GET /municipio/{codigo_ine}` devuelve detalle de municipio por codigo canonico INE, incluyendo codigos, aliases y atributos.
 
 ## Jobs y ejecucion asincrona
 
@@ -227,6 +358,44 @@ La base ya incluye el esqueleto para evolucion territorial y espacial:
 - `territorial_unit_codes`
 - `territorial_unit_aliases`
 
+Convenciones PostGIS actuales:
+
+- SRID canonico: `4326`
+- geometria territorial base: `MULTIPOLYGON`
+- centroide territorial: `POINT`
+- `geometry` y `centroid` se mantienen `nullable` hasta que exista una carga geografica explicita y validada
+- los indices espaciales base del proyecto son `GIST` sobre `geometry` y `centroid`
+- el proyecto no debe introducir WKT/WKB o geometria cruda en payloads raw ni en contratos publicos mientras no exista un contrato semantico geografico explicito
+
+Contrato de carga geoespacial futura:
+
+- el formato de intercambio inicial previsto es `GeoJSON FeatureCollection`
+- el SRID canonico sigue siendo `4326`
+- cualquier carga futura DEBE validarse primero en staging o en tablas temporales de ensayo
+- no se abre todavia ninguna nueva fuente geografica: solo queda fijado el contrato que deberan respetar las futuras cargas
+
+Contrato semantico futuro de geocodificacion:
+
+- `GET /geocode` y `GET /reverse_geocode` DEBERAN devolver contratos internos y estables, nunca el payload crudo del proveedor;
+- ambos contratos compartiran:
+  - `source`
+  - `cached`
+  - `coordinates`
+  - `entity_type`
+  - `territorial_context`
+  - `territorial_resolution`
+  - `metadata`
+- `GET /geocode` debera exponerse sobre `query`
+- `GET /reverse_geocode` debera exponerse sobre `query_coordinates`
+- el resultado geografico podra incluir `address`, `postal_code` y `label`, pero esos campos NO deben sustituir al cruce con `territorial_units` cuando exista una resolucion interna.
+
+Adapter geografico futuro inmediato:
+
+- CartoCiudad se integrara mediante `app/services/cartociudad_client.py`
+- el adapter encapsula `find?q=...` y `reverseGeocode?lat=&lon=...`
+- el adapter solo devuelve `dict` / `list`, maneja errores y construye claves de cache
+- el adapter no persiste en base ni define el contrato publico final
+
 ## Observabilidad operativa
 
 La exportacion Prometheus se resuelve de forma pragmatica:
@@ -253,11 +422,70 @@ Interpretacion:
 - la base fue creada con una version de libreria de collation distinta de la que ofrece ahora la imagen del contenedor o el sistema subyacente.
 - no bloquea el runtime ni las migraciones actuales, pero puede afectar ordenaciones e indices dependientes de collation.
 
-Procedimiento recomendado:
+### Procedimiento para entorno local desechable
 
-- en entornos locales desechables, la opcion mas segura suele ser hacer backup si hace falta, eliminar el volumen de Postgres y recrear la base desde cero con la imagen actual.
-- en entornos persistentes, NO refresques la collation a ciegas. Primero hay que identificar los objetos afectados, reconstruir indices u objetos dependientes de la collation por defecto y despues ejecutar `ALTER DATABASE ine_asturias REFRESH COLLATION VERSION;`.
-- si el entorno es serio o compartido, este cambio DEBE tratarse como una operacion planificada de mantenimiento.
+Usa esta via cuando el entorno local no sea la copia canonica de datos y puedas recrearlo sin impacto operativo real.
+
+1. si quieres conservar datos, genera primero un backup:
+
+```bash
+mkdir -p backups
+docker compose exec -T db pg_dump -U postgres -d ine_asturias -Fc -f /tmp/ine_asturias.dump
+docker compose cp db:/tmp/ine_asturias.dump backups/ine_asturias.dump
+```
+
+2. elimina el stack y el volumen de Postgres:
+
+```bash
+docker compose down -v
+```
+
+3. levanta de nuevo la base con la imagen actual y aplica migraciones:
+
+```bash
+docker compose up --build -d db redis
+docker compose run --rm migrate
+docker compose up --build -d api worker
+```
+
+4. valida que el warning ya no aparece y que el stack sigue sano:
+
+```bash
+docker compose logs --no-color db
+curl http://127.0.0.1:8001/health
+curl http://127.0.0.1:8001/health/ready
+docker compose run --rm api python scripts/smoke_stack.py
+```
+
+### Procedimiento para staging o entornos persistentes
+
+Usa esta via cuando la base conserva datos que NO deben recrearse a ciegas.
+
+1. genera un backup completo y verificable antes de tocar collation.
+2. identifica si existen objetos dependientes de la collation por defecto que deban reconstruirse.
+3. planifica una ventana de mantenimiento; NO ejecutes este cambio durante trafico normal si el entorno es compartido.
+4. reconstruye los indices u objetos afectados.
+5. solo despues ejecuta:
+
+```sql
+ALTER DATABASE ine_asturias REFRESH COLLATION VERSION;
+```
+
+6. reinicia conexiones si procede y valida:
+
+```bash
+docker compose run --rm migrate
+curl http://127.0.0.1:8001/health
+curl http://127.0.0.1:8001/health/ready
+docker compose run --rm api python scripts/smoke_stack.py
+docker compose run --rm api python scripts/verify_restore.py --base-url http://api:8000 --postgres-dsn postgresql://postgres:postgres@db:5432/ine_asturias --min-ingestion-rows 1 --min-normalized-rows 1
+```
+
+### Regla operativa
+
+- en local desechable, la solucion preferida es recrear volumen y base con la imagen actual.
+- en staging o persistente, NO refresques la collation a ciegas; primero reconstruye los objetos afectados y trata el cambio como una operacion planificada.
+- no cierres esta incidencia como resuelta hasta repetir `/health`, `/health/ready`, smoke test y verificacion minima de restore o integridad.
 
 ## Validacion manual recomendada
 
@@ -293,6 +521,24 @@ curl "http://127.0.0.1:8001/ine/jobs/{job_id}"
 curl "http://127.0.0.1:8001/ine/series?operation_code=22&page=1&page_size=10"
 ```
 
+## Evidencia operativa reciente
+
+La ultima revalidacion operativa de staging y RC se ha ejecutado ya con la primera capa territorial/geografica integrada.
+
+Resultado confirmado:
+
+- Alembic en `0005_geocoding_cache`
+- `/health` = `200`
+- `/health/ready` = `200`
+- `/metrics` = `200`
+- smoke test correcto con job real
+- `verify_restore.py` correcto con:
+  - `ingestion_raw=6`
+  - `ine_series_normalized=75`
+  - `/ine/series total=75`
+
+Esta evidencia confirma que la capa publica `geocode` / `reverse_geocode` / `territorios` no ha roto la operacion del stack ni el criterio de release candidate.
+
 ## Smoke test automatizado
 
 El repositorio incluye [scripts/smoke_stack.py](C:/Users/user/OneDrive/Documents/Playground/scripts/smoke_stack.py) como validacion runtime minima del stack.
@@ -302,6 +548,7 @@ Valida de forma automatica:
 - `GET /health`
 - `GET /health/ready`
 - `GET /metrics`
+- `GET /territorios/comunidades-autonomas`
 - encolado y completado de un job real corto en `/ine/operation/22/asturias?max_tables=1`
 - disponibilidad de datos en `/ine/series` despues del job
 
@@ -484,6 +731,15 @@ La configuracion queda preparada para dos usos claros:
 
 - `.env.example`: valores por defecto para desarrollo/local con Docker Compose.
 - `.env.staging.example`: mismo contrato de variables, pero con `APP_ENV=staging` y placeholders seguros para futuros despliegues.
+- [DEPLOYMENT_STAGING.md](C:/Users/user/OneDrive/Documents/Playground/DEPLOYMENT_STAGING.md): procedimiento operativo para levantar staging como entorno de ensayo real.
+  Tambien incluye el rollback operativo minimo y el uso de restore desde backup como mecanismo oficial cuando no exista downgrade seguro de migraciones.
+  A partir de esta fase tambien define el ensayo completo de staging: deploy, migrate, health, smoke, rollback y restore verification.
+
+Nombres recomendados para ficheros reales no versionados:
+
+- local: `.env.local` o `.env`
+- staging: `.env.staging.local`
+- release/ensayo puntual: `.env.rc.local`
 
 ### Arranque local vs staging
 
@@ -516,6 +772,8 @@ Reglas operativas:
 
 - NO reutilices `.env` local como configuracion de staging.
 - NO guardes secretos reales en `.env.example` ni en `.env.staging.example`.
+- Los ficheros `.env.local`, `.env.staging.local`, `.env.rc.local` y variantes `*.local` quedan fuera de Git por diseno.
+- staging DEBE usar un fichero de entorno propio y no heredar secretos, puertos ni `API_KEY` desde local.
 - staging DEBE usar el mismo contrato de variables que local para que la aplicacion siga siendo reproducible sin ramas de configuracion especiales.
 ## CI minima
 
@@ -558,6 +816,10 @@ Antes de declarar una release operativa, comprobar como minimo:
 - confirmacion de `requirements.lock` actualizado si hubo cambios de dependencias
 - confirmacion de tags/digests en [Dockerfile](C:/Users/user/OneDrive/Documents/Playground/Dockerfile) y [docker-compose.yml](C:/Users/user/OneDrive/Documents/Playground/docker-compose.yml)
 - `/health`, `/health/ready` y `/metrics` respondiendo correctamente
+
+### Continuidad post-RC
+
+Despues de aceptar un RC, el equipo DEBE repetir `Restore Drill` y `Security Scan` cuando cambien workflows, dependencias, imagenes base o digests. El detalle operativo y la evidencia minima requerida quedan definidos en [RELEASE_PROCESS.md](C:/Users/user/OneDrive/Documents/Playground/RELEASE_PROCESS.md).
 ## Testing
 
 Los tests actuales siguen evitando red real con `httpx.MockTransport` y dummies de repositorio. Tambien existe una prueba de integracion opcional para Redis real.
@@ -576,14 +838,17 @@ Cobertura relevante actual:
 - resolucion automatica de Asturias
 - catalogo de tablas
 - endpoint semantico `/ine/series`
+- endpoints geograficos `/geocode` y `/reverse_geocode`
+- endpoints territoriales `/territorios/...` y `/municipio/{codigo_ine}`
 - serializacion previa del `upsert`
 - integracion opcional de Redis real para jobs
+- integracion real con Postgres para cache geoespacial y matching territorial
 
 ## Limitaciones actuales
 
 - La cache general sigue siendo local al proceso; Redis se usa ya para jobs, no aun para cache general.
 - El worker en Redis + `arq` esta preparado para operacion, pero la politica completa de reintentos y observabilidad avanzada puede crecer en siguientes sprints.
-- El modelo territorial base no expone todavia endpoints publicos; queda preparado para la entrada futura de IGN y CartoCiudad.
+- El modelo territorial base ya expone una primera capa publica de lectura territorial y sigue preparado para la entrada futura de IGN y CartoCiudad.
 - La agregacion de `/metrics` mezcla metricas de aplicacion del API y del worker, pero las metricas genericas de proceso siguen siendo per-proceso por diseno.
 - El contenedor Postgres actual puede mostrar `collation version mismatch`; ya esta tratado operativamente, pero conviene resolverlo antes de un entorno persistente serio.
 - No se han anadido todavia nuevas integraciones externas: este bloque endurece la base tecnica del sistema antes de ampliar fuentes.

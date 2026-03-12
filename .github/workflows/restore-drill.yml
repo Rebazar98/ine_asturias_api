@@ -13,7 +13,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Prepare local environment file
         run: cp .env.example .env
@@ -61,7 +61,7 @@ jobs:
 
       - name: Upload restore drill artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: restore-drill-artifacts
           path: |

@@ -6,10 +6,15 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     app_name: str = Field(default="ine_asturias_api", alias="APP_NAME")
+    app_version: str = Field(default="0.1.0-rc1", alias="APP_VERSION")
     app_env: str = Field(default="local", alias="APP_ENV")
     ine_base_url: str = Field(
         default="https://servicios.ine.es/wstempus/js/ES",
         alias="INE_BASE_URL",
+    )
+    cartociudad_base_url: str = Field(
+        default="https://www.cartociudad.es/geocoder/api/geocoder",
+        alias="CARTOCIUDAD_BASE_URL",
     )
     http_timeout_seconds: float = Field(default=15.0, alias="HTTP_TIMEOUT_SECONDS")
     postgres_dsn: str | None = Field(default=None, alias="POSTGRES_DSN")

@@ -20,6 +20,11 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
+POSTGIS_DEFAULT_SRID = 4326
+TERRITORIAL_BOUNDARY_GEOMETRY_TYPE = "MULTIPOLYGON"
+TERRITORIAL_CENTROID_GEOMETRY_TYPE = "POINT"
+
+
 class Base(DeclarativeBase):
     pass
 
@@ -68,6 +73,11 @@ class INESeriesNormalized(Base):
     operation_code: Mapped[str] = mapped_column(String(64), default="", server_default="")
     table_id: Mapped[str] = mapped_column(String(64), default="", server_default="")
     variable_id: Mapped[str] = mapped_column(String(128), default="", server_default="")
+    territorial_unit_id: Mapped[int | None] = mapped_column(
+        ForeignKey("territorial_units.id"),
+        nullable=True,
+        index=True,
+    )
     geography_name: Mapped[str] = mapped_column(String(255), default="", server_default="")
     geography_code: Mapped[str] = mapped_column(String(128), default="", server_default="")
     period: Mapped[str] = mapped_column(String(128), default="", server_default="", index=True)
@@ -128,6 +138,50 @@ class INETableCatalog(Base):
     last_warning: Mapped[str] = mapped_column(Text, default="", server_default="")
 
 
+class GeocodeCache(Base):
+    __tablename__ = "geocode_cache"
+    __table_args__ = (
+        UniqueConstraint(
+            "provider",
+            "normalized_query",
+            name="uq_geocode_cache_provider_query",
+        ),
+        Index("ix_geocode_cache_provider_expires", "provider", "expires_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    provider: Mapped[str] = mapped_column(String(32), index=True)
+    query_text: Mapped[str] = mapped_column(String(512))
+    normalized_query: Mapped[str] = mapped_column(String(512), index=True)
+    payload: Mapped[dict[str, Any] | list[Any]] = mapped_column(JSONB)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, default=dict)
+    cached_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class ReverseGeocodeCache(Base):
+    __tablename__ = "reverse_geocode_cache"
+    __table_args__ = (
+        UniqueConstraint(
+            "provider",
+            "coordinate_key",
+            name="uq_reverse_geocode_cache_provider_key",
+        ),
+        Index("ix_reverse_geocode_cache_provider_expires", "provider", "expires_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    provider: Mapped[str] = mapped_column(String(32), index=True)
+    latitude: Mapped[float] = mapped_column(Float)
+    longitude: Mapped[float] = mapped_column(Float)
+    coordinate_key: Mapped[str] = mapped_column(String(128), index=True)
+    precision_digits: Mapped[int] = mapped_column(Integer, default=6, server_default="6")
+    payload: Mapped[dict[str, Any] | list[Any]] = mapped_column(JSONB)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, default=dict)
+    cached_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
 class TerritorialUnit(Base):
     __tablename__ = "territorial_units"
     __table_args__ = (
@@ -138,6 +192,8 @@ class TerritorialUnit(Base):
             name="uq_territorial_units_level_parent_name",
         ),
         Index("ix_territorial_units_level_parent", "unit_level", "parent_id"),
+        Index("ix_territorial_units_geometry_gist", "geometry", postgresql_using="gist"),
+        Index("ix_territorial_units_centroid_gist", "centroid", postgresql_using="gist"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -149,11 +205,19 @@ class TerritorialUnit(Base):
     country_code: Mapped[str] = mapped_column(String(2), default="ES", server_default="ES")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
     geometry: Mapped[Any | None] = mapped_column(
-        Geometry(geometry_type="MULTIPOLYGON", srid=4326, spatial_index=False),
+        Geometry(
+            geometry_type=TERRITORIAL_BOUNDARY_GEOMETRY_TYPE,
+            srid=POSTGIS_DEFAULT_SRID,
+            spatial_index=False,
+        ),
         nullable=True,
     )
     centroid: Mapped[Any | None] = mapped_column(
-        Geometry(geometry_type="POINT", srid=4326, spatial_index=False),
+        Geometry(
+            geometry_type=TERRITORIAL_CENTROID_GEOMETRY_TYPE,
+            srid=POSTGIS_DEFAULT_SRID,
+            spatial_index=False,
+        ),
         nullable=True,
     )
     attributes_json: Mapped[dict[str, Any]] = mapped_column("attributes", JSONB, default=dict)

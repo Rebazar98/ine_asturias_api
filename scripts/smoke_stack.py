@@ -24,7 +24,8 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     base_url = args.base_url.rstrip("/")
-    timeout = httpx.Timeout(10.0, connect=5.0)
+    request_timeout_seconds = min(max(args.timeout_seconds / 6, 10.0), 30.0)
+    timeout = httpx.Timeout(request_timeout_seconds, connect=5.0)
     headers = {"X-API-Key": args.api_key} if args.api_key else None
 
     with httpx.Client(base_url=base_url, timeout=timeout, headers=headers) as client:
@@ -42,6 +43,17 @@ def main() -> int:
         if "ine_asturias_worker_heartbeat_timestamp" not in metrics_text:
             raise RuntimeError("/metrics no incluye la senal de heartbeat del worker.")
         print("[smoke] /metrics OK")
+
+        communities_payload = _get_json(
+            client,
+            "/territorios/comunidades-autonomas?page=1&page_size=1",
+            expected_status=200,
+        )
+        if "items" not in communities_payload or "filters" not in communities_payload:
+            raise RuntimeError(
+                "/territorios/comunidades-autonomas no devolvio el contrato esperado."
+            )
+        print("[smoke] /territorios/comunidades-autonomas OK")
 
         job_payload = _get_json(
             client,

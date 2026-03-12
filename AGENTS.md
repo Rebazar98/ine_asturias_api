@@ -20,8 +20,8 @@ La arquitectura real del repositorio esta organizada por capas y esa separacion 
 ### 2.1 Capas actuales
 
 - `app/api`: capa HTTP. Contiene routers FastAPI, validacion de entrada, dependencias, codigos de estado y serializacion de salida.
-- `app/services`: capa de negocio y adaptacion de proveedores. Incluye el cliente del INE, la resolucion automatica de Asturias y la normalizacion de payloads.
-- `app/repositories`: capa de persistencia. Encapsula escrituras y lecturas hacia PostgreSQL para raw ingestion, series normalizadas y catalogo de tablas.
+- `app/services`: capa de negocio y adaptacion de proveedores. Incluye el cliente del INE, el adapter de CartoCiudad, la resolucion automatica de Asturias y la normalizacion de payloads.
+- `app/repositories`: capa de persistencia. Encapsula escrituras y lecturas hacia PostgreSQL para raw ingestion, series normalizadas, catalogo de tablas, cache geoespacial y modelo territorial.
 - `app/core`: infraestructura transversal. Incluye logging estructurado, cache TTL en memoria y registro de jobs en memoria.
 - `app/models.py`: modelo ORM de persistencia.
 - `app/schemas.py`: contratos Pydantic de entrada y salida.
@@ -56,8 +56,10 @@ Los routers NO DEBEN:
 Los services DEBEN encapsular logica de dominio y adaptacion externa. En el estado actual existen tres piezas principales:
 
 - `INEClientService`: provider adapter actual del INE
+- `CartoCiudadClientService`: provider adapter geografico actual
 - `AsturiasResolver`: logica de resolucion geografica para operaciones del INE
-- `normalizers.py`: capa de normalizacion y flatten de payloads
+- `normalizers.py`: capa de normalizacion y flatten de payloads INE
+- `cartociudad_normalizers.py`: traduccion inicial de payloads geograficos al contrato semantico interno
 
 Los services DEBEN:
 
@@ -103,12 +105,14 @@ Los repositories DEBEN encapsular toda escritura y lectura persistente. Hoy exis
 - `IngestionRepository`
 - `SeriesRepository`
 - `TableCatalogRepository`
+- `GeocodingCacheRepository`
 
 La persistence layer DEBE encargarse de:
 
 - insertar raw payloads
 - hacer `upsert` de observaciones normalizadas
 - mantener el catalogo de tablas y su estado operativo
+- mantener cache persistente de geocodificacion y reverse geocoding cuando aplique
 - aislar al resto del sistema de detalles SQLAlchemy y PostgreSQL
 
 #### Catalog system
@@ -183,10 +187,17 @@ Toda persistencia normalizada DEBE ser idempotente respecto a esa clave. El `ups
 
 - `value`
 - `unit`
+- `territorial_unit_id`
 - `metadata`
 - `raw_payload`
 
 Ningun agente DEBE introducir una nueva columna o cambiar la clave logica sin definir explicitamente el impacto en deduplicacion, consultas e historico.
+
+La referencia territorial interna en `ine_series_normalized` DEBE seguir estas reglas:
+
+- `territorial_unit_id` PUEDE existir como referencia interna opcional;
+- `territorial_unit_id` NO DEBE sustituir a `geography_code` ni entrar en la clave logica actual sin una migracion de contrato coordinada;
+- el backfill de `territorial_unit_id` DEBE hacerse solo mediante un proceso explicito de enriquecimiento territorial y NO de forma oportunista dentro de queries HTTP.
 
 ## 4. Pipeline de ingestion
 
@@ -385,6 +396,47 @@ El modelo DEBE separar con claridad:
 
 Las tablas raw NO DEBEN mezclarse con las analiticas ni reutilizarse como fuente directa de endpoints semanticos.
 
+### 7.4 Estrategia de codigo territorial canonico
+
+Mientras el proyecto siga consolidando el dominio INE y preparando el terreno para geografia, la estrategia canonica DEBE ser:
+
+- `country` -> `source_system=iso3166`, `code_type=alpha2`
+- `autonomous_community` -> `source_system=ine`, `code_type=autonomous_community`
+- `province` -> `source_system=ine`, `code_type=province`
+- `municipality` -> `source_system=ine`, `code_type=municipality`
+
+Reglas:
+
+- el codigo canonico territorial DEBE vivir en `territorial_unit_codes`;
+- el codigo canonico DEBE marcarse con `is_primary=true` en el nivel correspondiente;
+- `geography_code` del dominio INE puede seguir exponiendo el codigo externo del INE mientras el cruce con el modelo territorial se termina de consolidar;
+- los aliases NO DEBEN sustituir al codigo canonico; solo DEBEN apoyar matching y resolucion de nombres.
+
+### 7.5 Reglas de matching territorial y aliases
+
+El matching territorial DEBE seguir estas reglas:
+
+- `canonical_name` DEBE ser la fuente de verdad semantica de una unidad territorial;
+- `normalized_name` DEBE contener la version normalizada de `canonical_name` y DEBE usarse para matching directo por nombre;
+- `display_name` DEBE reservarse para presentacion y NO DEBE usarse como identificador semantico por si solo;
+- `territorial_unit_aliases` DEBE almacenar variantes linguisticas, nombres de proveedor, nombres cortos y nombres alternativos;
+- la normalizacion minima de nombres DEBE eliminar acentos, puntuacion irrelevante y espacios redundantes antes de comparar;
+- el matching por nombre DEBE resolverse dentro de `TerritorialRepository`, no en routers ni en services dispersos.
+
+Un agente NO DEBE introducir heuristicas ad hoc de matching territorial en endpoints o normalizadores si el repositorio territorial puede encapsular esa logica.
+
+### 7.6 Convenciones PostGIS del modelo territorial
+
+Mientras no exista una carga geoespacial formal, el proyecto DEBE mantener estas convenciones base:
+
+- el SRID canonico DEBE ser `4326`;
+- `territorial_units.geometry` DEBE almacenar limites administrativos en `MULTIPOLYGON`;
+- `territorial_units.centroid` DEBE almacenar centroides en `POINT`;
+- ambas columnas PUEDEN permanecer `NULL` hasta que exista una carga validada;
+- los indices espaciales base DEBEN ser `GIST` sobre `geometry` y `centroid`.
+
+Un agente NO DEBE introducir geometria cruda en payloads raw, respuestas publicas o tablas no espaciales sin contrato explicito y sin respetar estas convenciones.
+
 ## 8. Observabilidad
 
 ### 8.1 Logging estructurado
@@ -525,6 +577,12 @@ La hoja de ruta tecnica del proyecto DEBE alinearse con estas lineas:
 - DEBEN existir contratos normalizados para geocodificacion y reverse geocoding
 - DEBE persistirse cache para consultas repetidas de alto valor
 - NO DEBE exponerse el payload crudo del proveedor como contrato principal
+- el adapter DEBE vivir en `app/services` y limitarse a adaptacion HTTP, errores, timeouts y cache keys
+- la persistencia de cache o catalogos futuros DEBE resolverse en repositories, no dentro del adapter
+- cualquier contrato publico futuro DEBE apoyarse en el modelo territorial interno y no en ids opacos del proveedor
+- los contratos publicos futuros de `/geocode` y `/reverse_geocode` DEBEN compartir una semantica comun basada en `source`, `cached`, `coordinates`, `entity_type`, `territorial_context`, `territorial_resolution` y `metadata`
+- `query` y `query_coordinates` DEBEN diferenciar el caso directo y el inverso, pero el shape del `result` DEBE mantenerse consistente
+- el primer adapter geografico real DEBE encapsular los endpoints oficiales `find` y `reverseGeocode` de CartoCiudad sin mezclar persistencia ni logica de matching territorial dentro del cliente HTTP
 
 ### 12.2 PostGIS y consultas espaciales
 
@@ -532,6 +590,11 @@ La hoja de ruta tecnica del proyecto DEBE alinearse con estas lineas:
 - DEBEN introducirse tablas territoriales y geometria versionable
 - las consultas espaciales DEBEN apoyarse en indices GIST o equivalentes
 - la geometria NO DEBE mezclarse dentro de payloads raw de forma oportunista; DEBE tener modelo persistente claro
+- cualquier carga geoespacial futura DEBE entrar mediante un contrato interno explicito y NO como importacion manual ad hoc
+- el formato de intercambio inicial DEBE ser `GeoJSON FeatureCollection` en SRID `4326`
+- los limites administrativos DEBEN normalizarse a `MULTIPOLYGON` y los centroides a `POINT`
+- toda carga futura DEBE validar `ST_IsValid`, tipo geometrico, cobertura minima y cruce con `territorial_unit_codes` antes de persistirse en tablas finales
+- si un proveedor futuro entrega otro SRID o formato, el adapter o pipeline de carga DEBE transformarlo antes de persistirlo
 
 ### 12.3 Automatizacion con n8n
 

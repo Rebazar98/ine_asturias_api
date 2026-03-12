@@ -79,6 +79,8 @@ Las tablas existentes `ingestion_raw`, `ine_series_normalized` e `ine_tables_cat
 
 PostGIS permitirá añadir columnas `geometry` para límites administrativos, centroides y geometrías simplificadas. Se recomiendan índices B-tree para códigos y claves lógicas, e índices GIST o SP-GIST para búsquedas espaciales. Los metadatos variables del proveedor deben seguir almacenándose en JSONB para preservar flexibilidad. La estrategia correcta de evolución de esquema debe pasar a gestionarse con Alembic, aunque la base actual haya empezado con `create_all`.
 
+Como convención base del proyecto, el modelo territorial debe operar inicialmente en SRID `4326`, con `MULTIPOLYGON` para límites y `POINT` para centroides. Las geometrías podrán permanecer nulas hasta disponer de una carga geoespacial formal, pero la estructura e índices espaciales deben quedar definidos desde esta fase.
+
 ## 5. Diseño de la API propia
 
 La API propia debe consolidarse como una capa estable sobre proveedores heterogéneos. El principio de diseño es claro: la API no debe reflejar el shape crudo del INE o de CartoCiudad, sino ofrecer recursos semánticos listos para uso en automatizaciones y aplicaciones.
@@ -167,6 +169,14 @@ Criterio de éxito: operaciones relevantes del INE procesadas con persistencia r
 Objetivo: añadir capacidades de geocodificación y localización territorial.  
 Entregables: cliente HTTP para IGN / CartoCiudad, endpoints `geocode` y `reverse_geocode`, cache persistente y modelos de respuesta homogéneos.  
 Criterio de éxito: geocodificación estable y reutilizable desde la API y desde n8n.
+
+Condición de entrada para abrir esta fase:
+
+- staging operativo real validado y con checklist de despliegue/rollback utilizable;
+- continuidad post-RC confirmada tras cambios recientes de workflows, imágenes o dependencias;
+- contrato semántico de `/ine/series` estabilizado;
+- estrategia de cruce con `territorial_unit_codes` documentada y aceptada;
+- dominio INE actual sin regresiones abiertas en ingesta, normalización, catálogo ni endpoint semántico.
 
 **Fase 3. PostGIS y modelo territorial**  
 Objetivo: convertir la base en un repositorio territorial con soporte espacial.  
@@ -278,3 +288,90 @@ Respuesta mínima:
 ## Conclusión
 
 La plataforma propuesta no parte de cero: se apoya en un backend ya funcional que ha resuelto problemas reales de ingesta, persistencia, normalización, jobs en background y trazabilidad del INE. La estrategia recomendada es evolucionar ese núcleo hacia una plataforma territorial más amplia, donde INE aporte profundidad estadística y IGN / CartoCiudad aporte capacidad geoespacial y contexto administrativo. PostgreSQL seguirá siendo el sistema de registro y PostGIS será la extensión natural para consultas espaciales y enriquecimiento territorial. Con esta base, FastAPI podrá consolidarse como capa de servicio estable para n8n, agentes y aplicaciones, apoyando una evolución incremental, mantenible y preparada para crecimiento.
+
+## Anexo. Patrón de Adapter Para Futuras Integraciones
+
+La siguiente fuente prioritaria tras consolidar el dominio INE debe seguir un patrón de adapter explícito. La integración de IGN / CartoCiudad no debe añadirse como lógica ad hoc dentro de routers ni como llamadas HTTP dispersas. Debe encapsularse en un adapter propio dentro de `app/services`, análogo al rol que hoy cumple `INEClientService`, pero adaptado al dominio geográfico.
+
+El adapter futuro debe asumir estas responsabilidades:
+
+- encapsular `base_url`, timeouts, parámetros y semántica del proveedor;
+- traducir errores HTTP, timeouts y respuestas inválidas a errores de dominio internos;
+- devolver estructuras Python simples (`dict` / `list`) sin persistir ni normalizar directamente;
+- construir claves de cache para geocodificación y reverse geocoding;
+- separar claramente consultas bajo demanda de la eventual materialización de catálogos administrativos.
+
+El adapter futuro no debe:
+
+- escribir directamente en PostgreSQL;
+- decidir políticas de catálogo o cobertura;
+- exponer el shape crudo del proveedor como contrato principal de la API;
+- mezclar lógica geoespacial con orquestación HTTP de FastAPI.
+
+Encaje recomendado con la arquitectura existente:
+
+- `app/services/cartociudad_client.py`: adapter HTTP del proveedor;
+- `app/services/...normalizer.py`: traducción del payload externo a un contrato interno estable;
+- `app/repositories/...`: persistencia de cache geocoding / reverse geocoding si se materializa;
+- `app/api/...`: endpoints semánticos como `/geocode` y `/reverse_geocode`, apoyados en el contrato interno y no en el shape del proveedor.
+
+Dependencias previas para abrir esa fase:
+
+- staging operativo real validado;
+- contrato semántico del dominio INE estabilizado;
+- estrategia de cruce con `territorial_unit_codes` definida;
+- criterio claro de código territorial canónico para consultas semánticas.
+
+Estas dependencias deben tratarse como gate real y no como recomendación blanda. Si alguna no se cumple, la fase de nuevas integraciones debe permanecer cerrada.
+
+## Anexo. Contrato de Carga Geoespacial Futura
+
+Antes de abrir una fuente geográfica nueva, el proyecto DEBE tratar las cargas de geometría como una capacidad interna con contrato propio. El objetivo es evitar que futuras geometrías entren en la base como payloads oportunistas o con reglas distintas según el proveedor.
+
+Formato de intercambio recomendado para la primera carga geoespacial:
+
+- `GeoJSON FeatureCollection` como formato de entrada al pipeline de carga;
+- SRID lógico `4326` como referencia obligatoria;
+- geometrías administrativas de límites en `Polygon` o `MultiPolygon`, normalizadas finalmente a `MULTIPOLYGON`;
+- centroides en `Point`, ya sea suministrados explícitamente o calculados durante el proceso de carga.
+
+Cada feature de entrada DEBE aportar, como mínimo, estas propiedades semánticas:
+
+- `source_system`
+- `source_dataset`
+- `territorial_level`
+- `source_code`
+- `canonical_code`
+- `canonical_name`
+
+Propiedades opcionales aceptables:
+
+- `display_name`
+- `valid_from`
+- `valid_to`
+- `centroid`
+- `metadata`
+
+Validaciones mínimas obligatorias de una carga futura:
+
+- todas las features DEBEN poder transformarse a SRID `4326`;
+- la geometría final DEBE ser válida según reglas topológicas de PostGIS;
+- el tipo geométrico DEBE coincidir con el nivel territorial esperado;
+- `canonical_code` y `source_code` DEBEN poder mapearse al modelo `territorial_unit_codes`;
+- no DEBEN aceptarse geometrías vacías ni colecciones heterogéneas sin normalización explícita;
+- si no se suministra `centroid`, el pipeline DEBE calcularlo y persistirlo solo tras validar la geometría base.
+
+Reglas operativas:
+
+- una carga geoespacial futura NO DEBE escribirse directamente sobre `territorial_units` sin una fase previa de validación;
+- la validación DEBE ejecutarse primero sobre staging o sobre tablas temporales de ensayo;
+- cualquier carga DEBE dejar evidencia de conteo, validez geométrica y cobertura territorial antes de considerarse aceptable;
+- esta fase NO abre todavía ninguna integración nueva con IGN o CartoCiudad: solo fija el contrato que esas integraciones deberán respetar.
+
+Verificación mínima esperada en staging cuando se abra esa capacidad:
+
+1. cargar el artefacto geoespacial en un entorno de ensayo;
+2. validar SRID, tipo geométrico y ausencia de geometrías vacías;
+3. validar con consultas de integridad (`ST_IsValid`, recuentos y muestras por nivel);
+4. confirmar que `geometry` y `centroid` quedan alineados con el modelo territorial interno;
+5. repetir `/health`, `/health/ready`, smoke test y restore verification antes de considerar la carga aceptable.

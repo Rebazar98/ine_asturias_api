@@ -1,4 +1,4 @@
-﻿import httpx
+import httpx
 
 from tests.conftest import override_ine_service
 

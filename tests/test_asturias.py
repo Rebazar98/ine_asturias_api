@@ -12,9 +12,7 @@ TABLE_1_PAYLOAD = [
             {"Variable": "Territorio", "Nombre": "Principado de Asturias", "Id": "8999"},
             {"Variable": "Indicador", "Nombre": "Poblacion", "Id": "POB"},
         ],
-        "Data": [
-            {"Periodo": "2024", "Valor": "1012345", "Unidad": "personas"}
-        ],
+        "Data": [{"Periodo": "2024", "Valor": "1012345", "Unidad": "personas"}],
     }
 ]
 
@@ -39,9 +37,7 @@ MIXED_TABLE_PAYLOAD = [
             {"Variable": "Territorio", "Nombre": "Asturias, Principado de", "Id": "33"},
             {"Variable": "Indicador", "Nombre": "Indice general", "Id": "IPC"},
         ],
-        "Data": [
-            {"Periodo": "2024M01", "Valor": "101,5", "Unidad": "indice"}
-        ],
+        "Data": [{"Periodo": "2024M01", "Valor": "101,5", "Unidad": "indice"}],
     },
     {
         "Nombre": "Serie Zaragoza",
@@ -49,14 +45,14 @@ MIXED_TABLE_PAYLOAD = [
             {"Variable": "Territorio", "Nombre": "Zaragoza", "Id": "50"},
             {"Variable": "Indicador", "Nombre": "Indice general", "Id": "IPC"},
         ],
-        "Data": [
-            {"Periodo": "2024M01", "Valor": "99,4", "Unidad": "indice"}
-        ],
+        "Data": [{"Periodo": "2024M01", "Valor": "99,4", "Unidad": "indice"}],
     },
 ]
 
 
-def test_asturias_endpoint_can_run_in_background_and_report_status(client, dummy_ingestion_repo, dummy_series_repo):
+def test_asturias_endpoint_can_run_in_background_and_report_status(
+    client, dummy_ingestion_repo, dummy_series_repo
+):
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/VARIABLES_OPERACION/OP_AST":
             return httpx.Response(200, json=[{"Id": "115", "Nombre": "Comunidad autonoma"}])
@@ -92,7 +88,9 @@ def test_asturias_endpoint_can_run_in_background_and_report_status(client, dummy
     assert job_payload["result"]["summary"]["tables_succeeded"] == 1
 
 
-def test_asturias_endpoint_resolves_automatically_through_tables(client, dummy_ingestion_repo, dummy_series_repo):
+def test_asturias_endpoint_resolves_automatically_through_tables(
+    client, dummy_ingestion_repo, dummy_series_repo
+):
     called_paths = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -214,7 +212,9 @@ def test_asturias_endpoint_accepts_manual_override_and_returns_partial_results(
     ]
 
 
-def test_asturias_endpoint_respects_max_tables_limit(client, dummy_ingestion_repo, dummy_series_repo):
+def test_asturias_endpoint_respects_max_tables_limit(
+    client, dummy_ingestion_repo, dummy_series_repo
+):
     called_paths = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -254,7 +254,9 @@ def test_asturias_endpoint_respects_max_tables_limit(client, dummy_ingestion_rep
     ]
 
 
-def test_asturias_endpoint_filters_non_asturias_series_after_download(client, dummy_ingestion_repo, dummy_series_repo):
+def test_asturias_endpoint_filters_non_asturias_series_after_download(
+    client, dummy_ingestion_repo, dummy_series_repo
+):
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/VARIABLES_OPERACION/OP_AST":
             return httpx.Response(200, json=[{"Id": "115", "Nombre": "Comunidad autonoma"}])
@@ -280,8 +282,9 @@ def test_asturias_endpoint_filters_non_asturias_series_after_download(client, du
     assert dummy_series_repo.items[0].geography_name == "Asturias, Principado de"
 
 
-
-def test_asturias_endpoint_returns_clear_error_if_all_tables_fail(client, dummy_ingestion_repo, dummy_series_repo):
+def test_asturias_endpoint_returns_clear_error_if_all_tables_fail(
+    client, dummy_ingestion_repo, dummy_series_repo
+):
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/VARIABLES_OPERACION/OP_AST":
             return httpx.Response(200, json=[{"Id": "115", "Nombre": "Comunidad autonoma"}])
@@ -299,7 +302,10 @@ def test_asturias_endpoint_returns_clear_error_if_all_tables_fail(client, dummy_
 
     assert response.status_code == 502
     payload = response.json()
-    assert payload["detail"]["message"] == "No table data could be recovered for Asturias in this operation."
+    assert (
+        payload["detail"]["message"]
+        == "No table data could be recovered for Asturias in this operation."
+    )
     assert payload["detail"]["tables_found"] == ["501"]
     assert len(payload["detail"]["errors"]) == 1
     assert dummy_ingestion_repo.records[0]["source_type"] == "operation_tables"

@@ -12,6 +12,7 @@ from redis.asyncio import Redis
 
 from app.api.routes_health import router as health_router
 from app.api.routes_ine import router as ine_router
+from app.api.routes_territorial import router as territorial_router
 from app.core.cache import InMemoryTTLCache
 from app.core.jobs import InMemoryJobStore, RedisJobStore
 from app.core.logging import configure_logging, get_logger
@@ -19,6 +20,8 @@ from app.core.metrics import record_http_request
 from app.core.redis import redis_settings_from_url
 from app.db import dispose_db, init_db
 from app.services.asturias_resolver import AsturiasResolutionError
+from app.services.cartociudad_client import CartoCiudadClientError
+from app.services.cartociudad_normalizers import CartoCiudadNormalizationError
 from app.services.ine_client import INEClientError
 from app.settings import get_settings
 
@@ -73,6 +76,7 @@ async def lifespan(app: FastAPI):
         "app_started",
         extra={
             "app_name": settings.app_name,
+            "app_version": settings.app_version,
             "app_env": settings.app_env,
             "cache_enabled": settings.enable_cache,
             "job_store": type(app.state.job_store).__name__,
@@ -97,20 +101,28 @@ async def lifespan(app: FastAPI):
             await app.state.redis.aclose()
         await app.state.http_client.aclose()
         await dispose_db()
-        logger.info("app_stopped", extra={"app_name": settings.app_name, "app_env": settings.app_env})
+        logger.info(
+            "app_stopped",
+            extra={
+                "app_name": settings.app_name,
+                "app_version": settings.app_version,
+                "app_env": settings.app_env,
+            },
+        )
 
 
 def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(
         title=settings.app_name,
-        version="3.0.0",
+        version=settings.app_version,
         description="FastAPI ingestion and proxy API for INE data focused on Asturias.",
         lifespan=lifespan,
     )
 
     app.include_router(health_router)
     app.include_router(ine_router)
+    app.include_router(territorial_router)
 
     @app.middleware("http")
     async def request_timing_middleware(request: Request, call_next):
@@ -152,6 +164,18 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(INEClientError)
     async def ine_client_error_handler(_: Request, exc: INEClientError) -> JSONResponse:
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
+    @app.exception_handler(CartoCiudadClientError)
+    async def cartociudad_client_error_handler(
+        _: Request, exc: CartoCiudadClientError
+    ) -> JSONResponse:
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
+    @app.exception_handler(CartoCiudadNormalizationError)
+    async def cartociudad_normalization_error_handler(
+        _: Request, exc: CartoCiudadNormalizationError
+    ) -> JSONResponse:
         return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
     @app.exception_handler(AsturiasResolutionError)

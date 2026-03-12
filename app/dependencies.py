@@ -10,10 +10,12 @@ from app.core.cache import InMemoryTTLCache
 from app.core.jobs import BaseJobStore
 from app.db import get_session
 from app.repositories.catalog import TableCatalogRepository
+from app.repositories.geocoding import GeocodingCacheRepository
 from app.repositories.ingestion import IngestionRepository
 from app.repositories.series import SeriesRepository
 from app.repositories.territorial import TerritorialRepository
 from app.services.asturias_resolver import AsturiasResolver
+from app.services.cartociudad_client import CartoCiudadClientService
 from app.services.ine_client import INEClientService
 from app.services.ine_operation_ingestion import INEOperationIngestionService
 from app.settings import Settings, get_settings
@@ -44,6 +46,14 @@ def get_ine_client_service(
     return INEClientService(request.app.state.http_client, settings, cache)
 
 
+def get_cartociudad_client_service(
+    request: Request,
+    settings: Settings = Depends(get_settings),
+    cache: InMemoryTTLCache = Depends(get_cache),
+) -> CartoCiudadClientService:
+    return CartoCiudadClientService(request.app.state.http_client, settings, cache)
+
+
 def get_asturias_resolver(
     ine_client: INEClientService = Depends(get_ine_client_service),
     cache: InMemoryTTLCache = Depends(get_cache),
@@ -67,6 +77,12 @@ def get_table_catalog_repository(
     session: AsyncSession | None = Depends(get_db_session),
 ) -> TableCatalogRepository:
     return TableCatalogRepository(session=session)
+
+
+def get_geocoding_cache_repository(
+    session: AsyncSession | None = Depends(get_db_session),
+) -> GeocodingCacheRepository:
+    return GeocodingCacheRepository(session=session)
 
 
 def get_territorial_repository(

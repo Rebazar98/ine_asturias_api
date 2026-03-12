@@ -19,6 +19,7 @@ UPSERT_COLUMN_NAMES = {
     "operation_code",
     "table_id",
     "variable_id",
+    "territorial_unit_id",
     "geography_name",
     "geography_code",
     "period",
@@ -99,6 +100,7 @@ class SeriesRepository:
                 set_={
                     "value": statement.excluded.value,
                     "unit": statement.excluded.unit,
+                    "territorial_unit_id": statement.excluded.territorial_unit_id,
                     "metadata": statement.excluded["metadata"],
                     "raw_payload": statement.excluded.raw_payload,
                 },
@@ -149,6 +151,8 @@ class SeriesRepository:
         operation_code: str | None = None,
         table_id: str | None = None,
         geography_code: str | None = None,
+        geography_name: str | None = None,
+        geography_code_system: str = "ine",
         variable_id: str | None = None,
         period_from: str | None = None,
         period_to: str | None = None,
@@ -156,7 +160,25 @@ class SeriesRepository:
         page_size: int = 50,
     ) -> dict[str, Any]:
         if self.session is None:
-            return {"items": [], "total": 0, "page": page, "page_size": page_size}
+            return {
+                "items": [],
+                "total": 0,
+                "page": page,
+                "page_size": page_size,
+                "pages": 0,
+                "has_next": False,
+                "has_previous": page > 1,
+                "filters": self._serialize_filters(
+                    operation_code=operation_code,
+                    table_id=table_id,
+                    geography_code=geography_code,
+                    geography_name=geography_name,
+                    geography_code_system=geography_code_system,
+                    variable_id=variable_id,
+                    period_from=period_from,
+                    period_to=period_to,
+                ),
+            }
 
         statement = select(INESeriesNormalized)
         count_statement = select(func.count()).select_from(INESeriesNormalized)
@@ -168,6 +190,8 @@ class SeriesRepository:
             filters.append(INESeriesNormalized.table_id == table_id)
         if geography_code:
             filters.append(INESeriesNormalized.geography_code == geography_code)
+        if geography_name:
+            filters.append(func.lower(INESeriesNormalized.geography_name) == geography_name.lower())
         if variable_id:
             filters.append(INESeriesNormalized.variable_id == variable_id)
         if period_from:
@@ -189,11 +213,26 @@ class SeriesRepository:
         total = await self.session.scalar(count_statement)
         result = await self.session.execute(statement)
         items = [self._serialize_row(row) for row in result.scalars().all()]
+        total_count = int(total or 0)
+        pages = (total_count + page_size - 1) // page_size if total_count else 0
         return {
             "items": items,
-            "total": int(total or 0),
+            "total": total_count,
             "page": page,
             "page_size": page_size,
+            "pages": pages,
+            "has_next": page < pages,
+            "has_previous": page > 1,
+            "filters": self._serialize_filters(
+                operation_code=operation_code,
+                table_id=table_id,
+                geography_code=geography_code,
+                geography_name=geography_name,
+                geography_code_system=geography_code_system,
+                variable_id=variable_id,
+                period_from=period_from,
+                period_to=period_to,
+            ),
         }
 
     @staticmethod
@@ -226,6 +265,7 @@ class SeriesRepository:
             "operation_code": SeriesRepository._string_value(payload.get("operation_code")),
             "table_id": SeriesRepository._string_value(payload.get("table_id")),
             "variable_id": SeriesRepository._string_value(payload.get("variable_id")),
+            "territorial_unit_id": SeriesRepository._int_value(payload.get("territorial_unit_id")),
             "geography_name": SeriesRepository._string_value(payload.get("geography_name")),
             "geography_code": SeriesRepository._string_value(payload.get("geography_code")),
             "period": SeriesRepository._string_value(payload.get("period")),
@@ -283,6 +323,19 @@ class SeriesRepository:
             return None
 
     @staticmethod
+    def _int_value(value: Any) -> int | None:
+        if value in (None, ""):
+            return None
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, int):
+            return value
+        try:
+            return int(str(value))
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
     def _json_value(value: Any) -> dict[str, Any]:
         if value is None:
             return {}
@@ -308,4 +361,26 @@ class SeriesRepository:
             "unit": row.unit,
             "metadata": row.metadata_json,
             "inserted_at": row.inserted_at,
+        }
+
+    @staticmethod
+    def _serialize_filters(
+        operation_code: str | None,
+        table_id: str | None,
+        geography_code: str | None,
+        geography_name: str | None,
+        geography_code_system: str,
+        variable_id: str | None,
+        period_from: str | None,
+        period_to: str | None,
+    ) -> dict[str, Any]:
+        return {
+            "operation_code": operation_code,
+            "table_id": table_id,
+            "geography_code": geography_code,
+            "geography_name": geography_name,
+            "geography_code_system": geography_code_system,
+            "variable_id": variable_id,
+            "period_from": period_from,
+            "period_to": period_to,
         }

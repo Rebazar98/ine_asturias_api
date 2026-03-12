@@ -30,7 +30,7 @@ def test_metrics_endpoint_merges_worker_application_metrics(client, monkeypatch)
             text=(
                 "# HELP ine_asturias_worker_only_total Worker-only metric.\n"
                 "# TYPE ine_asturias_worker_only_total counter\n"
-                "ine_asturias_worker_only_total{source=\"worker\"} 3\n"
+                'ine_asturias_worker_only_total{source="worker"} 3\n'
                 "# HELP python_gc_objects_collected_total Objects collected during gc\n"
                 "# TYPE python_gc_objects_collected_total counter\n"
                 "python_gc_objects_collected_total 999\n"
@@ -43,5 +43,5 @@ def test_metrics_endpoint_merges_worker_application_metrics(client, monkeypatch)
     response = client.get("/metrics")
 
     assert response.status_code == 200
-    assert "ine_asturias_worker_only_total{source=\"worker\"} 3" in response.text
+    assert 'ine_asturias_worker_only_total{source="worker"} 3' in response.text
     assert "python_gc_objects_collected_total 999" not in response.text
