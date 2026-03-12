@@ -21,14 +21,26 @@ jobs:
         run: docker build -t ine_asturias_api:security .
 
       - name: Scan API image with Trivy
-        uses: aquasecurity/trivy-action@0.28.0
-        with:
-          image-ref: ine_asturias_api:security
-          format: table
-          output: trivy-report.txt
-          exit-code: '1'
-          ignore-unfixed: true
-          severity: HIGH,CRITICAL
+        id: trivy_scan
+        continue-on-error: true
+        run: |
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "${{ github.workspace }}:/work" \
+            aquasec/trivy:0.58.2 image \
+            --ignore-unfixed \
+            --severity HIGH,CRITICAL \
+            --format table \
+            --output /work/trivy-report.txt \
+            --exit-code 1 \
+            ine_asturias_api:security
+
+      - name: Ensure Trivy report exists
+        if: always()
+        run: |
+          if [ ! -f trivy-report.txt ]; then
+            echo "Trivy report was not generated. Review the scan step logs." > trivy-report.txt
+          fi
 
       - name: Upload Trivy report
         if: always()
@@ -37,3 +49,9 @@ jobs:
           name: trivy-report
           path: trivy-report.txt
           if-no-files-found: error
+
+      - name: Enforce vulnerability gate
+        if: steps.trivy_scan.outcome == 'failure'
+        run: |
+          echo "Trivy detected HIGH or CRITICAL findings. Review trivy-report.txt and decide whether the RC is blocked or requires a documented exception."
+          exit 1

@@ -139,8 +139,8 @@ Evidencia minima que DEBE recogerse:
 
 - URL del workflow ejecutado.
 - estado final del job `app-image-scan`.
-- artefacto `trivy-report` adjunto al run.
-- fichero `trivy-report.txt` descargable desde el artefacto.
+- artefacto 	rivy-report adjunto al run.
+- fichero 	rivy-report.txt descargable desde el artefacto, incluso si el workflow termina en fallo por vulnerabilidades bloqueantes.
 - si falla, confirmacion de si los hallazgos `HIGH` o `CRITICAL` bloquean la RC o quedan aceptados temporalmente con excepcion documentada.
 
 ## Archivado minimo de evidencia del RC
@@ -229,3 +229,4 @@ Un RC se considera aceptable solo si:
 - `/health`, `/health/ready` y `/metrics` responden correctamente;
 - existe `Security Scan` reciente revisado;
 - no hay hallazgos `HIGH` o `CRITICAL` abiertos sin decision explicita.
+
