@@ -4,7 +4,7 @@ import argparse
 import os
 import sys
 import time
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 
@@ -24,19 +24,32 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     base_url = args.base_url.rstrip("/")
+    startup_grace_seconds = min(max(args.timeout_seconds / 4, 15.0), 60.0)
     request_timeout_seconds = min(max(args.timeout_seconds / 6, 10.0), 30.0)
     timeout = httpx.Timeout(request_timeout_seconds, connect=5.0)
     headers = {"X-API-Key": args.api_key} if args.api_key else None
 
     with httpx.Client(base_url=base_url, timeout=timeout, headers=headers) as client:
-        health = _get_json(client, "/health", expected_status=200)
-        if health.get("status") != "ok":
-            raise RuntimeError(f"/health devolvio un estado invalido: {health}")
+        _wait_for_json_condition(
+            client=client,
+            path="/health",
+            timeout_seconds=startup_grace_seconds,
+            poll_interval=min(args.poll_interval, 2.0),
+            expected_status=200,
+            description="/health",
+            validator=lambda payload: payload.get("status") == "ok",
+        )
         print("[smoke] /health OK")
 
-        readiness = _get_json(client, "/health/ready", expected_status=200)
-        if readiness.get("status") != "ok":
-            raise RuntimeError(f"/health/ready no esta listo: {readiness}")
+        _wait_for_json_condition(
+            client=client,
+            path="/health/ready",
+            timeout_seconds=startup_grace_seconds,
+            poll_interval=min(args.poll_interval, 2.0),
+            expected_status=200,
+            description="/health/ready",
+            validator=lambda payload: payload.get("status") == "ok",
+        )
         print("[smoke] /health/ready OK")
 
         metrics_text = _get_text(client, "/metrics", expected_status=200)
@@ -116,8 +129,39 @@ def _wait_for_terminal_job_state(
     )
 
 
+def _wait_for_json_condition(
+    client: httpx.Client,
+    path: str,
+    timeout_seconds: float,
+    poll_interval: float,
+    expected_status: int,
+    description: str,
+    validator: Callable[[dict[str, Any]], bool],
+) -> dict[str, Any]:
+    deadline = time.monotonic() + timeout_seconds
+    last_error: Exception | None = None
+    last_payload: dict[str, Any] | None = None
+
+    while time.monotonic() < deadline:
+        try:
+            payload = _get_json(client, path, expected_status=expected_status)
+            last_payload = payload
+            if validator(payload):
+                return payload
+            last_error = RuntimeError(f"{description} devolvio un payload no valido: {payload}")
+        except Exception as exc:
+            last_error = exc
+
+        time.sleep(poll_interval)
+
+    raise RuntimeError(
+        f"Timeout esperando a que {description} estuviera disponible. "
+        f"Ultimo payload observado: {last_payload}. Ultimo error: {last_error}"
+    )
+
+
 def _get_json(client: httpx.Client, path: str, expected_status: int) -> dict[str, Any]:
-    response = client.get(path)
+    response = _request_with_retry(client, path)
     if response.status_code != expected_status:
         raise RuntimeError(
             f"Respuesta inesperada para {path}: {response.status_code} {response.text}"
@@ -126,12 +170,32 @@ def _get_json(client: httpx.Client, path: str, expected_status: int) -> dict[str
 
 
 def _get_text(client: httpx.Client, path: str, expected_status: int) -> str:
-    response = client.get(path)
+    response = _request_with_retry(client, path)
     if response.status_code != expected_status:
         raise RuntimeError(
             f"Respuesta inesperada para {path}: {response.status_code} {response.text}"
         )
     return response.text
+
+
+def _request_with_retry(
+    client: httpx.Client,
+    path: str,
+    retries: int = 3,
+    retry_interval: float = 1.0,
+) -> httpx.Response:
+    last_error: httpx.RequestError | None = None
+
+    for attempt in range(retries):
+        try:
+            return client.get(path)
+        except httpx.RequestError as exc:
+            last_error = exc
+            if attempt == retries - 1:
+                break
+            time.sleep(retry_interval)
+
+    raise RuntimeError(f"Error de conexion para {path}: {last_error}") from last_error
 
 
 if __name__ == "__main__":
