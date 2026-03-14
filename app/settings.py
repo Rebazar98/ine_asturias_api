@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     redis_url: str | None = Field(default=None, alias="REDIS_URL")
     job_queue_name: str = Field(default="ine_jobs", alias="JOB_QUEUE_NAME")
     job_result_ttl_seconds: int = Field(default=86400, alias="JOB_RESULT_TTL_SECONDS")
+    max_concurrent_table_fetches: int = Field(default=3, alias="MAX_CONCURRENT_TABLE_FETCHES", ge=1, le=10)
     worker_heartbeat_ttl_seconds: int = Field(default=60, alias="WORKER_HEARTBEAT_TTL_SECONDS")
     worker_metrics_port: int = Field(default=9001, alias="WORKER_METRICS_PORT")
     worker_metrics_url: str | None = Field(default=None, alias="WORKER_METRICS_URL")

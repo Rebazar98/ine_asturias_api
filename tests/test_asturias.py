@@ -1,3 +1,4 @@
+import asyncio
 import time
 
 import httpx
@@ -310,3 +311,41 @@ def test_asturias_endpoint_returns_clear_error_if_all_tables_fail(
     assert len(payload["detail"]["errors"]) == 1
     assert dummy_ingestion_repo.records[0]["source_type"] == "operation_tables"
     assert dummy_series_repo.items == []
+
+
+def test_asturias_endpoint_fetches_selected_tables_with_bounded_concurrency(
+    client, dummy_ingestion_repo, dummy_series_repo
+):
+    table_start_times: dict[str, float] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/VARIABLES_OPERACION/OP_AST":
+            return httpx.Response(200, json=[{"Id": "115", "Nombre": "Comunidad autonoma"}])
+        if request.url.path == "/VALORES_VARIABLEOPERACION/115/OP_AST":
+            return httpx.Response(200, json=[{"Id": "33", "Nombre": "Principado de Asturias"}])
+        if request.url.path == "/TABLAS_OPERACION/OP_AST":
+            return httpx.Response(
+                200,
+                json=[
+                    {"IdTabla": "501", "Nombre": "Tabla principal"},
+                    {"IdTabla": "502", "Nombre": "Tabla secundaria"},
+                ],
+            )
+        if request.url.path == "/DATOS_TABLA/501":
+            table_start_times["501"] = time.perf_counter()
+            await asyncio.sleep(0.05)
+            return httpx.Response(200, json=TABLE_1_PAYLOAD)
+        if request.url.path == "/DATOS_TABLA/502":
+            table_start_times["502"] = time.perf_counter()
+            await asyncio.sleep(0.05)
+            return httpx.Response(200, json=TABLE_2_PAYLOAD)
+        raise AssertionError(f"Unexpected path: {request.url.path}")
+
+    override_ine_service(handler)
+
+    response = client.get("/ine/operation/OP_AST/asturias?background=false&max_tables=2")
+
+    assert response.status_code == 200
+    assert set(table_start_times) == {"501", "502"}
+    assert abs(table_start_times["501"] - table_start_times["502"]) < 0.04
+    assert [item.table_id for item in dummy_series_repo.items] == ["501", "502", "502"]

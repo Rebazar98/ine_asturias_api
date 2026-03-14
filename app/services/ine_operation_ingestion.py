@@ -2,6 +2,7 @@
 
 import asyncio
 import unicodedata
+from dataclasses import dataclass
 from collections.abc import Awaitable, Callable
 from typing import Any, Literal
 
@@ -10,6 +11,7 @@ from app.core.metrics import record_normalization
 from app.repositories.catalog import TableCatalogRepository
 from app.repositories.ingestion import IngestionRepository
 from app.repositories.series import SeriesRepository
+from app.schemas import NormalizedSeriesItem
 from app.services.asturias_resolver import AsturiasResolutionError
 from app.services.normalizers import (
     inspect_payload_shape,
@@ -20,6 +22,24 @@ from app.services.normalizers import (
 
 LARGE_TABLE_WARNING_THRESHOLD = 50000
 ProgressReporter = Callable[[dict[str, Any]], Awaitable[None]]
+
+
+@dataclass(slots=True)
+class PreparedAsturiasTable:
+    table_index: int
+    table_id: str
+    table_name: str
+    request_path: str
+    request_params: dict[str, Any]
+    table_metadata: dict[str, Any]
+    table_payload: dict[str, Any] | list[Any] | None = None
+    filtered_payload: dict[str, Any] | list[Any] | None = None
+    filtered_stats: dict[str, int] | None = None
+    normalized_items: list[NormalizedSeriesItem] | None = None
+    raw_rows_retrieved: int = 0
+    large_warning: dict[str, Any] | None = None
+    last_warning: str = ""
+    error_detail: dict[str, Any] | None = None
 
 
 class INEOperationIngestionService:
@@ -39,6 +59,36 @@ class INEOperationIngestionService:
         payload: dict[str, Any] | list[Any],
         table_id: str,
     ) -> int:
+        items = await self._prepare_table_normalized_items(payload=payload, table_id=table_id)
+        if not items:
+            return 0
+        return await self.series_repo.upsert_many(items)
+
+    async def normalize_and_store_asturias(
+        self,
+        payload: dict[str, Any] | list[Any],
+        op_code: str,
+        geography_name: str,
+        geography_code: str,
+        table_id: str,
+    ) -> int:
+        items = await self._prepare_asturias_normalized_items(
+            payload=payload,
+            op_code=op_code,
+            geography_name=geography_name,
+            geography_code=geography_code,
+            table_id=table_id,
+        )
+        if not items:
+            return 0
+        return await self.series_repo.upsert_many(items)
+
+    async def _prepare_table_normalized_items(
+        self,
+        *,
+        payload: dict[str, Any] | list[Any],
+        table_id: str,
+    ) -> list[NormalizedSeriesItem]:
         payload_stats = inspect_payload_shape(payload)
 
         try:
@@ -48,7 +98,7 @@ class INEOperationIngestionService:
                 "table_normalization_failed",
                 extra={"table_id": table_id, **payload_stats},
             )
-            return 0
+            return []
 
         if not outcome.items:
             record_normalization("table", 0, outcome.discarded_counts)
@@ -61,7 +111,7 @@ class INEOperationIngestionService:
                     "discarded_counts": outcome.discarded_counts,
                 },
             )
-            return 0
+            return []
 
         record_normalization("table", len(outcome.items), outcome.discarded_counts)
         self.logger.info(
@@ -75,16 +125,17 @@ class INEOperationIngestionService:
                 "first_row": outcome.items[0].model_dump(),
             },
         )
-        return await self.series_repo.upsert_many(outcome.items)
+        return outcome.items
 
-    async def normalize_and_store_asturias(
+    async def _prepare_asturias_normalized_items(
         self,
+        *,
         payload: dict[str, Any] | list[Any],
         op_code: str,
         geography_name: str,
         geography_code: str,
         table_id: str,
-    ) -> int:
+    ) -> list[NormalizedSeriesItem]:
         payload_stats = inspect_payload_shape(payload)
 
         try:
@@ -101,7 +152,7 @@ class INEOperationIngestionService:
                 "asturias_normalization_failed",
                 extra={"op_code": op_code, "table_id": table_id, **payload_stats},
             )
-            return 0
+            return []
 
         if not outcome.items:
             record_normalization("asturias", 0, outcome.discarded_counts)
@@ -115,7 +166,7 @@ class INEOperationIngestionService:
                     "discarded_counts": outcome.discarded_counts,
                 },
             )
-            return 0
+            return []
 
         record_normalization("asturias", len(outcome.items), outcome.discarded_counts)
         self.logger.info(
@@ -130,7 +181,7 @@ class INEOperationIngestionService:
                 "first_row": outcome.items[0].model_dump(),
             },
         )
-        return await self.series_repo.upsert_many(outcome.items)
+        return outcome.items
 
     async def ingest_asturias_operation(
         self,
@@ -143,6 +194,7 @@ class INEOperationIngestionService:
         max_tables: int | None,
         skip_known_no_data: bool,
         ine_client: Any,
+        max_concurrent_table_fetches: int,
         progress_reporter: ProgressReporter | None = None,
     ) -> dict[str, Any]:
         tables_payload = await ine_client.get_operation_tables(op_code)
@@ -236,71 +288,46 @@ class INEOperationIngestionService:
         errors: list[dict[str, Any]] = []
         warnings: list[dict[str, Any]] = []
         normalized_rows = 0
+        prepared_tables = await self._prepare_asturias_tables(
+            op_code=op_code,
+            resolution=resolution,
+            table_candidates=table_candidates,
+            table_params=table_params,
+            ine_client=ine_client,
+            max_concurrent_table_fetches=max_concurrent_table_fetches,
+            progress_reporter=progress_reporter,
+        )
 
-        for table_index, table in enumerate(table_candidates, start=1):
-            table_id = table["table_id"]
-            table_name = table["table_name"]
-            request_path = f"DATOS_TABLA/{table_id}"
-            self.logger.info(
-                "asturias_table_fetch_started",
-                extra={
-                    "operation_code": op_code,
-                    "table_id": table_id,
-                    "table_name": table_name,
-                    "request_path": request_path,
-                    "request_params": table_params,
-                    "table_index": table_index,
-                },
-            )
-            if progress_reporter is not None:
-                await progress_reporter(
-                    {
-                        "stage": "fetching_table",
-                        "table_index": table_index,
-                        "tables_total": len(table_candidates),
-                        "table_id": table_id,
-                        "table_name": table_name,
-                    }
-                )
-
-            try:
-                table_payload = await ine_client.get_table(table_id, table_params)
-            except Exception as exc:
-                error_detail = {
-                    "table_id": table_id,
-                    "table_name": table_name,
-                    "request_path": request_path,
-                    "request_params": table_params,
-                    "error": getattr(exc, "detail", str(exc)),
-                }
+        for prepared in prepared_tables:
+            if prepared.error_detail is not None:
                 self.logger.warning(
                     "asturias_table_fetch_failed",
                     extra={
                         "operation_code": op_code,
-                        "table_id": table_id,
-                        "error": error_detail["error"],
+                        "table_id": prepared.table_id,
+                        "error": prepared.error_detail["error"],
                     },
                 )
                 await self.catalog_repo.update_table_status(
                     operation_code=op_code,
-                    table_id=table_id,
-                    table_name=table_name,
-                    request_path=request_path,
+                    table_id=prepared.table_id,
+                    table_name=prepared.table_name,
+                    request_path=prepared.request_path,
                     resolution_context=resolution_context,
                     has_asturias_data=None,
                     validation_status="failed",
-                    metadata=table["metadata"],
+                    metadata=prepared.table_metadata,
                     notes="INE upstream error while fetching table.",
-                    last_warning=self._summarize_error(error_detail["error"]),
+                    last_warning=self._summarize_error(prepared.error_detail["error"]),
                 )
-                errors.append(error_detail)
+                errors.append(prepared.error_detail)
                 if progress_reporter is not None:
                     await progress_reporter(
                         {
                             "stage": "table_failed",
-                            "table_index": table_index,
+                            "table_index": prepared.table_index,
                             "tables_total": len(table_candidates),
-                            "table_id": table_id,
+                            "table_id": prepared.table_id,
                             "errors": len(errors),
                         }
                     )
@@ -308,72 +335,46 @@ class INEOperationIngestionService:
 
             await self.ingestion_repo.save_raw(
                 source_type="operation_asturias_table",
-                source_key=f"{op_code}:{table_id}:{resolution.geo_variable_id}:{resolution.asturias_value_id}",
-                request_path=request_path,
-                request_params=table_params,
-                payload=table_payload,
+                source_key=(
+                    f"{op_code}:{prepared.table_id}:"
+                    f"{resolution.geo_variable_id}:{resolution.asturias_value_id}"
+                ),
+                request_path=prepared.request_path,
+                request_params=prepared.request_params,
+                payload=prepared.table_payload,
             )
 
-            raw_rows_retrieved = self._count_retrieved_rows(table_payload)
-            last_warning = ""
-            if raw_rows_retrieved > LARGE_TABLE_WARNING_THRESHOLD:
-                warning_detail = {
-                    "table_id": table_id,
-                    "table_name": table_name,
-                    "warning": "large_table_detected",
-                    "raw_rows_retrieved": raw_rows_retrieved,
-                }
-                warnings.append(warning_detail)
-                last_warning = "large_table_detected"
-                self.logger.warning(
-                    "asturias_table_large_payload",
-                    extra={
-                        "operation_code": op_code,
-                        "table_id": table_id,
-                        "raw_rows_retrieved": raw_rows_retrieved,
-                    },
-                )
+            if prepared.large_warning is not None:
+                warnings.append(prepared.large_warning)
 
-            filtered_payload, filtered_stats = await asyncio.to_thread(
-                self._filter_payload_for_asturias,
-                table_payload,
-                resolution.asturias_value_id,
-                resolution.asturias_label or "Asturias",
-            )
-            self.logger.info(
-                "asturias_table_filter_completed",
-                extra={
-                    "operation_code": op_code,
-                    "table_id": table_id,
-                    "raw_rows_retrieved": raw_rows_retrieved,
-                    "filtered_rows_retrieved": filtered_stats["rows_kept"],
-                    "series_kept": filtered_stats["series_kept"],
-                    "series_discarded": filtered_stats["series_discarded"],
-                },
-            )
+            filtered_stats = prepared.filtered_stats or {
+                "rows_kept": 0,
+                "series_kept": 0,
+                "series_discarded": 0,
+            }
 
             if filtered_stats["series_kept"] == 0:
                 warning_detail = {
-                    "table_id": table_id,
-                    "table_name": table_name,
+                    "table_id": prepared.table_id,
+                    "table_name": prepared.table_name,
                     "warning": "no_asturias_rows_after_validation",
-                    "raw_rows_retrieved": raw_rows_retrieved,
+                    "raw_rows_retrieved": prepared.raw_rows_retrieved,
                 }
                 warnings.append(warning_detail)
                 await self.catalog_repo.update_table_status(
                     operation_code=op_code,
-                    table_id=table_id,
-                    table_name=table_name,
-                    request_path=request_path,
+                    table_id=prepared.table_id,
+                    table_name=prepared.table_name,
+                    request_path=prepared.request_path,
                     resolution_context=resolution_context,
                     has_asturias_data=False,
                     validation_status="no_data",
                     normalized_rows=0,
-                    raw_rows_retrieved=raw_rows_retrieved,
+                    raw_rows_retrieved=prepared.raw_rows_retrieved,
                     filtered_rows_retrieved=filtered_stats["rows_kept"],
                     series_kept=filtered_stats["series_kept"],
                     series_discarded=filtered_stats["series_discarded"],
-                    metadata=table["metadata"],
+                    metadata=prepared.table_metadata,
                     notes="Table does not contain rows valid for Asturias after validation.",
                     last_warning="no_asturias_rows_after_validation",
                 )
@@ -381,60 +382,54 @@ class INEOperationIngestionService:
                     await progress_reporter(
                         {
                             "stage": "table_filtered_empty",
-                            "table_index": table_index,
+                            "table_index": prepared.table_index,
                             "tables_total": len(table_candidates),
-                            "table_id": table_id,
+                            "table_id": prepared.table_id,
                             "warnings": len(warnings),
                         }
                     )
                 continue
 
-            table_normalized_rows = await self.normalize_and_store_asturias(
-                payload=filtered_payload,
-                op_code=op_code,
-                geography_name=resolution.asturias_label or "Asturias",
-                geography_code=resolution.asturias_value_id,
-                table_id=table_id,
-            )
+            table_normalized_rows = await self.series_repo.upsert_many(prepared.normalized_items or [])
             normalized_rows += table_normalized_rows
 
             await self.catalog_repo.update_table_status(
                 operation_code=op_code,
-                table_id=table_id,
-                table_name=table_name,
-                request_path=request_path,
+                table_id=prepared.table_id,
+                table_name=prepared.table_name,
+                request_path=prepared.request_path,
                 resolution_context=resolution_context,
                 has_asturias_data=True,
                 validation_status="has_data",
                 normalized_rows=table_normalized_rows,
-                raw_rows_retrieved=raw_rows_retrieved,
+                raw_rows_retrieved=prepared.raw_rows_retrieved,
                 filtered_rows_retrieved=filtered_stats["rows_kept"],
                 series_kept=filtered_stats["series_kept"],
                 series_discarded=filtered_stats["series_discarded"],
-                metadata=table["metadata"],
+                metadata=prepared.table_metadata,
                 notes="Table produced Asturias rows.",
-                last_warning=last_warning,
+                last_warning=prepared.last_warning,
             )
 
             results.append(
                 {
-                    "table_id": table_id,
-                    "table_name": table_name,
-                    "request_path": request_path,
-                    "request_params": table_params,
-                    "raw_rows_retrieved": raw_rows_retrieved,
+                    "table_id": prepared.table_id,
+                    "table_name": prepared.table_name,
+                    "request_path": prepared.request_path,
+                    "request_params": prepared.request_params,
+                    "raw_rows_retrieved": prepared.raw_rows_retrieved,
                     "filtered_rows_retrieved": filtered_stats["rows_kept"],
-                    "data": filtered_payload,
-                    "table_metadata": table["metadata"],
+                    "data": prepared.filtered_payload,
+                    "table_metadata": prepared.table_metadata,
                 }
             )
             if progress_reporter is not None:
                 await progress_reporter(
                     {
                         "stage": "table_completed",
-                        "table_index": table_index,
+                        "table_index": prepared.table_index,
                         "tables_total": len(table_candidates),
-                        "table_id": table_id,
+                        "table_id": prepared.table_id,
                         "tables_succeeded": len(results),
                         "tables_failed": len(errors),
                         "normalized_rows": normalized_rows,
@@ -501,6 +496,159 @@ class INEOperationIngestionService:
             },
         )
         return aggregated_payload
+
+    async def _prepare_asturias_tables(
+        self,
+        *,
+        op_code: str,
+        resolution: Any,
+        table_candidates: list[dict[str, Any]],
+        table_params: dict[str, Any],
+        ine_client: Any,
+        max_concurrent_table_fetches: int,
+        progress_reporter: ProgressReporter | None,
+    ) -> list[PreparedAsturiasTable]:
+        semaphore = asyncio.Semaphore(max(max_concurrent_table_fetches, 1))
+        prepared_tasks = [
+            asyncio.create_task(
+                self._prepare_asturias_table(
+                    semaphore=semaphore,
+                    op_code=op_code,
+                    resolution=resolution,
+                    table=table,
+                    table_index=table_index,
+                    tables_total=len(table_candidates),
+                    table_params=table_params,
+                    ine_client=ine_client,
+                    progress_reporter=progress_reporter,
+                )
+            )
+            for table_index, table in enumerate(table_candidates, start=1)
+        ]
+        return await asyncio.gather(*prepared_tasks)
+
+    async def _prepare_asturias_table(
+        self,
+        *,
+        semaphore: asyncio.Semaphore,
+        op_code: str,
+        resolution: Any,
+        table: dict[str, Any],
+        table_index: int,
+        tables_total: int,
+        table_params: dict[str, Any],
+        ine_client: Any,
+        progress_reporter: ProgressReporter | None,
+    ) -> PreparedAsturiasTable:
+        table_id = table["table_id"]
+        table_name = table["table_name"]
+        request_path = f"DATOS_TABLA/{table_id}"
+
+        self.logger.info(
+            "asturias_table_fetch_started",
+            extra={
+                "operation_code": op_code,
+                "table_id": table_id,
+                "table_name": table_name,
+                "request_path": request_path,
+                "request_params": table_params,
+                "table_index": table_index,
+            },
+        )
+        if progress_reporter is not None:
+            await progress_reporter(
+                {
+                    "stage": "fetching_table",
+                    "table_index": table_index,
+                    "tables_total": tables_total,
+                    "table_id": table_id,
+                    "table_name": table_name,
+                }
+            )
+
+        async with semaphore:
+            try:
+                table_payload = await ine_client.get_table(table_id, table_params)
+            except Exception as exc:
+                return PreparedAsturiasTable(
+                    table_index=table_index,
+                    table_id=table_id,
+                    table_name=table_name,
+                    request_path=request_path,
+                    request_params=dict(table_params),
+                    table_metadata=dict(table["metadata"]),
+                    error_detail={
+                        "table_id": table_id,
+                        "table_name": table_name,
+                        "request_path": request_path,
+                        "request_params": dict(table_params),
+                        "error": getattr(exc, "detail", str(exc)),
+                    },
+                )
+
+            raw_rows_retrieved = self._count_retrieved_rows(table_payload)
+            large_warning = None
+            last_warning = ""
+            if raw_rows_retrieved > LARGE_TABLE_WARNING_THRESHOLD:
+                large_warning = {
+                    "table_id": table_id,
+                    "table_name": table_name,
+                    "warning": "large_table_detected",
+                    "raw_rows_retrieved": raw_rows_retrieved,
+                }
+                last_warning = "large_table_detected"
+                self.logger.warning(
+                    "asturias_table_large_payload",
+                    extra={
+                        "operation_code": op_code,
+                        "table_id": table_id,
+                        "raw_rows_retrieved": raw_rows_retrieved,
+                    },
+                )
+
+            filtered_payload, filtered_stats = await asyncio.to_thread(
+                self._filter_payload_for_asturias,
+                table_payload,
+                resolution.asturias_value_id,
+                resolution.asturias_label or "Asturias",
+            )
+            self.logger.info(
+                "asturias_table_filter_completed",
+                extra={
+                    "operation_code": op_code,
+                    "table_id": table_id,
+                    "raw_rows_retrieved": raw_rows_retrieved,
+                    "filtered_rows_retrieved": filtered_stats["rows_kept"],
+                    "series_kept": filtered_stats["series_kept"],
+                    "series_discarded": filtered_stats["series_discarded"],
+                },
+            )
+
+            normalized_items: list[NormalizedSeriesItem] = []
+            if filtered_stats["series_kept"] > 0:
+                normalized_items = await self._prepare_asturias_normalized_items(
+                    payload=filtered_payload,
+                    op_code=op_code,
+                    geography_name=resolution.asturias_label or "Asturias",
+                    geography_code=resolution.asturias_value_id,
+                    table_id=table_id,
+                )
+
+            return PreparedAsturiasTable(
+                table_index=table_index,
+                table_id=table_id,
+                table_name=table_name,
+                request_path=request_path,
+                request_params=dict(table_params),
+                table_metadata=dict(table["metadata"]),
+                table_payload=table_payload,
+                filtered_payload=filtered_payload,
+                filtered_stats=filtered_stats,
+                normalized_items=normalized_items,
+                raw_rows_retrieved=raw_rows_retrieved,
+                large_warning=large_warning,
+                last_warning=last_warning,
+            )
 
     @staticmethod
     def _extract_table_candidates(payload: dict[str, Any] | list[Any]) -> list[dict[str, Any]]:

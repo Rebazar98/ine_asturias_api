@@ -6,7 +6,7 @@ from arq.connections import ArqRedis
 from fastapi import Depends, Header, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.cache import InMemoryTTLCache
+from app.core.cache import BaseAsyncCache
 from app.core.jobs import BaseJobStore
 from app.db import get_session
 from app.repositories.catalog import TableCatalogRepository
@@ -26,7 +26,7 @@ async def get_db_session() -> AsyncIterator[AsyncSession | None]:
         yield session
 
 
-async def get_cache(request: Request) -> InMemoryTTLCache:
+async def get_cache(request: Request) -> BaseAsyncCache:
     return request.app.state.cache
 
 
@@ -41,7 +41,7 @@ async def get_arq_pool(request: Request) -> ArqRedis | None:
 def get_ine_client_service(
     request: Request,
     settings: Settings = Depends(get_settings),
-    cache: InMemoryTTLCache = Depends(get_cache),
+    cache: BaseAsyncCache = Depends(get_cache),
 ) -> INEClientService:
     return INEClientService(request.app.state.http_client, settings, cache)
 
@@ -49,14 +49,14 @@ def get_ine_client_service(
 def get_cartociudad_client_service(
     request: Request,
     settings: Settings = Depends(get_settings),
-    cache: InMemoryTTLCache = Depends(get_cache),
+    cache: BaseAsyncCache = Depends(get_cache),
 ) -> CartoCiudadClientService:
     return CartoCiudadClientService(request.app.state.http_client, settings, cache)
 
 
 def get_asturias_resolver(
     ine_client: INEClientService = Depends(get_ine_client_service),
-    cache: InMemoryTTLCache = Depends(get_cache),
+    cache: BaseAsyncCache = Depends(get_cache),
 ) -> AsturiasResolver:
     return AsturiasResolver(ine_client=ine_client, cache=cache)
 

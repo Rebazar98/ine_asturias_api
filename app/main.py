@@ -13,7 +13,7 @@ from redis.asyncio import Redis
 from app.api.routes_health import router as health_router
 from app.api.routes_ine import router as ine_router
 from app.api.routes_territorial import router as territorial_router
-from app.core.cache import InMemoryTTLCache
+from app.core.cache import InMemoryTTLCache, LayeredCache, RedisTTLCache
 from app.core.jobs import InMemoryJobStore, RedisJobStore
 from app.core.logging import configure_logging, get_logger
 from app.core.metrics import record_http_request
@@ -33,10 +33,11 @@ async def lifespan(app: FastAPI):
     logger = get_logger("app.lifecycle")
 
     app.state.settings = settings
-    app.state.cache = InMemoryTTLCache(
+    local_cache = InMemoryTTLCache(
         enabled=settings.enable_cache,
         default_ttl_seconds=settings.cache_ttl_seconds,
     )
+    app.state.cache = local_cache
     app.state.http_client = httpx.AsyncClient(
         timeout=httpx.Timeout(settings.http_timeout_seconds, connect=min(settings.http_timeout_seconds, 5.0)),
     )
@@ -53,6 +54,15 @@ async def lifespan(app: FastAPI):
             await app.state.redis.ping()
             app.state.arq_redis = await create_pool(redis_settings_from_url(settings.redis_url))
             app.state.job_store = RedisJobStore(redis=app.state.redis, settings=settings)
+            app.state.cache = LayeredCache(
+                local_cache=local_cache,
+                shared_cache=RedisTTLCache(
+                    redis=app.state.redis,
+                    enabled=settings.enable_cache,
+                    default_ttl_seconds=settings.cache_ttl_seconds,
+                    namespace="provider-cache",
+                ),
+            )
             logger.info("redis_ready", extra={"queue_name": settings.job_queue_name})
         except Exception:
             if settings.is_local_env:

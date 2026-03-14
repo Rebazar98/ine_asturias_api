@@ -4,7 +4,7 @@ import json
 import unicodedata
 from typing import Any
 
-from app.core.cache import InMemoryTTLCache
+from app.core.cache import BaseAsyncCache
 from app.core.logging import get_logger
 from app.schemas import AsturiasResolutionResult
 from app.services.ine_client import INEClientService
@@ -30,7 +30,7 @@ class AsturiasResolutionError(Exception):
 
 
 class AsturiasResolver:
-    def __init__(self, ine_client: INEClientService, cache: InMemoryTTLCache) -> None:
+    def __init__(self, ine_client: INEClientService, cache: BaseAsyncCache) -> None:
         self.ine_client = ine_client
         self.cache = cache
         self.logger = get_logger("app.services.asturias_resolver")

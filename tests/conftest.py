@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 
 import httpx
@@ -330,7 +330,8 @@ def dummy_territorial_repo() -> DummyTerritorialRepository:
 
 
 def override_ine_service(
-    handler: Callable[[httpx.Request], httpx.Response], enable_cache: bool = True
+    handler: Callable[[httpx.Request], httpx.Response | Awaitable[httpx.Response]],
+    enable_cache: bool = True,
 ) -> None:
     transport = httpx.MockTransport(handler)
     http_client = httpx.AsyncClient(transport=transport)

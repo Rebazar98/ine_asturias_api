@@ -53,6 +53,10 @@ class FakeSession:
         return self._results.pop(0)
 
 
+async def unexpected_canonical_code_lookup(_unit):
+    raise AssertionError("list_units should batch canonical code lookups")
+
+
 def test_canonical_territorial_code_strategy_is_defined_per_supported_level():
     assert CANONICAL_TERRITORIAL_CODE_BY_LEVEL == {
         TERRITORIAL_UNIT_LEVEL_COUNTRY: {
@@ -335,15 +339,6 @@ def test_list_units_returns_paginated_serialized_results():
             country_code="ES",
             is_active=True,
         ),
-        SimpleNamespace(
-            id=2,
-            parent_id=None,
-            unit_level=TERRITORIAL_UNIT_LEVEL_AUTONOMOUS_COMMUNITY,
-            canonical_name="Madrid",
-            display_name="Comunidad de Madrid",
-            country_code="ES",
-            is_active=True,
-        ),
     ]
     code_1 = SimpleNamespace(
         source_system=INE_TERRITORIAL_SOURCE_SYSTEM,
@@ -356,32 +351,47 @@ def test_list_units_returns_paginated_serialized_results():
         code_type=INE_AUTONOMOUS_COMMUNITY_CODE_TYPE,
         code_value="13",
         is_primary=True,
+        territorial_unit_id=2,
     )
+    units.append(
+        SimpleNamespace(
+            id=2,
+            parent_id=None,
+            unit_level=TERRITORIAL_UNIT_LEVEL_AUTONOMOUS_COMMUNITY,
+            canonical_name="Madrid",
+            display_name="Comunidad de Madrid",
+            country_code="ES",
+            is_active=True,
+        )
+    )
+    code_1.territorial_unit_id = 1
     session = FakeSession(
         FakeExecuteResult(scalar_values=[2]),
         FakeExecuteResult(scalar_values=units),
-        FakeExecuteResult(scalar_values=[code_1]),
-        FakeExecuteResult(scalar_values=[code_2]),
+        FakeExecuteResult(scalar_values=[code_1, code_2]),
     )
     repository = TerritorialRepository(session=session)
+    repository._get_canonical_code_for_unit = unexpected_canonical_code_lookup
 
     result = asyncio.run(
         repository.list_units(
             unit_level=TERRITORIAL_UNIT_LEVEL_AUTONOMOUS_COMMUNITY,
             page=1,
-            page_size=1,
+            page_size=2,
             country_code="ES",
         )
     )
 
     assert result["total"] == 2
     assert result["page"] == 1
-    assert result["page_size"] == 1
-    assert result["pages"] == 2
-    assert result["has_next"] is True
+    assert result["page_size"] == 2
+    assert result["pages"] == 1
+    assert result["has_next"] is False
     assert result["filters"]["unit_level"] == TERRITORIAL_UNIT_LEVEL_AUTONOMOUS_COMMUNITY
     assert result["items"][0]["canonical_name"] == "Asturias"
     assert result["items"][0]["canonical_code"]["code_value"] == "03"
+    assert result["items"][1]["canonical_code"]["code_value"] == "13"
+    assert len(session.statements) == 3
 
 
 def test_get_unit_detail_by_canonical_code_returns_codes_aliases_and_attributes():

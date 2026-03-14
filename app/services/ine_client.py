@@ -6,7 +6,7 @@ from typing import Any
 
 import httpx
 
-from app.core.cache import InMemoryTTLCache
+from app.core.cache import BaseAsyncCache
 from app.core.logging import get_logger
 from app.core.metrics import record_provider_cache_hit, record_provider_request
 from app.settings import Settings
@@ -32,7 +32,7 @@ class INEClientService:
         self,
         http_client: httpx.AsyncClient,
         settings: Settings,
-        cache: InMemoryTTLCache,
+        cache: BaseAsyncCache,
     ) -> None:
         self.http_client = http_client
         self.settings = settings

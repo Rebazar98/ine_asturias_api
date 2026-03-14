@@ -2,6 +2,7 @@
 
 import re
 import unicodedata
+from collections.abc import Sequence
 from typing import Any
 
 from sqlalchemy import Select, func, select
@@ -280,7 +281,14 @@ class TerritorialRepository:
         )
         result = await self.session.execute(statement)
         units = result.scalars().all()
-        items = [await self._serialize_unit_summary(unit) for unit in units]
+        canonical_codes = await self._get_primary_canonical_codes_for_units(
+            unit_ids=[unit.id for unit in units],
+            unit_level=unit_level,
+        )
+        items = [
+            self._serialize_unit_summary_payload(unit, canonical_codes.get(unit.id))
+            for unit in units
+        ]
         pages = (total + page_size - 1) // page_size if total else 0
         return {
             "items": items,
@@ -355,17 +363,10 @@ class TerritorialRepository:
         }
 
     async def _serialize_unit_summary(self, unit: TerritorialUnit) -> dict[str, Any]:
-        return {
-            "id": unit.id,
-            "parent_id": unit.parent_id,
-            "unit_level": unit.unit_level,
-            "canonical_name": unit.canonical_name,
-            "display_name": unit.display_name,
-            "country_code": unit.country_code,
-            "is_active": unit.is_active,
-            "canonical_code_strategy": get_canonical_code_strategy(unit.unit_level),
-            "canonical_code": self._serialize_code(await self._get_canonical_code_for_unit(unit)),
-        }
+        return self._serialize_unit_summary_payload(
+            unit,
+            await self._get_canonical_code_for_unit(unit),
+        )
 
     async def _serialize_unit_detail(self, unit: TerritorialUnit) -> dict[str, Any]:
         summary = await self._serialize_unit_summary(unit)
@@ -401,6 +402,45 @@ class TerritorialRepository:
         )
         result = await self.session.execute(statement)
         return result.scalars().first()
+
+    async def _get_primary_canonical_codes_for_units(
+        self,
+        *,
+        unit_ids: Sequence[int],
+        unit_level: str,
+    ) -> dict[int, TerritorialUnitCode]:
+        if self.session is None or not unit_ids:
+            return {}
+
+        strategy = get_canonical_code_strategy(unit_level)
+        if strategy is None:
+            return {}
+
+        statement = select(TerritorialUnitCode).where(
+            TerritorialUnitCode.territorial_unit_id.in_(unit_ids),
+            TerritorialUnitCode.source_system == strategy["source_system"],
+            TerritorialUnitCode.code_type == strategy["code_type"],
+            TerritorialUnitCode.is_primary.is_(True),
+        )
+        result = await self.session.execute(statement)
+        return {code.territorial_unit_id: code for code in result.scalars().all()}
+
+    @staticmethod
+    def _serialize_unit_summary_payload(
+        unit: TerritorialUnit,
+        canonical_code: TerritorialUnitCode | None,
+    ) -> dict[str, Any]:
+        return {
+            "id": unit.id,
+            "parent_id": unit.parent_id,
+            "unit_level": unit.unit_level,
+            "canonical_name": unit.canonical_name,
+            "display_name": unit.display_name,
+            "country_code": unit.country_code,
+            "is_active": unit.is_active,
+            "canonical_code_strategy": get_canonical_code_strategy(unit.unit_level),
+            "canonical_code": TerritorialRepository._serialize_code(canonical_code),
+        }
 
     @staticmethod
     def _serialize_code(code: TerritorialUnitCode | None) -> dict[str, Any] | None:

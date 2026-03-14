@@ -403,6 +403,7 @@ async def get_asturias_operation_data(
         max_tables=effective_max_tables,
         skip_known_no_data=skip_known_no_data,
         ine_client=ine_client,
+        max_concurrent_table_fetches=settings.max_concurrent_table_fetches,
     )
     return JSONPayload(root=payload)
 
@@ -451,6 +452,7 @@ async def _run_asturias_operation_job_inline(
             max_tables=max_tables,
             skip_known_no_data=skip_known_no_data,
             ine_client=ine_client,
+            max_concurrent_table_fetches=get_settings().max_concurrent_table_fetches,
             progress_reporter=report_progress,
         )
         await job_store.complete_job(job_id, payload)

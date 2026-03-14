@@ -8,7 +8,7 @@ import httpx
 from prometheus_client import start_http_server
 from redis.asyncio import Redis
 
-from app.core.cache import InMemoryTTLCache
+from app.core.cache import InMemoryTTLCache, LayeredCache, RedisTTLCache
 from app.core.jobs import RedisJobStore
 from app.core.logging import configure_logging, get_logger
 from app.core.redis import redis_settings_from_url
@@ -73,6 +73,7 @@ async def run_operation_asturias_job(
                 max_tables=payload.get("max_tables"),
                 skip_known_no_data=payload.get("skip_known_no_data", False),
                 ine_client=ine_client,
+                max_concurrent_table_fetches=settings.max_concurrent_table_fetches,
                 progress_reporter=report_progress,
             )
 
@@ -118,9 +119,18 @@ async def startup(ctx: dict[str, Any]) -> None:
             settings.http_timeout_seconds, connect=min(settings.http_timeout_seconds, 5.0)
         ),
     )
-    cache = InMemoryTTLCache(
+    local_cache = InMemoryTTLCache(
         enabled=settings.enable_cache,
         default_ttl_seconds=settings.cache_ttl_seconds,
+    )
+    cache = LayeredCache(
+        local_cache=local_cache,
+        shared_cache=RedisTTLCache(
+            redis=redis,
+            enabled=settings.enable_cache,
+            default_ttl_seconds=settings.cache_ttl_seconds,
+            namespace="provider-cache",
+        ),
     )
     ine_client = INEClientService(http_client=http_client, settings=settings, cache=cache)
     resolver = AsturiasResolver(ine_client=ine_client, cache=cache)
