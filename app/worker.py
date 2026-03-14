@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import socket
+from time import perf_counter
 from typing import Any
 
 import httpx
@@ -13,12 +15,18 @@ from app.core.jobs import RedisJobStore
 from app.core.logging import configure_logging, get_logger
 from app.core.redis import redis_settings_from_url
 from app.db import dispose_db, init_db, session_scope
+from app.repositories.analytics_snapshots import AnalyticalSnapshotRepository
 from app.repositories.catalog import TableCatalogRepository
 from app.repositories.ingestion import IngestionRepository
 from app.repositories.series import SeriesRepository
+from app.repositories.territorial import TerritorialRepository
 from app.services.asturias_resolver import AsturiasResolutionError, AsturiasResolver
 from app.services.ine_client import INEClientError, INEClientService
 from app.services.ine_operation_ingestion import INEOperationIngestionService
+from app.services.territorial_analytics import (
+    MUNICIPALITY_REPORT_TYPE,
+    TerritorialAnalyticsService,
+)
 from app.settings import get_settings
 
 
@@ -104,6 +112,100 @@ async def run_operation_asturias_job(
             }
         )
         await job_store.fail_job(job_id, detail)
+    return None
+
+
+async def run_municipality_report_job(
+    ctx: dict[str, Any], job_id: str, payload: dict[str, Any]
+) -> dict[str, Any] | None:
+    settings = ctx["settings"]
+    job_store: RedisJobStore = ctx["job_store"]
+    municipality_code = payload["municipality_code"]
+    started_at = perf_counter()
+
+    async def report_progress(progress: dict[str, Any]) -> None:
+        await job_store.update_progress(job_id, **progress)
+
+    try:
+        await job_store.mark_running(job_id)
+        await report_progress(
+            {
+                "stage": "starting_report",
+                "municipality_code": municipality_code,
+                "report_type": MUNICIPALITY_REPORT_TYPE,
+            }
+        )
+
+        async with session_scope() as session:
+            territorial_repo = TerritorialRepository(session=session)
+            series_repo = SeriesRepository(session=session)
+            analytical_snapshot_repo = AnalyticalSnapshotRepository(session=session)
+            analytics_service = TerritorialAnalyticsService(
+                territorial_repo=territorial_repo,
+                series_repo=series_repo,
+                analytical_snapshot_repo=analytical_snapshot_repo,
+                analytical_snapshot_ttl_seconds=settings.analytical_snapshot_ttl_seconds,
+            )
+            report = await analytics_service.build_municipality_report(
+                municipality_code=municipality_code,
+                operation_code=payload.get("operation_code"),
+                variable_id=payload.get("variable_id"),
+                period_from=payload.get("period_from"),
+                period_to=payload.get("period_to"),
+                page=payload.get("page", 1),
+                page_size=payload.get("page_size", 50),
+                progress_reporter=report_progress,
+            )
+
+        if report is None:
+            await job_store.fail_job(
+                job_id,
+                {
+                    "message": "Municipality code was not found.",
+                    "codigo_ine": municipality_code,
+                },
+            )
+            logger.warning(
+                "municipality_report_worker_job_not_found",
+                extra={
+                    "job_id": job_id,
+                    "municipality_code": municipality_code,
+                    "duration_ms": round((perf_counter() - started_at) * 1000, 3),
+                },
+            )
+            return None
+
+        payload_result = report.model_dump(mode="json")
+        await job_store.complete_job(job_id, payload_result)
+        logger.info(
+            "municipality_report_worker_job_completed",
+            extra={
+                "job_id": job_id,
+                "municipality_code": municipality_code,
+                "series_count": len(report.series),
+                "storage_mode": report.metadata.get("storage_mode"),
+                "result_bytes": len(json.dumps(payload_result, default=str).encode("utf-8")),
+                "duration_ms": round((perf_counter() - started_at) * 1000, 3),
+            },
+        )
+        return payload_result
+    except Exception as exc:
+        logger.exception(
+            "municipality_report_worker_job_unexpected_error",
+            extra={
+                "job_id": job_id,
+                "municipality_code": municipality_code,
+                "duration_ms": round((perf_counter() - started_at) * 1000, 3),
+            },
+        )
+        await job_store.fail_job(
+            job_id,
+            {
+                "message": "Unexpected error while generating the municipality report.",
+                "codigo_ine": municipality_code,
+                "error": str(exc),
+            },
+        )
     return None
 
 
@@ -210,7 +312,7 @@ def _start_worker_metrics_server(port: int):
 
 
 class WorkerSettings:
-    functions = [run_operation_asturias_job]
+    functions = [run_operation_asturias_job, run_municipality_report_job]
     on_startup = startup
     on_shutdown = shutdown
     redis_settings = redis_settings_from_url(get_settings().redis_url or "redis://localhost:6379/0")

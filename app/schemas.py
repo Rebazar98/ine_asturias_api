@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from datetime import datetime
 from typing import Any, Literal
@@ -145,6 +145,75 @@ class INESeriesListResponse(BaseModel):
     territorial_resolution: INESeriesTerritorialResolutionResponse | None = None
 
 
+class AnalyticalTerritorialContextResponse(BaseModel):
+    territorial_unit_id: int | None = None
+    unit_level: str | None = None
+    canonical_code: str | None = None
+    canonical_name: str | None = None
+    display_name: str | None = None
+    source_system: str | None = None
+    country_code: str | None = None
+    autonomous_community_code: str | None = None
+    province_code: str | None = None
+    municipality_code: str | None = None
+
+
+class AnalyticalSeriesItemResponse(BaseModel):
+    series_key: str
+    label: str
+    value: float | int | str | bool | None = None
+    unit: str | None = None
+    period: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class AnalyticalPaginationResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    pages: int
+    has_next: bool
+    has_previous: bool
+
+
+class AnalyticalErrorDetailResponse(BaseModel):
+    code: str
+    message: str
+    retryable: bool = False
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class AnalyticalErrorResponse(BaseModel):
+    detail: AnalyticalErrorDetailResponse
+
+
+class AnalyticalResponse(BaseModel):
+    source: str = Field(description="Semantic source identifier of the analytical output.")
+    generated_at: datetime = Field(
+        description="Timestamp when the analytical output was generated."
+    )
+    territorial_context: AnalyticalTerritorialContextResponse = Field(
+        default_factory=AnalyticalTerritorialContextResponse
+    )
+    filters: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Semantic filters applied to produce the output.",
+    )
+    summary: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Compact summary metrics for automation and reports.",
+    )
+    series: list[AnalyticalSeriesItemResponse] = Field(
+        default_factory=list,
+        description="Semantic analytical observations or indicators.",
+    )
+    metadata: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Non-provider-specific metadata useful for consumers.",
+    )
+    pagination: AnalyticalPaginationResponse | None = None
+
+
 class TerritorialCanonicalCodeStrategyResponse(BaseModel):
     source_system: str
     code_type: str
@@ -197,6 +266,67 @@ class TerritorialUnitDetailResponse(TerritorialUnitSummaryResponse):
     attributes: dict[str, Any] = Field(default_factory=dict)
 
 
+class TerritorialMunicipalitySummaryFiltersResponse(BaseModel):
+    municipality_code: str
+    geography_code_system: Literal["ine"] = "ine"
+    operation_code: str | None = None
+    variable_id: str | None = None
+    period_from: str | None = None
+    period_to: str | None = None
+    page: int
+    page_size: int
+
+
+class TerritorialMunicipalitySummaryMetricsResponse(BaseModel):
+    indicators_total: int
+    indicators_returned: int
+    operation_codes: list[str] = Field(default_factory=list)
+    latest_period: str | None = None
+
+
+class TerritorialMunicipalitySummarySeriesItemResponse(AnalyticalSeriesItemResponse):
+    operation_code: str
+    table_id: str
+    variable_id: str
+    geography_code: str
+    geography_name: str
+
+
+class TerritorialMunicipalitySummaryResponse(AnalyticalResponse):
+    territorial_unit: TerritorialUnitDetailResponse
+    filters: TerritorialMunicipalitySummaryFiltersResponse
+    summary: TerritorialMunicipalitySummaryMetricsResponse
+    series: list[TerritorialMunicipalitySummarySeriesItemResponse] = Field(default_factory=list)
+
+
+class TerritorialReportSectionResponse(BaseModel):
+    section_key: str
+    title: str
+    summary: dict[str, Any] = Field(default_factory=dict)
+    series: list[AnalyticalSeriesItemResponse] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class TerritorialMunicipalityReportResponse(AnalyticalResponse):
+    report_type: Literal["municipality_report"] = "municipality_report"
+    territorial_unit: TerritorialUnitDetailResponse
+    filters: TerritorialMunicipalitySummaryFiltersResponse
+    summary: TerritorialMunicipalitySummaryMetricsResponse
+    series: list[TerritorialMunicipalitySummarySeriesItemResponse] = Field(default_factory=list)
+    sections: list[TerritorialReportSectionResponse] = Field(default_factory=list)
+
+
+class TerritorialReportJobAcceptedResponse(BaseModel):
+    job_id: str
+    job_type: str
+    report_type: Literal["municipality_report"] = "municipality_report"
+    status: Literal["queued", "running", "completed", "failed"]
+    background: Literal[True] = True
+    municipality_code: str
+    status_path: str
+    params: dict[str, Any] = Field(default_factory=dict)
+
+
 class TerritorialUnitListFiltersResponse(BaseModel):
     unit_level: str
     country_code: str | None = None
@@ -213,6 +343,51 @@ class TerritorialUnitListResponse(BaseModel):
     has_next: bool
     has_previous: bool
     filters: TerritorialUnitListFiltersResponse
+
+
+class TerritorialCatalogSummaryResponse(BaseModel):
+    resources_total: int
+    territorial_levels_total: int
+    read_resources_total: int
+    analytics_resources_total: int
+    job_resources_total: int
+
+
+class TerritorialCatalogLevelCoverageResponse(BaseModel):
+    unit_level: str
+    country_code: str
+    units_total: int
+    active_units: int
+    canonical_code_strategy: TerritorialCanonicalCodeStrategyResponse | None = None
+    list_path: str | None = None
+    detail_path: str | None = None
+    summary_path: str | None = None
+    report_job_path: str | None = None
+
+
+class TerritorialCatalogResourceResponse(BaseModel):
+    resource_key: str
+    title: str
+    category: Literal["territorial_read", "territorial_analytics", "territorial_jobs"]
+    method: Literal["GET", "POST"]
+    path: str
+    summary: str
+    unit_levels: list[str] = Field(default_factory=list)
+    path_params: list[str] = Field(default_factory=list)
+    query_params: list[str] = Field(default_factory=list)
+    response_contract: str
+    supports_pagination: bool = False
+    supports_background_job: bool = False
+    supports_snapshot_reuse: bool = False
+
+
+class TerritorialCatalogResponse(BaseModel):
+    source: Literal["internal.catalog.territorial"] = "internal.catalog.territorial"
+    generated_at: datetime
+    summary: TerritorialCatalogSummaryResponse
+    territorial_levels: list[TerritorialCatalogLevelCoverageResponse] = Field(default_factory=list)
+    resources: list[TerritorialCatalogResourceResponse] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class GeocodingCoordinatesResponse(BaseModel):
@@ -246,7 +421,9 @@ class GeocodeResultResponse(BaseModel):
     coordinates: GeocodingCoordinatesResponse
     address: str | None = None
     postal_code: str | None = None
-    territorial_context: GeocodingTerritorialContextResponse = Field(default_factory=GeocodingTerritorialContextResponse)
+    territorial_context: GeocodingTerritorialContextResponse = Field(
+        default_factory=GeocodingTerritorialContextResponse
+    )
     territorial_resolution: GeocodingTerritorialResolutionResponse | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -265,7 +442,9 @@ class ReverseGeocodeResultResponse(BaseModel):
     coordinates: GeocodingCoordinatesResponse
     address: str | None = None
     postal_code: str | None = None
-    territorial_context: GeocodingTerritorialContextResponse = Field(default_factory=GeocodingTerritorialContextResponse)
+    territorial_context: GeocodingTerritorialContextResponse = Field(
+        default_factory=GeocodingTerritorialContextResponse
+    )
     territorial_resolution: GeocodingTerritorialResolutionResponse | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 

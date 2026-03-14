@@ -128,6 +128,33 @@ n8n → POST/GET API propia → job de ingesta/enriquecimiento → PostgreSQL/Po
 
 Para procesos ligeros, n8n podrá invocar endpoints síncronos. Para cargas grandes, como refresco de tablas INE o generación de catálogos territoriales, la API debe lanzar jobs asíncronos y exponer su estado. El consumo puede resolverse con polling controlado o, en fases posteriores, con webhooks cuando la orquestación lo justifique.
 
+Como patrón operativo para la fase actual, `n8n` y los agentes deben seguir estas reglas:
+
+- consumir siempre endpoints semánticos de la API propia antes que endpoints raw o proveedores externos;
+- usar endpoints síncronos cuando el dato ya esté preparado para consumo inmediato;
+- usar `POST` de job + polling de `status_path` cuando el cálculo sea más pesado o deba dejar trazabilidad explícita;
+- tratar `summary` como capa de decisión rápida, `series` como carga útil de datos y `metadata` como contexto operativo;
+- persistir en los flujos solo identificadores de contrato (`job_id`, `status_path`, `snapshot_key`) y no detalles del proveedor externo.
+
+Patrón recomendado de polling:
+
+```text
+1. POST endpoint analítico
+2. recibir job_id y status_path
+3. esperar 2-5 segundos
+4. GET status_path
+5. repetir mientras status sea queued o running
+6. consumir result cuando status sea completed
+7. tratar failed como estado terminal y enrutar la incidencia
+```
+
+En la fase ya implementada, el patrón concreto más recomendable es:
+
+- `GET /territorios/municipio/{codigo_ine}/resumen` para consultas ligeras;
+- `POST /territorios/municipio/{codigo_ine}/informe` + `GET /territorios/jobs/{job_id}` para informes reutilizables;
+- `GET /geocode` y `GET /reverse_geocode` para resolución territorial;
+- reutilizar `analytical_snapshots` solo a través de la API propia, nunca como acceso directo desde n8n o agentes.
+
 ## 7. Estrategia de cacheado, resiliencia y calidad
 
 La plataforma necesita cache por capas. La cache en memoria ya existente es útil para metadatos ligeros, variables y resoluciones repetitivas. Para CartoCiudad conviene añadir cache persistente en PostgreSQL para geocodificaciones frecuentes y reverse geocoding, evitando costes de latencia y reduciendo dependencia del proveedor. El catálogo persistente de tablas del INE ya es un buen ejemplo de cache semántica y cobertura acumulada.

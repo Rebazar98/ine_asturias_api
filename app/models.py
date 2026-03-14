@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from datetime import datetime
 from typing import Any
@@ -31,9 +31,7 @@ class Base(DeclarativeBase):
 
 class IngestionRaw(Base):
     __tablename__ = "ingestion_raw"
-    __table_args__ = (
-        Index("ix_ingestion_raw_lookup", "source_type", "source_key", "fetched_at"),
-    )
+    __table_args__ = (Index("ix_ingestion_raw_lookup", "source_type", "source_key", "fetched_at"),)
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     source_type: Mapped[str] = mapped_column(String(64), index=True)
@@ -120,14 +118,18 @@ class INETableCatalog(Base):
     request_path: Mapped[str] = mapped_column(Text, default="", server_default="")
     resolution_context: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     has_asturias_data: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
-    validation_status: Mapped[str] = mapped_column(String(32), default="unknown", server_default="unknown")
+    validation_status: Mapped[str] = mapped_column(
+        String(32), default="unknown", server_default="unknown"
+    )
     normalized_rows: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     raw_rows_retrieved: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     filtered_rows_retrieved: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     series_kept: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     series_discarded: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -182,6 +184,53 @@ class ReverseGeocodeCache(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
 
 
+class AnalyticalSnapshot(Base):
+    __tablename__ = "analytical_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "snapshot_key",
+            name="uq_analytical_snapshots_key",
+        ),
+        Index(
+            "ix_analytical_snapshots_type_scope_expires",
+            "snapshot_type",
+            "scope_key",
+            "expires_at",
+        ),
+        Index(
+            "ix_analytical_snapshots_unit_type",
+            "territorial_unit_id",
+            "snapshot_type",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    snapshot_key: Mapped[str] = mapped_column(String(128), index=True)
+    snapshot_type: Mapped[str] = mapped_column(String(64), index=True)
+    scope_key: Mapped[str] = mapped_column(String(255), index=True)
+    source: Mapped[str] = mapped_column(String(128), default="", server_default="")
+    territorial_unit_id: Mapped[int | None] = mapped_column(
+        ForeignKey("territorial_units.id"),
+        nullable=True,
+        index=True,
+    )
+    filters_json: Mapped[dict[str, Any]] = mapped_column("filters", JSONB, default=dict)
+    payload: Mapped[dict[str, Any] | list[Any]] = mapped_column(JSONB)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, default=dict)
+    generated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
 class TerritorialUnit(Base):
     __tablename__ = "territorial_units"
     __table_args__ = (
@@ -197,7 +246,9 @@ class TerritorialUnit(Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    parent_id: Mapped[int | None] = mapped_column(ForeignKey("territorial_units.id"), nullable=True, index=True)
+    parent_id: Mapped[int | None] = mapped_column(
+        ForeignKey("territorial_units.id"), nullable=True, index=True
+    )
     unit_level: Mapped[str] = mapped_column(String(32), index=True)
     canonical_name: Mapped[str] = mapped_column(String(255))
     normalized_name: Mapped[str] = mapped_column(String(255), index=True)

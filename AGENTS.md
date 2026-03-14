@@ -106,6 +106,7 @@ Los repositories DEBEN encapsular toda escritura y lectura persistente. Hoy exis
 - `SeriesRepository`
 - `TableCatalogRepository`
 - `GeocodingCacheRepository`
+- `AnalyticalSnapshotRepository`
 
 La persistence layer DEBE encargarse de:
 
@@ -113,6 +114,7 @@ La persistence layer DEBE encargarse de:
 - hacer `upsert` de observaciones normalizadas
 - mantener el catalogo de tablas y su estado operativo
 - mantener cache persistente de geocodificacion y reverse geocoding cuando aplique
+- mantener snapshots analiticos reutilizables cuando exista una justificacion operativa explicita
 - aislar al resto del sistema de detalles SQLAlchemy y PostgreSQL
 
 #### Catalog system
@@ -392,9 +394,12 @@ El modelo DEBE separar con claridad:
 - tablas raw: captura de origen y auditoria
 - tablas normalizadas: observaciones canonicas para consulta
 - tablas de catalogo: control operativo y cobertura
+- tablas de snapshots analiticos: salidas semanticas reutilizables con clave logica y expiracion
 - futuras tablas dimensionales o espaciales: territorios, geometria, codigos y relaciones
 
 Las tablas raw NO DEBEN mezclarse con las analiticas ni reutilizarse como fuente directa de endpoints semanticos.
+
+Los snapshots analiticos NO DEBEN sustituir al modelo normalizado ni convertirse en nueva fuente de verdad del dominio. Su funcion DEBE limitarse a reutilizacion operativa, reduccion de recalculo y soporte a automatizacion.
 
 ### 7.4 Estrategia de codigo territorial canonico
 
@@ -567,6 +572,29 @@ Todo endpoint nuevo DEBE definir:
 
 Si un endpoint inicia una operacion costosa, DEBE devolver `202` y estado de job en lugar de colgar una request hasta agotarla.
 
+### 11.4 Contratos analiticos
+
+Toda salida analitica nueva DEBE apoyarse en una semantica comun para automatizacion, informes y agentes.
+
+Campos minimos comunes:
+
+- `source`
+- `generated_at`
+- `territorial_context`
+- `filters`
+- `summary`
+- `series`
+- `metadata`
+
+Reglas:
+
+- `pagination` PUEDE anadirse cuando la salida sea paginada y DEBE usar un bloque semantico explicito;
+- los errores analiticos DEBEN exponer `detail.code`, `detail.message`, `detail.retryable` y `detail.metadata` cuando exista un contrato estable de error;
+- `series` DEBE representar observaciones o indicadores semanticos listos para consumo programatico;
+- estos contratos NO DEBEN copiar el shape raw de INE, CartoCiudad ni de ningun proveedor futuro;
+- `territorial_context` DEBE apoyarse en el modelo territorial interno cuando exista resolucion fiable;
+- `filters`, `summary` y `metadata` PUEDEN variar por caso de uso, pero DEBEN mantener una funcion semantica estable entre endpoints.
+
 ## 12. Evolucion futura de la arquitectura
 
 La hoja de ruta tecnica del proyecto DEBE alinearse con estas lineas:
@@ -601,10 +629,22 @@ La hoja de ruta tecnica del proyecto DEBE alinearse con estas lineas:
 - n8n DEBE consumir la API propia, no proveedores externos
 - los jobs largos DEBEN exponerse con estado y resultado trazable
 - los endpoints para automatizacion DEBEN priorizar contratos estables y semanticos
+- el patron preferente DEBE ser: endpoint semantico sincronico si el dato ya existe; `POST` de job + polling de `status_path` si el calculo es costoso
+- `summary` DEBE usarse para decisiones ligeras, `series` para mover dato de negocio y `metadata` solo como contexto operativo
+- los flujos NO DEBEN leer tablas internas ni asumir acceso directo a `analytical_snapshots`
+- `job_id`, `status_path` y `snapshot_key` SI PUEDEN tratarse como identificadores operativos estables cuando formen parte del contrato documentado
 
 ### 12.4 RAG y agentes
 
 Si el proyecto incorpora RAG, la fuente base DEBE ser contenido normalizado, catalogado y documentado. Un pipeline RAG NO DEBE indexar indiscriminadamente payloads raw de proveedor sin curacion, porque eso degrada trazabilidad, calidad y gobernanza del dato.
+
+Mientras el consumo por agentes siga siendo API-first, se DEBEN aplicar estas reglas:
+
+- los agentes DEBEN consumir endpoints semanticos (`/territorios/...`, `/geocode`, `/reverse_geocode`, `/ine/series` cuando el contrato este estabilizado) y NO payloads raw de proveedor;
+- los agentes NO DEBEN usar `ingestion_raw`, `ine_tables_catalog`, `analytical_snapshots` ni otras tablas internas como fuente primaria de respuesta;
+- si un flujo requiere polling, el agente DEBE tratar `queued` y `running` como estados transitorios y `completed` / `failed` como terminales;
+- `detail.retryable` y `detail.metadata` DEBEN guiar reintentos o escalado, no parsing ad hoc de mensajes de error;
+- ningun agente DEBE reconstruir contratos publicos a partir de metadatos internos cuando ya exista un endpoint semantico para el caso de uso.
 
 ## Reglas finales de operacion
 

@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from collections.abc import AsyncIterator
 
@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.cache import BaseAsyncCache
 from app.core.jobs import BaseJobStore
 from app.db import get_session
+from app.repositories.analytics_snapshots import AnalyticalSnapshotRepository
 from app.repositories.catalog import TableCatalogRepository
 from app.repositories.geocoding import GeocodingCacheRepository
 from app.repositories.ingestion import IngestionRepository
@@ -18,6 +19,7 @@ from app.services.asturias_resolver import AsturiasResolver
 from app.services.cartociudad_client import CartoCiudadClientService
 from app.services.ine_client import INEClientService
 from app.services.ine_operation_ingestion import INEOperationIngestionService
+from app.services.territorial_analytics import TerritorialAnalyticsService
 from app.settings import Settings, get_settings
 
 
@@ -85,6 +87,12 @@ def get_geocoding_cache_repository(
     return GeocodingCacheRepository(session=session)
 
 
+def get_analytical_snapshot_repository(
+    session: AsyncSession | None = Depends(get_db_session),
+) -> AnalyticalSnapshotRepository:
+    return AnalyticalSnapshotRepository(session=session)
+
+
 def get_territorial_repository(
     session: AsyncSession | None = Depends(get_db_session),
 ) -> TerritorialRepository:
@@ -100,6 +108,22 @@ def get_operation_ingestion_service(
         ingestion_repo=ingestion_repo,
         series_repo=series_repo,
         catalog_repo=catalog_repo,
+    )
+
+
+def get_territorial_analytics_service(
+    territorial_repo: TerritorialRepository = Depends(get_territorial_repository),
+    series_repo: SeriesRepository = Depends(get_series_repository),
+    analytical_snapshot_repo: AnalyticalSnapshotRepository = Depends(
+        get_analytical_snapshot_repository
+    ),
+    settings: Settings = Depends(get_settings),
+) -> TerritorialAnalyticsService:
+    return TerritorialAnalyticsService(
+        territorial_repo=territorial_repo,
+        series_repo=series_repo,
+        analytical_snapshot_repo=analytical_snapshot_repo,
+        analytical_snapshot_ttl_seconds=settings.analytical_snapshot_ttl_seconds,
     )
 
 

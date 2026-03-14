@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import re
 import unicodedata
@@ -35,6 +35,11 @@ TERRITORIAL_ALIAS_TYPE_SHORT_NAME = "short_name"
 TERRITORIAL_MATCHED_BY_CODE = "code"
 TERRITORIAL_MATCHED_BY_ALIAS = "alias"
 TERRITORIAL_MATCHED_BY_CANONICAL_NAME = "canonical_name"
+TERRITORIAL_DISCOVERY_LEVELS = (
+    TERRITORIAL_UNIT_LEVEL_AUTONOMOUS_COMMUNITY,
+    TERRITORIAL_UNIT_LEVEL_PROVINCE,
+    TERRITORIAL_UNIT_LEVEL_MUNICIPALITY,
+)
 
 CANONICAL_TERRITORIAL_CODE_BY_LEVEL = {
     TERRITORIAL_UNIT_LEVEL_COUNTRY: {
@@ -63,9 +68,7 @@ def get_canonical_code_strategy(unit_level: str) -> dict[str, str] | None:
 def normalize_territorial_name(value: str) -> str:
     normalized_value = unicodedata.normalize("NFKD", value or "")
     normalized_value = "".join(
-        character
-        for character in normalized_value
-        if not unicodedata.combining(character)
+        character for character in normalized_value if not unicodedata.combining(character)
     )
     normalized_value = normalized_value.casefold().replace("_", " ")
     normalized_value = re.sub(r"[^\w\s]", " ", normalized_value)
@@ -88,9 +91,8 @@ class TerritorialRepository:
         if self.session is None:
             return None
 
-        statement = (
-            select(TerritorialUnit, TerritorialUnitCode)
-            .join(TerritorialUnitCode, TerritorialUnitCode.territorial_unit_id == TerritorialUnit.id)
+        statement = select(TerritorialUnit, TerritorialUnitCode).join(
+            TerritorialUnitCode, TerritorialUnitCode.territorial_unit_id == TerritorialUnit.id
         )
         conditions = [
             TerritorialUnitCode.source_system == source_system,
@@ -149,7 +151,9 @@ class TerritorialRepository:
 
         statement: Select[Any] = (
             select(TerritorialUnit, TerritorialUnitAlias)
-            .join(TerritorialUnitAlias, TerritorialUnitAlias.territorial_unit_id == TerritorialUnit.id)
+            .join(
+                TerritorialUnitAlias, TerritorialUnitAlias.territorial_unit_id == TerritorialUnit.id
+            )
             .where(TerritorialUnitAlias.normalized_alias == normalized_lookup)
         )
         if source_system:
@@ -181,7 +185,9 @@ class TerritorialRepository:
         if not normalized_lookup:
             return None
 
-        statement = select(TerritorialUnit).where(TerritorialUnit.normalized_name == normalized_lookup)
+        statement = select(TerritorialUnit).where(
+            TerritorialUnit.normalized_name == normalized_lookup
+        )
         if unit_level:
             statement = statement.where(TerritorialUnit.unit_level == unit_level)
 
@@ -305,6 +311,39 @@ class TerritorialRepository:
                 "active_only": active_only,
             },
         }
+
+    async def get_catalog_coverage(self, *, country_code: str = "ES") -> list[dict[str, Any]]:
+        coverage_rows: list[dict[str, Any]] = []
+        for unit_level in TERRITORIAL_DISCOVERY_LEVELS:
+            if self.session is None:
+                total = 0
+                active_units = 0
+            else:
+                total_statement = select(func.count(TerritorialUnit.id)).where(
+                    TerritorialUnit.unit_level == unit_level,
+                    TerritorialUnit.country_code == country_code,
+                )
+                total_result = await self.session.execute(total_statement)
+                total = int(total_result.scalars().first() or 0)
+
+                active_statement = select(func.count(TerritorialUnit.id)).where(
+                    TerritorialUnit.unit_level == unit_level,
+                    TerritorialUnit.country_code == country_code,
+                    TerritorialUnit.is_active.is_(True),
+                )
+                active_result = await self.session.execute(active_statement)
+                active_units = int(active_result.scalars().first() or 0)
+
+            coverage_rows.append(
+                {
+                    "unit_level": unit_level,
+                    "country_code": country_code,
+                    "units_total": total,
+                    "active_units": active_units,
+                    "canonical_code_strategy": get_canonical_code_strategy(unit_level),
+                }
+            )
+        return coverage_rows
 
     async def get_unit_detail_by_canonical_code(
         self,

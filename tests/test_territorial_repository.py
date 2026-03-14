@@ -98,6 +98,93 @@ def test_get_unit_by_canonical_code_returns_none_without_database_session():
     assert asyncio.run(result) is None
 
 
+def test_get_catalog_coverage_returns_zero_rows_per_supported_level_without_database_session():
+    repository = TerritorialRepository(session=None)
+
+    result = asyncio.run(repository.get_catalog_coverage(country_code="ES"))
+
+    assert result == [
+        {
+            "unit_level": TERRITORIAL_UNIT_LEVEL_AUTONOMOUS_COMMUNITY,
+            "country_code": "ES",
+            "units_total": 0,
+            "active_units": 0,
+            "canonical_code_strategy": {
+                "source_system": INE_TERRITORIAL_SOURCE_SYSTEM,
+                "code_type": INE_AUTONOMOUS_COMMUNITY_CODE_TYPE,
+            },
+        },
+        {
+            "unit_level": TERRITORIAL_UNIT_LEVEL_PROVINCE,
+            "country_code": "ES",
+            "units_total": 0,
+            "active_units": 0,
+            "canonical_code_strategy": {
+                "source_system": INE_TERRITORIAL_SOURCE_SYSTEM,
+                "code_type": INE_PROVINCE_CODE_TYPE,
+            },
+        },
+        {
+            "unit_level": TERRITORIAL_UNIT_LEVEL_MUNICIPALITY,
+            "country_code": "ES",
+            "units_total": 0,
+            "active_units": 0,
+            "canonical_code_strategy": {
+                "source_system": INE_TERRITORIAL_SOURCE_SYSTEM,
+                "code_type": INE_MUNICIPALITY_CODE_TYPE,
+            },
+        },
+    ]
+
+
+def test_get_catalog_coverage_returns_counts_per_supported_level():
+    session = FakeSession(
+        FakeExecuteResult(scalar_values=[1]),
+        FakeExecuteResult(scalar_values=[1]),
+        FakeExecuteResult(scalar_values=[1]),
+        FakeExecuteResult(scalar_values=[1]),
+        FakeExecuteResult(scalar_values=[2]),
+        FakeExecuteResult(scalar_values=[1]),
+    )
+    repository = TerritorialRepository(session=session)
+
+    result = asyncio.run(repository.get_catalog_coverage(country_code="ES"))
+
+    assert result == [
+        {
+            "unit_level": TERRITORIAL_UNIT_LEVEL_AUTONOMOUS_COMMUNITY,
+            "country_code": "ES",
+            "units_total": 1,
+            "active_units": 1,
+            "canonical_code_strategy": {
+                "source_system": INE_TERRITORIAL_SOURCE_SYSTEM,
+                "code_type": INE_AUTONOMOUS_COMMUNITY_CODE_TYPE,
+            },
+        },
+        {
+            "unit_level": TERRITORIAL_UNIT_LEVEL_PROVINCE,
+            "country_code": "ES",
+            "units_total": 1,
+            "active_units": 1,
+            "canonical_code_strategy": {
+                "source_system": INE_TERRITORIAL_SOURCE_SYSTEM,
+                "code_type": INE_PROVINCE_CODE_TYPE,
+            },
+        },
+        {
+            "unit_level": TERRITORIAL_UNIT_LEVEL_MUNICIPALITY,
+            "country_code": "ES",
+            "units_total": 2,
+            "active_units": 1,
+            "canonical_code_strategy": {
+                "source_system": INE_TERRITORIAL_SOURCE_SYSTEM,
+                "code_type": INE_MUNICIPALITY_CODE_TYPE,
+            },
+        },
+    ]
+    assert len(session.statements) == 6
+
+
 def test_get_unit_by_canonical_code_serializes_lookup_with_primary_code():
     unit = SimpleNamespace(
         id=7,

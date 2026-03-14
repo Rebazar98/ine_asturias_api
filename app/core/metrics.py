@@ -33,6 +33,33 @@ PROVIDER_CACHE_HITS_TOTAL = Counter(
     "Provider cache hits.",
     ["provider", "scope"],
 )
+ANALYTICAL_FLOW_TOTAL = Counter(
+    "ine_asturias_analytical_flow_total",
+    "Analytical flow outcomes.",
+    ["flow", "outcome", "storage_mode"],
+)
+ANALYTICAL_FLOW_DURATION_SECONDS = Histogram(
+    "ine_asturias_analytical_flow_duration_seconds",
+    "Analytical flow duration.",
+    ["flow", "outcome", "storage_mode"],
+)
+ANALYTICAL_FLOW_SERIES_COUNT = Histogram(
+    "ine_asturias_analytical_flow_series_count",
+    "Series returned by analytical flows.",
+    ["flow", "storage_mode"],
+    buckets=(0, 1, 5, 10, 25, 50, 100, 250, 500, 1000),
+)
+ANALYTICAL_FLOW_RESULT_BYTES = Histogram(
+    "ine_asturias_analytical_flow_result_bytes",
+    "Serialized analytical flow result size in bytes.",
+    ["flow", "storage_mode"],
+    buckets=(0, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144),
+)
+ANALYTICAL_SNAPSHOT_EVENTS_TOTAL = Counter(
+    "ine_asturias_analytical_snapshot_events_total",
+    "Analytical snapshot lifecycle events.",
+    ["snapshot_type", "event"],
+)
 RAW_INGESTION_TOTAL = Counter(
     "ine_asturias_raw_ingestion_total",
     "Raw ingestion records persisted.",
@@ -129,6 +156,45 @@ def record_provider_request(
 
 def record_provider_cache_hit(provider: str, scope: str) -> None:
     PROVIDER_CACHE_HITS_TOTAL.labels(provider=provider, scope=scope).inc()
+
+
+def record_analytical_flow(
+    *,
+    flow: str,
+    outcome: str,
+    storage_mode: str,
+    duration_seconds: float,
+    series_count: int | None = None,
+    result_bytes: int | None = None,
+) -> None:
+    ANALYTICAL_FLOW_TOTAL.labels(
+        flow=flow,
+        outcome=outcome,
+        storage_mode=storage_mode,
+    ).inc()
+    if duration_seconds >= 0:
+        ANALYTICAL_FLOW_DURATION_SECONDS.labels(
+            flow=flow,
+            outcome=outcome,
+            storage_mode=storage_mode,
+        ).observe(duration_seconds)
+    if series_count is not None and series_count >= 0:
+        ANALYTICAL_FLOW_SERIES_COUNT.labels(
+            flow=flow,
+            storage_mode=storage_mode,
+        ).observe(series_count)
+    if result_bytes is not None and result_bytes >= 0:
+        ANALYTICAL_FLOW_RESULT_BYTES.labels(
+            flow=flow,
+            storage_mode=storage_mode,
+        ).observe(result_bytes)
+
+
+def record_analytical_snapshot_event(snapshot_type: str, event: str) -> None:
+    ANALYTICAL_SNAPSHOT_EVENTS_TOTAL.labels(
+        snapshot_type=snapshot_type,
+        event=event,
+    ).inc()
 
 
 def record_raw_ingestion(source_type: str) -> None:

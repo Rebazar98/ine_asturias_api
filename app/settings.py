@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     redis_url: str | None = Field(default=None, alias="REDIS_URL")
     job_queue_name: str = Field(default="ine_jobs", alias="JOB_QUEUE_NAME")
     job_result_ttl_seconds: int = Field(default=86400, alias="JOB_RESULT_TTL_SECONDS")
+    analytical_snapshot_ttl_seconds: int = Field(
+        default=21600, alias="ANALYTICAL_SNAPSHOT_TTL_SECONDS", ge=0
+    )
     max_concurrent_table_fetches: int = Field(
         default=3, alias="MAX_CONCURRENT_TABLE_FETCHES", ge=1, le=10
     )

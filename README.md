@@ -181,6 +181,7 @@ GET /geocode?query=Oviedo
 GET /reverse_geocode?lat=43.3614&lon=-5.8494
 GET /territorios/comunidades-autonomas
 GET /territorios/provincias?autonomous_community_code=03
+GET /territorios/municipio/33044/resumen
 GET /municipio/33044
 ```
 
@@ -300,9 +301,137 @@ Capacidades actuales del repositorio territorial:
 
 Endpoints territoriales publicos actuales:
 
+- `GET /territorios/catalogo` expone un catalogo minimo de recursos territoriales y analiticos publicados, con cobertura basica por nivel.
 - `GET /territorios/comunidades-autonomas` devuelve comunidades autonomas desde el modelo interno con paginacion basica.
 - `GET /territorios/provincias` devuelve provincias y admite filtro por `autonomous_community_code`.
 - `GET /municipio/{codigo_ine}` devuelve detalle de municipio por codigo canonico INE, incluyendo codigos, aliases y atributos.
+
+## Catalogo territorial minimo
+
+La Fase 5 incorpora `GET /territorios/catalogo` como punto de descubrimiento ligero para automatizaciones, agentes y clientes API.
+
+El endpoint devuelve:
+
+- `resources`: recursos publicados realmente consumibles por contrato semantico interno.
+- `territorial_levels`: niveles territoriales disponibles con cobertura basica (`units_total`, `active_units`) y rutas asociadas.
+- `summary`: conteo agregado de recursos de lectura, analitica y jobs.
+- `metadata`: contexto operativo minimo para consumo automatizado.
+
+El catalogo NO expone tablas internas ni payloads raw. Su funcion es descubrir capacidades publicas, no inventariar la base de datos.
+
+## Contrato base de salidas analiticas
+
+La Fase 5 fija una familia comun de respuestas para automatizacion, informes y agentes. Esta familia NO depende del shape raw de INE, CartoCiudad u otros providers.
+
+Campos comunes:
+
+- `source`: identificador semantico de la salida analitica, no del endpoint raw del proveedor.
+- `generated_at`: instante de generacion del resultado.
+- `territorial_context`: contexto territorial resuelto por el dominio interno.
+- `filters`: filtros semanticos aplicados para construir la salida.
+- `summary`: resumen compacto pensado para n8n, agentes y consumo programatico.
+- `series`: observaciones o indicadores semanticos ya preparados para consumo.
+- `metadata`: contexto adicional no ligado al payload raw de un proveedor.
+- `pagination`: bloque opcional cuando la salida sea paginada.
+
+Contrato recomendado:
+
+```json
+{
+  "source": "internal.analytics.territorial_summary",
+  "generated_at": "2026-03-14T13:30:00Z",
+  "territorial_context": {
+    "territorial_unit_id": 44,
+    "unit_level": "municipality",
+    "canonical_code": "33044",
+    "canonical_name": "Oviedo",
+    "display_name": "Oviedo",
+    "source_system": "ine",
+    "country_code": "ES",
+    "autonomous_community_code": "33",
+    "province_code": "33",
+    "municipality_code": "33044"
+  },
+  "filters": {
+    "indicator_family": "population",
+    "period_from": "2020",
+    "period_to": "2024"
+  },
+  "summary": {
+    "series_count": 2,
+    "last_period": "2024"
+  },
+  "series": [
+    {
+      "series_key": "population.total",
+      "label": "Poblacion total",
+      "value": 220543,
+      "unit": "personas",
+      "period": "2024",
+      "metadata": {
+        "operation_code": "22",
+        "table_id": "2852"
+      }
+    }
+  ],
+  "metadata": {
+    "consumer_profile": "automation"
+  },
+  "pagination": {
+    "total": 2,
+    "page": 1,
+    "page_size": 50,
+    "pages": 1,
+    "has_next": false,
+    "has_previous": false
+  }
+}
+```
+
+Reglas:
+
+- `series` DEBE contener indicadores u observaciones semanticas, no nodos raw del proveedor.
+- `territorial_context` DEBE apoyarse en el modelo territorial interno cuando exista resolucion fiable.
+- `filters`, `summary` y `metadata` PUEDEN variar por endpoint, pero mantienen el mismo papel semantico en todas las salidas analiticas.
+- `pagination` solo aparece cuando aporta valor real al consumidor.
+
+Contrato de error recomendado para endpoints analiticos:
+
+```json
+{
+  "detail": {
+    "code": "territorial_summary_not_ready",
+    "message": "The requested analytical snapshot is not ready yet.",
+    "retryable": true,
+    "metadata": {
+      "job_id": "job-123",
+      "status_path": "/territorios/jobs/job-123"
+    }
+  }
+}
+```
+
+Este contrato esta pensado para que n8n, agentes y clientes API puedan tratar igual una salida analitica sin conocer detalles internos de INE, CartoCiudad o del modelo raw persistido.
+
+Endpoints analiticos disponibles:
+
+- `GET /territorios/municipio/{codigo_ine}/resumen`
+- combina `territorial_unit` del modelo interno con indicadores latest de `ine_series_normalized`
+- usa `codigo_ine` como referencia canonica del dominio INE para el municipio
+- admite `operation_code`, `variable_id`, `period_from`, `period_to`, `page` y `page_size`
+- devuelve una ficha reutilizable para automatizacion con:
+  - `territorial_context`
+  - `territorial_unit`
+  - `summary`
+  - `series`
+  - `pagination`
+- `POST /territorios/municipio/{codigo_ine}/informe`
+- devuelve `202 Accepted` con `job_id`, `status_path` y `report_type=municipality_report`
+- reutiliza la misma semantica analitica del resumen, pero la empaqueta como informe estructurado para consumo no interactivo
+- `GET /territorios/jobs/{job_id}`
+- permite hacer polling del job territorial hasta `completed` o `failed`
+- cuando `ANALYTICAL_SNAPSHOT_TTL_SECONDS > 0` y PostgreSQL esta disponible, el informe se persiste y reutiliza desde `analytical_snapshots`
+- si la persistencia no esta disponible, el contrato sigue funcionando con resultado en `job_store` (`RedisJobStore` o `InMemoryJobStore`)
 
 ## Jobs y ejecucion asincrona
 
@@ -323,6 +452,84 @@ Consulta de estado:
 ```http
 GET /ine/jobs/{job_id}
 ```
+
+Para jobs analiticos territoriales:
+
+```http
+POST /territorios/municipio/{codigo_ine}/informe
+GET /territorios/jobs/{job_id}
+```
+
+## Patron de consumo para n8n y agentes
+
+El criterio operativo de esta fase es simple: `n8n`, agentes y clientes API DEBEN consumir la API propia y NO DEBEN depender del shape de INE, CartoCiudad ni de tablas raw internas.
+
+Orden recomendado de consumo:
+
+1. intentar primero un endpoint semantico sincronico cuando la necesidad sea puntual o interactiva;
+2. usar un job analitico cuando el resultado esperado sea mas pesado, reusable o apto para automatizacion;
+3. consumir `result`, `summary`, `series` y `metadata` del contrato interno, no campos opacos del proveedor;
+4. conservar `job_id`, `status_path` y, cuando exista, `snapshot_key` como referencias operativas.
+
+Endpoints recomendados hoy para automatizacion:
+
+- `GET /territorios/catalogo`
+- `GET /territorios/municipio/{codigo_ine}/resumen`
+- `POST /territorios/municipio/{codigo_ine}/informe`
+- `GET /territorios/jobs/{job_id}`
+- `GET /geocode`
+- `GET /reverse_geocode`
+
+Datos que NO deben consumir automatizaciones ni agentes:
+
+- payloads raw de proveedor persistidos en `ingestion_raw`
+- endpoints o URLs directas de INE o CartoCiudad
+- tablas internas como `ine_series_normalized`, `ine_tables_catalog` o `analytical_snapshots` como contrato externo
+- claves o estructuras internas de provider dentro de `metadata` cuando no formen parte del contrato semantico documentado
+
+Flujo recomendado de polling para jobs:
+
+```text
+1. POST /territorios/municipio/{codigo_ine}/informe
+2. leer job_id y status_path
+3. esperar unos segundos
+4. GET status_path
+5. repetir mientras status sea queued o running
+6. usar result si status=completed
+7. tratar error como terminal si status=failed
+```
+
+Politica recomendada de polling:
+
+- espera inicial: `2-5` segundos
+- reintento: cada `5-15` segundos segun criticidad
+- stop conditions: `completed` o `failed`
+- si `detail.retryable=true`, el cliente puede reintentar el flujo completo con backoff
+
+Contrato practico para n8n:
+
+- `summary` DEBE usarse para routing, decisiones y alertas ligeras
+- `series` DEBE usarse para carga de datos, informes o escritura en sistemas externos
+- `metadata` DEBE usarse como contexto operativo, no como fuente primaria de dato de negocio
+- `pagination` DEBE respetarse si el endpoint la expone
+
+Ejemplo de patron n8n:
+
+```text
+Webhook/Cron
+  -> HTTP Request (POST /territorios/municipio/{codigo_ine}/informe)
+  -> Wait
+  -> HTTP Request (GET /territorios/jobs/{job_id})
+  -> IF status == completed
+  -> escribir result.summary / result.series en destino
+  -> IF status == failed -> notificar / registrar incidencia
+```
+
+Regla semantica clave:
+
+- para contexto territorial o informes, priorizar `/territorios/...`
+- para resolucion geografica, priorizar `/geocode` y `/reverse_geocode`
+- para automatizaciones nuevas, NO disenar flujos contra el proveedor externo aunque hoy parezca mas rapido
 
 ## Persistencia
 
@@ -349,6 +556,18 @@ Persistencia operativa del catalogo de tablas descubiertas por operacion con est
 - `has_data`
 - `no_data`
 - `failed`
+
+### `analytical_snapshots`
+
+Persistencia reutilizable para informes o snapshots analiticos generados por la API propia.
+
+Reglas actuales:
+
+- usa clave logica por `snapshot_type + scope_key + filters`
+- evita duplicacion de resultados semanticos equivalentes
+- guarda `payload`, `filters`, `metadata`, `generated_at` y `expires_at`
+- el primer uso activo es `municipality_report`
+- la expiracion se controla con `ANALYTICAL_SNAPSHOT_TTL_SECONDS`
 
 ### Nucleo territorial base
 
@@ -406,6 +625,27 @@ La exportacion Prometheus se resuelve de forma pragmatica:
 - las metricas genericas de proceso y runtime (`python_*`, `process_*`) siguen siendo locales a cada proceso y NO se mezclan para evitar series duplicadas o invalidas.
 
 Si necesitas diagnostico fino por proceso, consulta el worker directamente desde la red interna de Docker o publica temporalmente su puerto de metricas en un entorno controlado.
+
+Metricas analiticas nuevas en `/metrics`:
+
+- `ine_asturias_analytical_flow_total`
+  - cuenta resultados por `flow`, `outcome` y `storage_mode`
+  - `flow` actual: `municipality_summary`, `municipality_report`
+  - `outcome` actual: `completed`, `not_found`, `failed`
+- `ine_asturias_analytical_flow_duration_seconds`
+  - mide latencia total del flujo analitico con las mismas etiquetas semanticas
+- `ine_asturias_analytical_flow_series_count`
+  - registra el volumen de `series` devuelto por salida analitica
+- `ine_asturias_analytical_flow_result_bytes`
+  - aproxima el tamano serializado del resultado para detectar informes pesados
+- `ine_asturias_analytical_snapshot_events_total`
+  - cuenta `miss`, `persisted` y `hit` de snapshots analiticos
+
+Lectura recomendada:
+
+- si `municipality_report` crece en `duration_seconds` pero no en `series_count`, el cuello no esta en el volumen de salida sino en el proceso de construccion
+- si suben `persisted` y `hit`, la cache analitica esta amortizando recalculo
+- si predominan `miss` sin `hit`, la TTL o el patron de consumo probablemente no estan alineados con la demanda real
 
 ## Tratamiento del warning de collation en PostgreSQL
 

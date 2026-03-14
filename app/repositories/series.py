@@ -1,7 +1,7 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from sqlalchemy import func, select
@@ -142,7 +142,11 @@ class SeriesRepository:
 
         self.logger.info(
             "normalized_upsert_completed",
-            extra={"rows": total_inserted, "prepared_rows": prepared_rows, "batch_size": batch_size},
+            extra={
+                "rows": total_inserted,
+                "prepared_rows": prepared_rows,
+                "batch_size": batch_size,
+            },
         )
         return total_inserted
 
@@ -203,12 +207,16 @@ class SeriesRepository:
             statement = statement.where(condition)
             count_statement = count_statement.where(condition)
 
-        statement = statement.order_by(
-            INESeriesNormalized.operation_code.asc(),
-            INESeriesNormalized.table_id.asc(),
-            INESeriesNormalized.period.desc(),
-            INESeriesNormalized.id.asc(),
-        ).offset((page - 1) * page_size).limit(page_size)
+        statement = (
+            statement.order_by(
+                INESeriesNormalized.operation_code.asc(),
+                INESeriesNormalized.table_id.asc(),
+                INESeriesNormalized.period.desc(),
+                INESeriesNormalized.id.asc(),
+            )
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
 
         total = await self.session.scalar(count_statement)
         result = await self.session.execute(statement)
@@ -235,6 +243,146 @@ class SeriesRepository:
             ),
         }
 
+    async def list_latest_indicators_by_geography(
+        self,
+        *,
+        geography_code: str,
+        operation_code: str | None = None,
+        variable_id: str | None = None,
+        period_from: str | None = None,
+        period_to: str | None = None,
+        page: int = 1,
+        page_size: int = 50,
+    ) -> dict[str, Any]:
+        if self.session is None:
+            return {
+                "items": [],
+                "total": 0,
+                "page": page,
+                "page_size": page_size,
+                "pages": 0,
+                "has_next": False,
+                "has_previous": page > 1,
+                "filters": self._serialize_latest_indicator_filters(
+                    geography_code=geography_code,
+                    operation_code=operation_code,
+                    variable_id=variable_id,
+                    period_from=period_from,
+                    period_to=period_to,
+                ),
+                "summary": {
+                    "operation_codes": [],
+                    "latest_period": None,
+                },
+            }
+
+        filters = [INESeriesNormalized.geography_code == geography_code]
+        if operation_code:
+            filters.append(INESeriesNormalized.operation_code == operation_code)
+        if variable_id:
+            filters.append(INESeriesNormalized.variable_id == variable_id)
+        if period_from:
+            filters.append(INESeriesNormalized.period >= period_from)
+        if period_to:
+            filters.append(INESeriesNormalized.period <= period_to)
+
+        ranked_rows = (
+            select(
+                INESeriesNormalized.id.label("id"),
+                INESeriesNormalized.operation_code.label("operation_code"),
+                INESeriesNormalized.table_id.label("table_id"),
+                INESeriesNormalized.variable_id.label("variable_id"),
+                INESeriesNormalized.territorial_unit_id.label("territorial_unit_id"),
+                INESeriesNormalized.geography_name.label("geography_name"),
+                INESeriesNormalized.geography_code.label("geography_code"),
+                INESeriesNormalized.period.label("period"),
+                INESeriesNormalized.value.label("value"),
+                INESeriesNormalized.unit.label("unit"),
+                INESeriesNormalized.metadata_json.label("metadata"),
+                INESeriesNormalized.inserted_at.label("inserted_at"),
+                func.row_number()
+                .over(
+                    partition_by=(
+                        INESeriesNormalized.operation_code,
+                        INESeriesNormalized.table_id,
+                        INESeriesNormalized.variable_id,
+                        INESeriesNormalized.geography_code,
+                    ),
+                    order_by=(
+                        INESeriesNormalized.period.desc(),
+                        INESeriesNormalized.id.desc(),
+                    ),
+                )
+                .label("series_rank"),
+            )
+            .where(*filters)
+            .subquery()
+        )
+        latest_rows = (
+            select(
+                ranked_rows.c.id,
+                ranked_rows.c.operation_code,
+                ranked_rows.c.table_id,
+                ranked_rows.c.variable_id,
+                ranked_rows.c.territorial_unit_id,
+                ranked_rows.c.geography_name,
+                ranked_rows.c.geography_code,
+                ranked_rows.c.period,
+                ranked_rows.c.value,
+                ranked_rows.c.unit,
+                ranked_rows.c.metadata,
+                ranked_rows.c.inserted_at,
+            )
+            .where(ranked_rows.c.series_rank == 1)
+            .subquery()
+        )
+
+        count_statement = select(func.count()).select_from(latest_rows)
+        operations_statement = (
+            select(latest_rows.c.operation_code)
+            .distinct()
+            .order_by(latest_rows.c.operation_code.asc())
+        )
+        latest_period_statement = select(func.max(latest_rows.c.period))
+        statement = (
+            select(latest_rows)
+            .order_by(
+                latest_rows.c.period.desc(),
+                latest_rows.c.operation_code.asc(),
+                latest_rows.c.table_id.asc(),
+                latest_rows.c.variable_id.asc(),
+            )
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+
+        total = int(await self.session.scalar(count_statement) or 0)
+        operations_result = await self.session.execute(operations_statement)
+        latest_period = await self.session.scalar(latest_period_statement)
+        result = await self.session.execute(statement)
+        items = [self.serialize_latest_indicator_item(row) for row in result.mappings().all()]
+        pages = (total + page_size - 1) // page_size if total else 0
+        return {
+            "items": items,
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "pages": pages,
+            "has_next": page < pages,
+            "has_previous": page > 1,
+            "filters": self._serialize_latest_indicator_filters(
+                geography_code=geography_code,
+                operation_code=operation_code,
+                variable_id=variable_id,
+                period_from=period_from,
+                period_to=period_to,
+            ),
+            "summary": {
+                "operation_codes": list(operations_result.scalars().all()),
+                "latest_period": latest_period,
+            },
+        }
+
     @staticmethod
     def prepare_upsert_rows(
         items: Sequence[NormalizedSeriesItem | dict[str, Any]],
@@ -250,16 +398,7 @@ class SeriesRepository:
 
     @staticmethod
     def _coerce_item_to_row(item: NormalizedSeriesItem | dict[str, Any]) -> dict[str, Any] | None:
-        if isinstance(item, NormalizedSeriesItem):
-            payload = item.model_dump()
-        elif isinstance(item, dict):
-            payload = dict(item)
-        else:
-            payload = {
-                key: getattr(item, key)
-                for key in dir(item)
-                if not key.startswith("_") and not callable(getattr(item, key))
-            }
+        payload = SeriesRepository._coerce_payload(item)
 
         row = {
             "operation_code": SeriesRepository._string_value(payload.get("operation_code")),
@@ -283,6 +422,37 @@ class SeriesRepository:
         return filtered_row
 
     @staticmethod
+    def serialize_latest_indicator_item(item: Any) -> dict[str, Any]:
+        payload = SeriesRepository._coerce_payload(item)
+        metadata = SeriesRepository._json_value(
+            payload.get("metadata", payload.get("metadata_json", {}))
+        )
+        operation_code = SeriesRepository._string_value(payload.get("operation_code"))
+        table_id = SeriesRepository._string_value(payload.get("table_id"))
+        variable_id = SeriesRepository._string_value(payload.get("variable_id"))
+
+        return {
+            "series_key": SeriesRepository._build_series_key(
+                operation_code=operation_code,
+                table_id=table_id,
+                variable_id=variable_id,
+            ),
+            "label": SeriesRepository._build_indicator_label(
+                variable_id=variable_id,
+                metadata=metadata,
+            ),
+            "value": payload.get("value"),
+            "unit": SeriesRepository._nullable_string_value(payload.get("unit")),
+            "period": SeriesRepository._nullable_string_value(payload.get("period")),
+            "metadata": metadata,
+            "operation_code": operation_code,
+            "table_id": table_id,
+            "variable_id": variable_id,
+            "geography_code": SeriesRepository._string_value(payload.get("geography_code")),
+            "geography_name": SeriesRepository._string_value(payload.get("geography_name")),
+        }
+
+    @staticmethod
     def _items_preview(items: Sequence[NormalizedSeriesItem | dict[str, Any]]) -> dict[str, Any]:
         first_item = items[0]
         if isinstance(first_item, NormalizedSeriesItem):
@@ -300,7 +470,9 @@ class SeriesRepository:
         }
 
     @staticmethod
-    def _chunked(values: Sequence[NormalizedSeriesItem | dict[str, Any]], batch_size: int) -> list[Sequence[NormalizedSeriesItem | dict[str, Any]]]:
+    def _chunked(
+        values: Sequence[NormalizedSeriesItem | dict[str, Any]], batch_size: int
+    ) -> list[Sequence[NormalizedSeriesItem | dict[str, Any]]]:
         return [values[index : index + batch_size] for index in range(0, len(values), batch_size)]
 
     @staticmethod
@@ -308,6 +480,11 @@ class SeriesRepository:
         if value is None:
             return ""
         return str(value)
+
+    @staticmethod
+    def _nullable_string_value(value: Any) -> str | None:
+        normalized = SeriesRepository._string_value(value)
+        return normalized or None
 
     @staticmethod
     def _float_value(value: Any) -> float | None:
@@ -384,3 +561,59 @@ class SeriesRepository:
             "period_from": period_from,
             "period_to": period_to,
         }
+
+    @staticmethod
+    def _serialize_latest_indicator_filters(
+        *,
+        geography_code: str,
+        operation_code: str | None,
+        variable_id: str | None,
+        period_from: str | None,
+        period_to: str | None,
+    ) -> dict[str, Any]:
+        return {
+            "geography_code": geography_code,
+            "geography_code_system": "ine",
+            "operation_code": operation_code,
+            "variable_id": variable_id,
+            "period_from": period_from,
+            "period_to": period_to,
+        }
+
+    @staticmethod
+    def _coerce_payload(item: Any) -> dict[str, Any]:
+        if isinstance(item, NormalizedSeriesItem):
+            return item.model_dump()
+        if isinstance(item, Mapping):
+            return dict(item)
+        return {
+            key: getattr(item, key)
+            for key in dir(item)
+            if not key.startswith("_") and not callable(getattr(item, key))
+        }
+
+    @staticmethod
+    def _build_series_key(*, operation_code: str, table_id: str, variable_id: str) -> str:
+        return ".".join(
+            [
+                "ine",
+                operation_code or "unknown_operation",
+                table_id or "unknown_table",
+                variable_id or "unknown_variable",
+            ]
+        )
+
+    @staticmethod
+    def _build_indicator_label(*, variable_id: str, metadata: dict[str, Any]) -> str:
+        series_name = SeriesRepository._string_value(metadata.get("series_name"))
+        if series_name:
+            return series_name
+
+        series_code = SeriesRepository._string_value(metadata.get("series_code"))
+        if series_code:
+            return series_code
+
+        if variable_id:
+            return variable_id
+
+        return "indicator"

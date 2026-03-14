@@ -288,10 +288,20 @@ class RedisJobStore(BaseJobStore):
 def _copy_job_record(record: dict[str, Any]) -> dict[str, Any]:
     return {
         **record,
-        "params": dict(record.get("params", {})),
-        "progress": dict(record.get("progress", {})),
+        "params": _copy_jsonish(record.get("params", {})),
+        "progress": _copy_jsonish(record.get("progress", {})),
+        "result": _copy_jsonish(record.get("result")),
+        "error": _copy_jsonish(record.get("error")),
     }
 
 
 def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _copy_jsonish(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, (dict, list)):
+        return json.loads(json.dumps(value, default=str))
+    return value

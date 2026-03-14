@@ -1,12 +1,22 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+import asyncio
+import json
+from datetime import datetime, timezone
+from time import perf_counter
+
+from arq.connections import ArqRedis
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
 from app.core.logging import get_logger
 from app.core.metrics import record_provider_cache_hit
+from app.core.jobs import BaseJobStore
 from app.dependencies import (
+    get_arq_pool,
     get_cartociudad_client_service,
     get_geocoding_cache_repository,
+    get_job_store,
+    get_territorial_analytics_service,
     get_territorial_repository,
     require_api_key,
 )
@@ -21,8 +31,15 @@ from app.repositories.territorial import (
     TerritorialRepository,
 )
 from app.schemas import (
+    BackgroundJobStatusResponse,
     GeocodeResponse,
     ReverseGeocodeResponse,
+    TerritorialCatalogLevelCoverageResponse,
+    TerritorialCatalogResourceResponse,
+    TerritorialCatalogResponse,
+    TerritorialCatalogSummaryResponse,
+    TerritorialReportJobAcceptedResponse,
+    TerritorialMunicipalitySummaryResponse,
     TerritorialUnitDetailResponse,
     TerritorialUnitListFiltersResponse,
     TerritorialUnitListResponse,
@@ -34,11 +51,164 @@ from app.services.cartociudad_normalizers import (
     normalize_cartociudad_geocode_response,
     normalize_cartociudad_reverse_geocode_response,
 )
+from app.services.territorial_analytics import (
+    MUNICIPALITY_REPORT_TYPE,
+    TerritorialAnalyticsService,
+)
 from app.settings import Settings, get_settings
 
 
 router = APIRouter(tags=["territorial"], dependencies=[Depends(require_api_key)])
 logger = get_logger("app.api.routes_territorial")
+MUNICIPALITY_REPORT_JOB_TYPE = "territorial_municipality_report"
+TERRITORIAL_CATALOG_SOURCE = "internal.catalog.territorial"
+TERRITORIAL_CATALOG_LEVEL_PATHS = {
+    TERRITORIAL_UNIT_LEVEL_AUTONOMOUS_COMMUNITY: {
+        "list_path": "/territorios/comunidades-autonomas",
+        "detail_path": None,
+        "summary_path": None,
+        "report_job_path": None,
+    },
+    TERRITORIAL_UNIT_LEVEL_PROVINCE: {
+        "list_path": "/territorios/provincias",
+        "detail_path": None,
+        "summary_path": None,
+        "report_job_path": None,
+    },
+    TERRITORIAL_UNIT_LEVEL_MUNICIPALITY: {
+        "list_path": None,
+        "detail_path": "/municipio/{codigo_ine}",
+        "summary_path": "/territorios/municipio/{codigo_ine}/resumen",
+        "report_job_path": "/territorios/municipio/{codigo_ine}/informe",
+    },
+}
+
+
+def _build_territorial_catalog_resources() -> list[TerritorialCatalogResourceResponse]:
+    return [
+        TerritorialCatalogResourceResponse(
+            resource_key="territorial.autonomous_communities.list",
+            title="Autonomous communities list",
+            category="territorial_read",
+            method="GET",
+            path="/territorios/comunidades-autonomas",
+            summary="List autonomous communities from the internal territorial model.",
+            unit_levels=[TERRITORIAL_UNIT_LEVEL_AUTONOMOUS_COMMUNITY],
+            query_params=["page", "page_size", "active_only"],
+            response_contract="TerritorialUnitListResponse",
+            supports_pagination=True,
+        ),
+        TerritorialCatalogResourceResponse(
+            resource_key="territorial.provinces.list",
+            title="Provinces list",
+            category="territorial_read",
+            method="GET",
+            path="/territorios/provincias",
+            summary="List provinces, optionally filtered by autonomous community code.",
+            unit_levels=[TERRITORIAL_UNIT_LEVEL_PROVINCE],
+            query_params=["autonomous_community_code", "page", "page_size", "active_only"],
+            response_contract="TerritorialUnitListResponse",
+            supports_pagination=True,
+        ),
+        TerritorialCatalogResourceResponse(
+            resource_key="territorial.municipality.detail",
+            title="Municipality detail",
+            category="territorial_read",
+            method="GET",
+            path="/municipio/{codigo_ine}",
+            summary="Get territorial detail for a municipality by canonical INE code.",
+            unit_levels=[TERRITORIAL_UNIT_LEVEL_MUNICIPALITY],
+            path_params=["codigo_ine"],
+            response_contract="TerritorialUnitDetailResponse",
+        ),
+        TerritorialCatalogResourceResponse(
+            resource_key="territorial.municipality.summary",
+            title="Municipality summary",
+            category="territorial_analytics",
+            method="GET",
+            path="/territorios/municipio/{codigo_ine}/resumen",
+            summary="Get a semantic municipality summary over the internal analytical contract.",
+            unit_levels=[TERRITORIAL_UNIT_LEVEL_MUNICIPALITY],
+            path_params=["codigo_ine"],
+            query_params=[
+                "operation_code",
+                "variable_id",
+                "period_from",
+                "period_to",
+                "page",
+                "page_size",
+            ],
+            response_contract="TerritorialMunicipalitySummaryResponse",
+            supports_pagination=True,
+        ),
+        TerritorialCatalogResourceResponse(
+            resource_key="territorial.municipality.report_job",
+            title="Municipality report job",
+            category="territorial_analytics",
+            method="POST",
+            path="/territorios/municipio/{codigo_ine}/informe",
+            summary="Queue a municipality analytical report job with reusable snapshot support.",
+            unit_levels=[TERRITORIAL_UNIT_LEVEL_MUNICIPALITY],
+            path_params=["codigo_ine"],
+            query_params=[
+                "operation_code",
+                "variable_id",
+                "period_from",
+                "period_to",
+                "page",
+                "page_size",
+            ],
+            response_contract="TerritorialReportJobAcceptedResponse",
+            supports_background_job=True,
+            supports_snapshot_reuse=True,
+        ),
+        TerritorialCatalogResourceResponse(
+            resource_key="territorial.jobs.status",
+            title="Territorial job status",
+            category="territorial_jobs",
+            method="GET",
+            path="/territorios/jobs/{job_id}",
+            summary="Read the status and result of a previously queued territorial job.",
+            path_params=["job_id"],
+            response_contract="BackgroundJobStatusResponse",
+        ),
+    ]
+
+
+def _build_territorial_catalog_level_coverage(
+    row: dict,
+) -> TerritorialCatalogLevelCoverageResponse:
+    paths = TERRITORIAL_CATALOG_LEVEL_PATHS.get(row["unit_level"], {})
+    return TerritorialCatalogLevelCoverageResponse(
+        unit_level=row["unit_level"],
+        country_code=row["country_code"],
+        units_total=row["units_total"],
+        active_units=row["active_units"],
+        canonical_code_strategy=row.get("canonical_code_strategy"),
+        list_path=paths.get("list_path"),
+        detail_path=paths.get("detail_path"),
+        summary_path=paths.get("summary_path"),
+        report_job_path=paths.get("report_job_path"),
+    )
+
+
+@router.get(
+    "/territorios/jobs/{job_id}",
+    response_model=BackgroundJobStatusResponse,
+    tags=["territorial-jobs"],
+    summary="Get the status of a territorial background job",
+)
+async def get_territorial_job_status(
+    job_id: str,
+    job_store: BaseJobStore = Depends(get_job_store),
+) -> BackgroundJobStatusResponse:
+    job = await job_store.get_job(job_id)
+    if job is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"message": "Job not found.", "job_id": job_id},
+        )
+    return BackgroundJobStatusResponse(**job)
 
 
 @router.get(
@@ -268,6 +438,50 @@ async def list_provinces(
 
 
 @router.get(
+    "/territorios/catalogo",
+    response_model=TerritorialCatalogResponse,
+    tags=["territorial-discovery"],
+    summary="Discover published territorial semantic resources",
+    description=(
+        "Minimal discovery catalog for automations and programmatic clients. "
+        "It exposes stable internal resources, territorial levels and basic coverage "
+        "without exposing internal tables or provider raw payloads."
+    ),
+)
+async def get_territorial_catalog(
+    territorial_repo: TerritorialRepository = Depends(get_territorial_repository),
+) -> TerritorialCatalogResponse:
+    resources = _build_territorial_catalog_resources()
+    coverage_rows = await territorial_repo.get_catalog_coverage(country_code="ES")
+    territorial_levels = [_build_territorial_catalog_level_coverage(row) for row in coverage_rows]
+    return TerritorialCatalogResponse(
+        source=TERRITORIAL_CATALOG_SOURCE,
+        generated_at=datetime.now(timezone.utc),
+        summary=TerritorialCatalogSummaryResponse(
+            resources_total=len(resources),
+            territorial_levels_total=len(territorial_levels),
+            read_resources_total=sum(
+                1 for resource in resources if resource.category == "territorial_read"
+            ),
+            analytics_resources_total=sum(
+                1 for resource in resources if resource.category == "territorial_analytics"
+            ),
+            job_resources_total=sum(
+                1 for resource in resources if resource.category == "territorial_jobs"
+            ),
+        ),
+        territorial_levels=territorial_levels,
+        resources=resources,
+        metadata={
+            "default_country_code": "ES",
+            "intended_consumers": ["n8n", "agents", "programmatic_clients"],
+            "raw_provider_contracts_exposed": False,
+            "discovery_scope": "published_territorial_resources",
+        },
+    )
+
+
+@router.get(
     "/municipio/{codigo_ine}",
     response_model=TerritorialUnitDetailResponse,
     tags=["territorial-read"],
@@ -291,3 +505,235 @@ async def get_municipality_by_ine_code(
         )
 
     return TerritorialUnitDetailResponse(**unit)
+
+
+@router.get(
+    "/territorios/municipio/{codigo_ine}/resumen",
+    response_model=TerritorialMunicipalitySummaryResponse,
+    tags=["territorial-analytics"],
+    summary="Get a semantic municipality summary",
+    description=(
+        "Analytical municipality summary that combines internal territorial detail with "
+        "latest normalized INE indicators. The public contract is semantic and stable."
+    ),
+)
+async def get_municipality_summary(
+    codigo_ine: str,
+    operation_code: str | None = Query(default=None, min_length=1),
+    variable_id: str | None = Query(default=None, min_length=1),
+    period_from: str | None = Query(default=None, min_length=1),
+    period_to: str | None = Query(default=None, min_length=1),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+    analytics_service: TerritorialAnalyticsService = Depends(get_territorial_analytics_service),
+) -> TerritorialMunicipalitySummaryResponse:
+    if period_from and period_to and period_from > period_to:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "message": "period_from cannot be greater than period_to.",
+            },
+        )
+
+    summary = await analytics_service.build_municipality_summary(
+        municipality_code=codigo_ine,
+        operation_code=operation_code,
+        variable_id=variable_id,
+        period_from=period_from,
+        period_to=period_to,
+        page=page,
+        page_size=page_size,
+    )
+    if summary is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "message": "Municipality code was not found.",
+                "codigo_ine": codigo_ine,
+            },
+        )
+
+    return summary
+
+
+@router.post(
+    "/territorios/municipio/{codigo_ine}/informe",
+    response_model=TerritorialReportJobAcceptedResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    tags=["territorial-analytics"],
+    summary="Queue a municipality analytical report job",
+)
+async def create_municipality_report_job(
+    request: Request,
+    codigo_ine: str,
+    operation_code: str | None = Query(default=None, min_length=1),
+    variable_id: str | None = Query(default=None, min_length=1),
+    period_from: str | None = Query(default=None, min_length=1),
+    period_to: str | None = Query(default=None, min_length=1),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+    analytics_service: TerritorialAnalyticsService = Depends(get_territorial_analytics_service),
+    job_store: BaseJobStore = Depends(get_job_store),
+    arq_pool: ArqRedis | None = Depends(get_arq_pool),
+) -> TerritorialReportJobAcceptedResponse:
+    if period_from and period_to and period_from > period_to:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "message": "period_from cannot be greater than period_to.",
+            },
+        )
+
+    job_params = {
+        "municipality_code": codigo_ine,
+        "operation_code": operation_code,
+        "variable_id": variable_id,
+        "period_from": period_from,
+        "period_to": period_to,
+        "page": page,
+        "page_size": page_size,
+    }
+    job = await job_store.create_job(job_type=MUNICIPALITY_REPORT_JOB_TYPE, params=job_params)
+    job_id = job["job_id"]
+    try:
+        if arq_pool is not None:
+            await arq_pool.enqueue_job(
+                "run_municipality_report_job",
+                job_id,
+                job_params,
+                _job_id=job_id,
+            )
+        else:
+            task = asyncio.create_task(
+                _run_municipality_report_job_inline(
+                    job_store=job_store,
+                    analytics_service=analytics_service,
+                    job_id=job_id,
+                    municipality_code=codigo_ine,
+                    operation_code=operation_code,
+                    variable_id=variable_id,
+                    period_from=period_from,
+                    period_to=period_to,
+                    page=page,
+                    page_size=page_size,
+                )
+            )
+            request.app.state.inline_job_tasks = getattr(
+                request.app.state, "inline_job_tasks", set()
+            )
+            request.app.state.inline_job_tasks.add(task)
+            task.add_done_callback(
+                lambda completed: request.app.state.inline_job_tasks.discard(completed)
+            )
+    except Exception as exc:
+        await job_store.fail_job(
+            job_id,
+            {
+                "message": "Could not enqueue the territorial report job.",
+                "municipality_code": codigo_ine,
+                "error": str(exc),
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"message": "Background queue unavailable.", "job_id": job_id},
+        )
+
+    logger.info(
+        "municipality_report_job_queued",
+        extra={"municipality_code": codigo_ine, "job_id": job_id},
+    )
+    return TerritorialReportJobAcceptedResponse(
+        job_id=job_id,
+        job_type=MUNICIPALITY_REPORT_JOB_TYPE,
+        status=job["status"],
+        municipality_code=codigo_ine,
+        status_path=f"/territorios/jobs/{job_id}",
+        params=job_params,
+    )
+
+
+async def _run_municipality_report_job_inline(
+    *,
+    job_store: BaseJobStore,
+    analytics_service: TerritorialAnalyticsService,
+    job_id: str,
+    municipality_code: str,
+    operation_code: str | None,
+    variable_id: str | None,
+    period_from: str | None,
+    period_to: str | None,
+    page: int,
+    page_size: int,
+) -> None:
+    started_at = perf_counter()
+
+    async def report_progress(progress: dict[str, object]) -> None:
+        await job_store.update_progress(job_id, **progress)
+
+    try:
+        await job_store.mark_running(job_id)
+        await report_progress(
+            {
+                "stage": "starting_report",
+                "municipality_code": municipality_code,
+                "report_type": MUNICIPALITY_REPORT_TYPE,
+            }
+        )
+        report = await analytics_service.build_municipality_report(
+            municipality_code=municipality_code,
+            operation_code=operation_code,
+            variable_id=variable_id,
+            period_from=period_from,
+            period_to=period_to,
+            page=page,
+            page_size=page_size,
+            progress_reporter=report_progress,
+        )
+        if report is None:
+            await job_store.fail_job(
+                job_id,
+                {
+                    "message": "Municipality code was not found.",
+                    "codigo_ine": municipality_code,
+                },
+            )
+            logger.warning(
+                "municipality_report_inline_job_not_found",
+                extra={
+                    "job_id": job_id,
+                    "municipality_code": municipality_code,
+                    "duration_ms": round((perf_counter() - started_at) * 1000, 3),
+                },
+            )
+            return
+        payload_result = report.model_dump(mode="json")
+        await job_store.complete_job(job_id, payload_result)
+        logger.info(
+            "municipality_report_inline_job_completed",
+            extra={
+                "job_id": job_id,
+                "municipality_code": municipality_code,
+                "series_count": len(report.series),
+                "storage_mode": report.metadata.get("storage_mode"),
+                "result_bytes": len(json.dumps(payload_result, default=str).encode("utf-8")),
+                "duration_ms": round((perf_counter() - started_at) * 1000, 3),
+            },
+        )
+    except Exception as exc:
+        logger.exception(
+            "municipality_report_inline_job_unexpected_error",
+            extra={
+                "job_id": job_id,
+                "municipality_code": municipality_code,
+                "duration_ms": round((perf_counter() - started_at) * 1000, 3),
+            },
+        )
+        await job_store.fail_job(
+            job_id,
+            {
+                "message": "Unexpected error while generating the municipality report.",
+                "codigo_ine": municipality_code,
+                "error": str(exc),
+            },
+        )
