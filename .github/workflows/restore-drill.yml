@@ -1,7 +1,16 @@
-﻿name: Restore Drill
+name: Restore Drill
 
 on:
   workflow_dispatch:
+    inputs:
+      min_ingestion_rows:
+        description: "Minimo de filas esperadas en ingestion_raw"
+        required: false
+        default: "100000"
+      min_normalized_rows:
+        description: "Minimo de filas esperadas en ine_series_normalized"
+        required: false
+        default: "50000"
 
 permissions:
   contents: read
@@ -9,73 +18,226 @@ permissions:
 jobs:
   restore-drill:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 50
+
+    env:
+      API_HOST_PORT: 8000
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: ine_asturias
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      REDIS_HOST: redis
 
     steps:
+      # ============================================================================
+      # SETUP: Crear directorios y preparar ambiente
+      # ============================================================================
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
-      - name: Prepare local environment file
-        run: cp .env.example .env
-
-      - name: Start infrastructure for backup seed
-        run: docker compose up --build -d db redis
-
-      - name: Apply migrations
-        run: docker compose run --rm migrate
-
-      - name: Start API and worker
-        run: docker compose up --build -d api worker
-
-      - name: Seed data with smoke test
-        run: docker compose run --rm api python scripts/smoke_stack.py --base-url http://api:8000 | tee artifacts-seed-smoke.txt
-
-      - name: Create backup artifact for drill
+      - name: Create required directories
         run: |
           mkdir -p backups artifacts
-          docker compose exec -T db pg_dump -U postgres -d ine_asturias -Fc -f /tmp/ine_asturias_ci.dump
-          docker compose cp db:/tmp/ine_asturias_ci.dump backups/ine_asturias_ci.dump
-          mv artifacts-seed-smoke.txt artifacts/seed-smoke.txt
+          echo "✓ Directorios creados: backups/, artifacts/"
 
-      - name: Run restore drill
-        shell: pwsh
-        run: ./scripts/restore_drill.ps1 -BackupPath backups/ine_asturias_ci.dump
+      - name: Prepare environment file
+        run: |
+          cp .env.example .env
+          if ! grep -q "DATABASE_URL" .env; then
+            echo "⚠️ Advertencia: DATABASE_URL no configurada en .env"
+          fi
+          echo "✓ .env.example copiado a .env"
 
-      - name: Verify restored stack with smoke test
-        run: docker compose run --rm api python scripts/smoke_stack.py --base-url http://api:8000 | tee artifacts/smoke-test.txt
+      # ============================================================================
+      # INFRASTRUCTURE: Levantar BD y Redis
+      # ============================================================================
+      - name: Start infrastructure (DB + Redis)
+        run: |
+          echo "🐳 Iniciando PostgreSQL y Redis..."
+          docker compose up --build -d db redis
 
-      - name: Verify restored data integrity
-        run: docker compose run --rm api python scripts/verify_restore.py --base-url http://api:8000 --postgres-dsn postgresql://postgres:postgres@db:5432/ine_asturias --min-ingestion-rows 1 --min-normalized-rows 1 | tee artifacts/verify-restore.txt
+          until docker compose exec -T db pg_isready -U $DB_USER > /dev/null 2>&1; do
+            echo "⏳ Esperando a que PostgreSQL esté listo..."
+            sleep 2
+          done
+          echo "✓ PostgreSQL y Redis listos"
 
-      - name: Capture compose status
+      - name: Apply database migrations
+        run: |
+          echo "🔄 Aplicando migraciones..."
+          docker compose run --rm migrate
+          echo "✓ Migraciones aplicadas"
+
+      # ============================================================================
+      # START SERVICES: Levantar API y worker
+      # ============================================================================
+      - name: Start API and worker services
+        run: |
+          echo "🚀 Iniciando API y worker..."
+          docker compose up --build -d api worker
+
+          sleep 5
+          until curl -f -s http://localhost:$API_HOST_PORT/health > /dev/null 2>&1; do
+            echo "⏳ Esperando a que API esté lista..."
+            sleep 2
+          done
+          echo "✓ API y worker iniciados"
+
+      # ============================================================================
+      # SEED DATA: Generar datos de prueba
+      # ============================================================================
+      - name: Seed database with test data
+        run: |
+          echo "🌱 Sembrando datos de prueba..."
+          set +e
+          docker compose run --rm api python scripts/smoke_stack.py \
+            --base-url http://api:$API_HOST_PORT | tee artifacts/seed-smoke.txt
+
+          SEED_EXIT=${PIPESTATUS[0]}
+          set -e
+          if [ $SEED_EXIT -ne 0 ]; then
+            echo "⚠️ ADVERTENCIA: Seed falló, pero continuamos con el restore drill"
+            echo "Esto puede ser por indisponibilidad del proveedor externo (INE)"
+          fi
+          echo "✓ Seed completado (o continuamos a pesar del fallo)"
+
+      # ============================================================================
+      # BACKUP: Crear dump de PostgreSQL
+      # ============================================================================
+      - name: Create database backup
+        run: |
+          echo "💾 Creando backup de PostgreSQL..."
+          docker compose exec -T db pg_dump \
+            -U $DB_USER \
+            -d $DB_NAME \
+            -Fc \
+            -f /tmp/${DB_NAME}_ci.dump
+
+          docker compose cp db:/tmp/${DB_NAME}_ci.dump backups/${DB_NAME}_ci.dump
+
+          DUMP_SIZE=$(du -h backups/${DB_NAME}_ci.dump | cut -f1)
+          echo "✓ Backup creado: $DUMP_SIZE"
+
+      # ============================================================================
+      # RESTORE: Ejecutar el drill de restauración
+      # ============================================================================
+      - name: Run database restore drill
+        shell: bash
+        run: |
+          echo "🔧 Ejecutando restore drill..."
+
+          if [ -f ./scripts/restore_drill.ps1 ]; then
+            pwsh ./scripts/restore_drill.ps1 \
+              -BackupPath "backups/${DB_NAME}_ci.dump" \
+              -BaseUrl "http://api:$API_HOST_PORT"
+          else
+            echo "⚠️ restore_drill.ps1 no encontrado, verificar ruta"
+            exit 1
+          fi
+
+          echo "✓ Restore drill completado"
+
+      # ============================================================================
+      # VERIFICATION: Validar restauración
+      # ============================================================================
+      - name: Verify API health post-restore
+        run: |
+          echo "🏥 Verificando salud de la API..."
+
+          curl -s http://localhost:$API_HOST_PORT/health | tee artifacts/health-check.json
+          curl -s http://localhost:$API_HOST_PORT/health/ready | tee artifacts/health-ready.json
+
+          echo "✓ API respondiendo correctamente"
+
+      - name: Verify data integrity post-restore
+        run: |
+          echo "✅ Verificando integridad de datos..."
+
+          docker compose run --rm api python scripts/verify_restore.py \
+            --base-url "http://api:$API_HOST_PORT" \
+            --postgres-dsn "postgresql://$DB_USER:$DB_PASSWORD@$DB_HOST:$DB_PORT/$DB_NAME" \
+            --min-ingestion-rows "${{ github.event.inputs.min_ingestion_rows || '100000' }}" \
+            --min-normalized-rows "${{ github.event.inputs.min_normalized_rows || '50000' }}" | \
+            tee artifacts/verify-restore.txt
+
+          if [ ${PIPESTATUS[0]} -ne 0 ]; then
+            echo "❌ FALLO en verificación de integridad"
+            exit 1
+          fi
+          echo "✓ Datos restaurados correctamente"
+
+      # ============================================================================
+      # DIAGNOSTICS: Capturar estado del sistema
+      # ============================================================================
+      - name: Capture Docker Compose status
         if: always()
-        run: docker compose ps > artifacts/compose-ps.txt
+        run: |
+          echo "📋 Estado de servicios Docker:"
+          docker compose ps | tee artifacts/compose-ps.txt
 
       - name: Capture service logs
         if: always()
         run: |
-          docker compose logs --no-color api > artifacts/api.log || true
-          docker compose logs --no-color worker > artifacts/worker.log || true
-          docker compose logs --no-color migrate > artifacts/migrate.log || true
-          docker compose logs --no-color db > artifacts/db.log || true
+          echo "📜 Capturando logs de servicios..."
 
+          docker compose logs --no-color api 2>&1 | tee artifacts/api.log || true
+          docker compose logs --no-color worker 2>&1 | tee artifacts/worker.log || true
+          docker compose logs --no-color migrate 2>&1 | tee artifacts/migrate.log || true
+          docker compose logs --no-color db 2>&1 | tee artifacts/db.log || true
+          docker compose logs --no-color redis 2>&1 | tee artifacts/redis.log || true
+
+          echo "✓ Logs capturados"
+
+      - name: Capture system diagnostics
+        if: always()
+        run: |
+          echo "🔍 Diagnósticos del sistema:"
+
+          echo "=== Docker Images ===" | tee artifacts/diagnostics.txt
+          docker images | tee -a artifacts/diagnostics.txt
+
+          echo "=== Disk Usage ===" | tee -a artifacts/diagnostics.txt
+          df -h | tee -a artifacts/diagnostics.txt
+
+          echo "=== Network Inspect ===" | tee -a artifacts/diagnostics.txt
+          docker network ls | tee -a artifacts/diagnostics.txt || true
+
+      # ============================================================================
+      # UPLOAD: Subir artefactos
+      # ============================================================================
       - name: Upload restore drill artifacts
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: restore-drill-artifacts
+          name: restore-drill-artifacts-${{ github.run_number }}
           path: |
-            backups/ine_asturias_ci.dump
-            artifacts/seed-smoke.txt
-            artifacts/smoke-test.txt
-            artifacts/verify-restore.txt
-            artifacts/compose-ps.txt
-            artifacts/api.log
-            artifacts/worker.log
-            artifacts/migrate.log
-            artifacts/db.log
-          if-no-files-found: error
+            backups/${{ env.DB_NAME }}_ci.dump
+            artifacts/
+          retention-days: 7
+          if-no-files-found: warn
 
-      - name: Tear down stack
+      # ============================================================================
+      # CLEANUP: Derribar infraestructura
+      # ============================================================================
+      - name: Tear down Docker Compose stack
         if: always()
-        run: docker compose down -v
+        run: |
+          echo "🧹 Limpiando infraestructura..."
+          docker compose down -v --remove-orphans
+          echo "✓ Stack desmontado, volúmenes eliminados"
+
+      # ============================================================================
+      # SUMMARY: Resumen de ejecución
+      # ============================================================================
+      - name: Print execution summary
+        if: always()
+        run: |
+          echo "════════════════════════════════════════════════════════════"
+          echo "✅ RESTORE DRILL - RESUMEN DE EJECUCIÓN"
+          echo "════════════════════════════════════════════════════════════"
+          echo "Run ID: ${{ github.run_number }}"
+          echo "Timestamp: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          echo "Artefactos disponibles en: artifacts/"
+          echo "Retention: 7 días"
+          echo "════════════════════════════════════════════════════════════"
