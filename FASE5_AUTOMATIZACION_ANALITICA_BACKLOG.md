@@ -394,12 +394,12 @@ Consolidar el uso por automatizaciones y agentes, reforzar observabilidad y reva
 
 ## Estado de implementacion
 
-- F5-1: pendiente
-- F5-2: pendiente
-- F5-3: pendiente
-- F5-4: pendiente
-- F5-5: pendiente
-- F5-6: pendiente
-- F5-7: pendiente
-- F5-8: pendiente
-- F5-9: pendiente
+- F5-1: completada
+- F5-2: completada
+- F5-3: completada
+- F5-4: completada
+- F5-5: completada
+- F5-6: completada
+- F5-7: completada
+- F5-8: completada
+- F5-9: completada

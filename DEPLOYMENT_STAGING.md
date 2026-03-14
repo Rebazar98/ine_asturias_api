@@ -140,13 +140,24 @@ Si `API_KEY` esta disponible en el fichero de entorno, tambien puedes ejecutar:
 docker compose --env-file .env.staging.local -p ine_asturias_staging run --rm api python scripts/smoke_stack.py --base-url http://api:8000
 ```
 
+Si staging tiene cargado el modelo territorial y quieres validar tambien la nueva capa analitica de Fase 5, usa un municipio canonico conocido:
+
+```bash
+docker compose --env-file .env.staging.local -p ine_asturias_staging run --rm api python scripts/smoke_stack.py --base-url http://api:8000 --municipality-code 33044
+```
+
 Resultado esperado:
 
 - `/health OK`
 - `/health/ready OK`
 - `/metrics OK`
+- `/territorios/catalogo OK`
 - job corto completado
 - `/ine/series OK`
+- si se aporta `--municipality-code`:
+  - `/territorios/municipio/{codigo_ine}/resumen OK`
+  - `informe municipal encolado`
+  - `informe municipal completado`
 - `validacion completada`
 
 ## Evidencia minima
@@ -159,6 +170,7 @@ Cada despliegue de staging que se use como ensayo DEBE dejar, como minimo:
 - respuesta satisfactoria de `/health`
 - respuesta satisfactoria de `/health/ready`
 - smoke test en verde
+- si se valida analitica productiva, municipio usado en `--municipality-code`
 
 Evidencia recomendada adicional:
 
@@ -424,34 +436,29 @@ Resultado validado:
   - `/health/ready OK`
   - `/ine/series total=75`
 
-## Evidencia operativa F4-9
+## Evidencia operativa F5-9
 
-La revalidacion de F4-9 se ha ejecutado sobre el mismo patron de staging aislado, ya con la primera capa territorial/geografica publica integrada:
+La revalidacion de F5-9 mantiene el mismo patron de staging aislado, pero anade una evidencia nueva: la capa de automatizacion y analitica territorial debe comprobarse en runtime cuando exista un municipio canonico disponible en el modelo.
 
-- `--env-file .env.staging.local`
-- `-p ine_asturias_staging`
-
-Resultado validado:
+Evidencia minima adicional esperada en F5-9:
 
 - `docker compose ... up --build -d` levanta `api`, `db`, `redis` y `worker` correctamente;
-- `docker compose ... run --rm migrate` deja Alembic en `0005_geocoding_cache`;
+- `docker compose ... run --rm migrate` deja Alembic en `head`;
 - `/health` devuelve `200`;
 - `/health/ready` devuelve `200` con `postgres=ok`, `redis=ok` y `worker=ok`;
 - `/metrics` devuelve `200`;
-- el smoke test completa con job real y `/ine/series OK`;
-- `verify_restore.py` confirma:
-  - `alembic_version=0005_geocoding_cache`
-  - `ingestion_raw=6`
-  - `ine_series_normalized=75`
-  - `/health OK`
-  - `/health/ready OK`
-  - `/ine/series total=75`
+- el smoke test confirma `GET /territorios/catalogo`;
+- si se aporta `--municipality-code`, el smoke test confirma:
+  - `GET /territorios/municipio/{codigo_ine}/resumen`
+  - `POST /territorios/municipio/{codigo_ine}/informe`
+  - polling exitoso en `/territorios/jobs/{job_id}`;
+- `verify_restore.py` sigue confirmando integridad tras restore.
 
 Lectura operativa:
 
-- la primera capa territorial/geografica no rompe deploy, migraciones, health, smoke ni restore verification;
-- la validacion de staging sigue centrada en estabilidad del stack y persistencia;
-- la cobertura especifica de `/geocode`, `/reverse_geocode` y `/municipio/{codigo_ine}` sigue soportada por la suite de tests y por los ensayos locales/integrados del proyecto.
+- la capa analitica nueva no debe romper deploy, migraciones, health, smoke ni restore verification;
+- la validacion de staging ya no se limita a salud y persistencia: ahora debe cubrir tambien descubrimiento semantico y jobs analiticos cuando el modelo territorial este cargado;
+- si staging no tiene un municipio canonico disponible para esa comprobacion, F5-9 NO debe considerarse completamente revalidada en ese entorno.
 
 ## Criterio de aceptacion de staging operativo real
 
@@ -462,10 +469,11 @@ Staging queda aceptado como entorno operativo real solo si se cumplen TODAS esta
 3. `migrate` termina correctamente y deja Alembic en `head`;
 4. `/health`, `/health/ready` y `/metrics` responden correctamente;
 5. el smoke test pasa usando la topologia real de staging;
-6. existe un procedimiento de rollback documentado y ejecutable;
-7. existe un procedimiento de restore verification documentado y reutilizable;
-8. la evidencia minima del ensayo queda registrada;
-9. el equipo no necesita pasos no documentados para repetir el flujo.
+6. si staging dispone de modelo territorial cargado, el smoke test analitico pasa con `--municipality-code`;
+7. existe un procedimiento de rollback documentado y ejecutable;
+8. existe un procedimiento de restore verification documentado y reutilizable;
+9. la evidencia minima del ensayo queda registrada;
+10. el equipo no necesita pasos no documentados para repetir el flujo.
 
 ## Gate operativo recomendado
 
@@ -477,6 +485,7 @@ Antes de considerar staging como "listo para ensayo real", revisa esta checklist
 - `curl http://127.0.0.1:8002/health/ready`
 - `curl http://127.0.0.1:8002/metrics`
 - `docker compose --env-file .env.staging.local -p ine_asturias_staging run --rm api python scripts/smoke_stack.py --base-url http://api:8000`
+- si el modelo territorial esta cargado: `docker compose --env-file .env.staging.local -p ine_asturias_staging run --rm api python scripts/smoke_stack.py --base-url http://api:8000 --municipality-code 33044`
 - rollback descrito y revisado
 - restore verification descrito y revisado
 - evidencia guardada

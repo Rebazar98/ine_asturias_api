@@ -3,6 +3,7 @@
     [string]$EnvFile = "",
     [string]$ProjectName = "",
     [string]$BaseUrl = "http://127.0.0.1:8001",
+    [string]$MunicipalityCode = "",
     [string]$DbService = "db",
     [string]$DbName = "ine_asturias",
     [string]$PostgresUser = "postgres",
@@ -105,7 +106,11 @@ try {
 
     Wait-Http -Url "$($BaseUrl.TrimEnd('/'))/health"
     Wait-Http -Url "$($BaseUrl.TrimEnd('/'))/health/ready"
-    Invoke-Compose -Subcommand @('run', '--rm', 'api', 'python', 'scripts/smoke_stack.py', '--base-url', 'http://api:8000')
+    $smokeCommand = @('run', '--rm', 'api', 'python', 'scripts/smoke_stack.py', '--base-url', 'http://api:8000')
+    if ($MunicipalityCode) {
+        $smokeCommand += @('--municipality-code', $MunicipalityCode)
+    }
+    Invoke-Compose -Subcommand $smokeCommand
 
     $restoreSucceeded = $true
     Write-Host '[restore-drill] restore drill completed successfully'

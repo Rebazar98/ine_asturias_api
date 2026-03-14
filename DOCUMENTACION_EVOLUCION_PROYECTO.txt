@@ -3,7 +3,7 @@ DOCUMENTACION DE EVOLUCION DEL PROYECTO
 
 Proyecto: ine_asturias_api
 Ubicacion: C:\Users\user\OneDrive\Documents\Playground
-Fecha de generacion: 2026-03-11
+Fecha de generacion: 2026-03-14
 
 1. RESUMEN GENERAL
 ------------------
@@ -4312,4 +4312,32 @@ FASE 16. APERTURA DE FASE 5
 Archivos implicados:
 - `FASE5_AUTOMATIZACION_ANALITICA_BACKLOG.md`
 - `README.md`
+- `DOCUMENTACION_EVOLUCION_PROYECTO.txt`
+
+Subfase F5-9. Revalidacion operativa de staging y RC con la capa analitica
+- Se reforzo `scripts/smoke_stack.py` para que el smoke operativo valide siempre `GET /territorios/catalogo`.
+- El smoke soporta ahora una validacion analitica feliz opcional mediante `--municipality-code`:
+  - `GET /territorios/municipio/{codigo_ine}/resumen`
+  - `POST /territorios/municipio/{codigo_ine}/informe`
+  - polling en `/territorios/jobs/{job_id}` hasta `completed`
+- La validacion analitica no se fuerza por defecto para no romper CI o restores en entornos sin modelo territorial cargado.
+- Se propagó `MunicipalityCode` a `scripts/release_candidate.ps1` y `scripts/restore_drill.ps1` para que staging y RC puedan repetir esa comprobacion sin scripts manuales adicionales.
+- Se actualizaron las guias operativas:
+  - `DEPLOYMENT_STAGING.md`
+  - `RELEASE_PROCESS.md`
+  - `DOCUMENTACION_EVOLUCION_PROYECTO.txt`
+- Se anadieron pruebas del smoke reforzado para cubrir:
+  - descubrimiento de catalogo territorial;
+  - polling por `status_path`;
+  - flujo feliz de resumen + informe municipal.
+- Con esta subfase queda cerrada Fase 5: la nueva capa analitica queda cubierta no solo por tests unitarios e integrados, sino tambien por el procedimiento operativo de staging, RC y restore.
+
+Archivos implicados:
+- `scripts/smoke_stack.py`
+- `scripts/release_candidate.ps1`
+- `scripts/restore_drill.ps1`
+- `tests/test_smoke_stack.py`
+- `DEPLOYMENT_STAGING.md`
+- `RELEASE_PROCESS.md`
+- `FASE5_AUTOMATIZACION_ANALITICA_BACKLOG.md`
 - `DOCUMENTACION_EVOLUCION_PROYECTO.txt`

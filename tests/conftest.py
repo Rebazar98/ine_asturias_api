@@ -1,7 +1,7 @@
 from __future__ import annotations
-
+from copy import deepcopy
 from collections.abc import Awaitable, Callable
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 import pytest
@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from app.core.cache import InMemoryTTLCache
 from app.dependencies import (
+    get_analytical_snapshot_repository,
     get_ingestion_repository,
     get_ine_client_service,
     get_series_repository,
@@ -16,9 +17,19 @@ from app.dependencies import (
     get_territorial_repository,
 )
 from app.main import app
+from app.repositories.analytics_snapshots import build_snapshot_key
+from app.repositories.territorial import (
+    TERRITORIAL_DISCOVERY_LEVELS,
+    TERRITORIAL_UNIT_LEVEL_MUNICIPALITY,
+    get_canonical_code_strategy,
+)
+from app.repositories.series import SeriesRepository
 from app.schemas import NormalizedSeriesItem
 from app.services.ine_client import INEClientService
 from app.settings import Settings, get_settings
+
+
+DEFAULT_ANALYTICAL_MUNICIPALITY_CODE = "33044"
 
 
 class DummyIngestionRepository:
@@ -33,6 +44,7 @@ class DummyIngestionRepository:
 class DummySeriesRepository:
     def __init__(self) -> None:
         self.items: list[NormalizedSeriesItem] = []
+        self.latest_indicator_calls = 0
 
     async def upsert_many(self, items, batch_size=500):
         self.items.extend(items)
@@ -104,6 +116,74 @@ class DummySeriesRepository:
                 "variable_id": variable_id,
                 "period_from": period_from,
                 "period_to": period_to,
+            },
+        }
+
+    async def list_latest_indicators_by_geography(
+        self,
+        *,
+        geography_code: str,
+        operation_code: str | None = None,
+        variable_id: str | None = None,
+        period_from: str | None = None,
+        period_to: str | None = None,
+        page: int = 1,
+        page_size: int = 50,
+    ):
+        self.latest_indicator_calls += 1
+        rows = [item for item in self.items if item.geography_code == geography_code]
+        if operation_code:
+            rows = [item for item in rows if item.operation_code == operation_code]
+        if variable_id:
+            rows = [item for item in rows if item.variable_id == variable_id]
+        if period_from:
+            rows = [item for item in rows if item.period >= period_from]
+        if period_to:
+            rows = [item for item in rows if item.period <= period_to]
+
+        latest_by_series: dict[tuple[str, str, str, str], tuple[int, NormalizedSeriesItem]] = {}
+        for index, item in enumerate(rows):
+            series_key = (
+                item.operation_code,
+                item.table_id,
+                item.variable_id,
+                item.geography_code,
+            )
+            existing = latest_by_series.get(series_key)
+            candidate_rank = (item.period, index)
+            if existing is None or candidate_rank > (existing[1].period, existing[0]):
+                latest_by_series[series_key] = (index, item)
+
+        latest_rows = [item for _, item in latest_by_series.values()]
+        latest_rows.sort(key=lambda item: item.variable_id)
+        latest_rows.sort(key=lambda item: item.table_id)
+        latest_rows.sort(key=lambda item: item.operation_code)
+        latest_rows.sort(key=lambda item: item.period, reverse=True)
+
+        total = len(latest_rows)
+        start = (page - 1) * page_size
+        end = start + page_size
+        paged = latest_rows[start:end]
+        pages = (total + page_size - 1) // page_size if total else 0
+        return {
+            "items": [SeriesRepository.serialize_latest_indicator_item(item) for item in paged],
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "pages": pages,
+            "has_next": page < pages,
+            "has_previous": page > 1,
+            "filters": {
+                "geography_code": geography_code,
+                "geography_code_system": "ine",
+                "operation_code": operation_code,
+                "variable_id": variable_id,
+                "period_from": period_from,
+                "period_to": period_to,
+            },
+            "summary": {
+                "operation_codes": sorted({item.operation_code for item in latest_rows}),
+                "latest_period": latest_rows[0].period if latest_rows else None,
             },
         }
 
@@ -287,6 +367,160 @@ class DummyTerritorialRepository:
             },
         }
 
+    async def get_catalog_coverage(self, *, country_code: str = "ES"):
+        coverage = []
+        for unit_level in TERRITORIAL_DISCOVERY_LEVELS:
+            rows = [
+                row
+                for row in self.units_by_level.get(unit_level, [])
+                if not country_code or row.get("country_code") == country_code
+            ]
+            coverage.append(
+                {
+                    "unit_level": unit_level,
+                    "country_code": country_code,
+                    "units_total": len(rows),
+                    "active_units": sum(1 for row in rows if row.get("is_active", True)),
+                    "canonical_code_strategy": get_canonical_code_strategy(unit_level),
+                }
+            )
+        return coverage
+
+
+class DummyAnalyticalSnapshotRepository:
+    def __init__(self) -> None:
+        self.rows: dict[str, dict] = {}
+        self.get_calls = 0
+        self.upsert_calls = 0
+        self._next_id = 1
+
+    async def get_fresh_snapshot(
+        self,
+        *,
+        snapshot_type: str,
+        scope_key: str,
+        filters: dict | None = None,
+        now: datetime | None = None,
+    ):
+        self.get_calls += 1
+        snapshot_key = build_snapshot_key(
+            snapshot_type=snapshot_type,
+            scope_key=scope_key,
+            filters=filters,
+        )
+        row = self.rows.get(snapshot_key)
+        if row is None:
+            return None
+        lookup_time = now or datetime.now(timezone.utc)
+        if row["expires_at"] <= lookup_time:
+            return None
+        return deepcopy(row)
+
+    async def upsert_snapshot(
+        self,
+        *,
+        snapshot_type: str,
+        scope_key: str,
+        source: str,
+        payload: dict | list,
+        ttl_seconds: int,
+        territorial_unit_id: int | None = None,
+        filters: dict | None = None,
+        metadata: dict | None = None,
+        generated_at: datetime | None = None,
+        now: datetime | None = None,
+    ):
+        self.upsert_calls += 1
+        write_time = now or datetime.now(timezone.utc)
+        snapshot_key = build_snapshot_key(
+            snapshot_type=snapshot_type,
+            scope_key=scope_key,
+            filters=filters,
+        )
+        existing = self.rows.get(snapshot_key)
+        row = {
+            "id": existing["id"] if existing is not None else self._next_id,
+            "snapshot_key": snapshot_key,
+            "snapshot_type": snapshot_type,
+            "scope_key": scope_key,
+            "source": source,
+            "territorial_unit_id": territorial_unit_id,
+            "filters": deepcopy(filters or {}),
+            "payload": deepcopy(payload),
+            "metadata": deepcopy(metadata or {}),
+            "generated_at": generated_at or write_time,
+            "created_at": existing["created_at"] if existing is not None else write_time,
+            "updated_at": write_time,
+            "expires_at": write_time + timedelta(seconds=ttl_seconds),
+        }
+        self.rows[snapshot_key] = deepcopy(row)
+        if existing is None:
+            self._next_id += 1
+        return deepcopy(row)
+
+
+def seed_municipality_analytics_context(
+    territorial_repo: DummyTerritorialRepository,
+    series_repo: DummySeriesRepository,
+    *,
+    municipality_code: str = DEFAULT_ANALYTICAL_MUNICIPALITY_CODE,
+) -> dict:
+    territorial_repo.detail_by_canonical_code[
+        (TERRITORIAL_UNIT_LEVEL_MUNICIPALITY, municipality_code)
+    ] = {
+        "id": int(municipality_code),
+        "parent_id": 33,
+        "unit_level": "municipality",
+        "canonical_name": "Oviedo",
+        "display_name": "Oviedo",
+        "country_code": "ES",
+        "is_active": True,
+        "canonical_code_strategy": {"source_system": "ine", "code_type": "municipality"},
+        "canonical_code": {
+            "source_system": "ine",
+            "code_type": "municipality",
+            "code_value": municipality_code,
+            "is_primary": True,
+        },
+        "codes": [
+            {
+                "source_system": "ine",
+                "code_type": "municipality",
+                "code_value": municipality_code,
+                "is_primary": True,
+            }
+        ],
+        "aliases": [],
+        "attributes": {"population_scope": "municipal"},
+    }
+    series_repo.items.extend(
+        [
+            NormalizedSeriesItem(
+                operation_code="22",
+                table_id="2852",
+                variable_id="POP_TOTAL",
+                geography_name="Oviedo",
+                geography_code=municipality_code,
+                period="2024",
+                value=220543,
+                unit="personas",
+                metadata={"series_name": "Poblacion total"},
+            ),
+            NormalizedSeriesItem(
+                operation_code="22",
+                table_id="3901",
+                variable_id="AGEING_INDEX",
+                geography_name="Oviedo",
+                geography_code=municipality_code,
+                period="2024M01",
+                value=142.5,
+                unit="indice",
+                metadata={"series_name": "Indice de envejecimiento"},
+            ),
+        ]
+    )
+    return {"municipality_code": municipality_code, "canonical_name": "Oviedo"}
+
 
 @pytest.fixture
 def client(monkeypatch):
@@ -326,6 +560,13 @@ def dummy_catalog_repo() -> DummyTableCatalogRepository:
 def dummy_territorial_repo() -> DummyTerritorialRepository:
     repo = DummyTerritorialRepository()
     app.dependency_overrides[get_territorial_repository] = lambda: repo
+    return repo
+
+
+@pytest.fixture
+def dummy_analytical_snapshot_repo() -> DummyAnalyticalSnapshotRepository:
+    repo = DummyAnalyticalSnapshotRepository()
+    app.dependency_overrides[get_analytical_snapshot_repository] = lambda: repo
     return repo
 
 

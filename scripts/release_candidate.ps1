@@ -3,6 +3,7 @@
     [string]$ProjectName = "",
     [string]$BaseUrl = "http://127.0.0.1:8001",
     [string]$BackupPath = "backups/ine_asturias.dump",
+    [string]$MunicipalityCode = "",
     [switch]$RunRestoreDrill
 )
 
@@ -63,11 +64,15 @@ Invoke-Compose -Subcommand @('run', '--rm', 'api', 'ruff', 'check', '.')
 Invoke-Compose -Subcommand @('run', '--rm', 'api', 'ruff', 'format', '--check', 'app/api', 'app/core', 'scripts', 'main.py', 'app/settings.py', 'app/worker.py')
 Invoke-Compose -Subcommand @('run', '--rm', 'api', 'pytest')
 Invoke-Compose -Subcommand @('run', '--rm', 'migrate')
-Invoke-Compose -Subcommand @('run', '--rm', 'api', 'python', 'scripts/smoke_stack.py', '--base-url', 'http://api:8000')
+$smokeCommand = @('run', '--rm', 'api', 'python', 'scripts/smoke_stack.py', '--base-url', 'http://api:8000')
+if ($MunicipalityCode) {
+    $smokeCommand += @('--municipality-code', $MunicipalityCode)
+}
+Invoke-Compose -Subcommand $smokeCommand
 Invoke-Compose -Subcommand @('run', '--rm', 'api', 'python', 'scripts/verify_restore.py', '--base-url', 'http://api:8000', '--postgres-dsn', 'postgresql://postgres:postgres@db:5432/ine_asturias', '--min-ingestion-rows', '1', '--min-normalized-rows', '1')
 
 if ($RunRestoreDrill) {
-    & $PSScriptRoot\restore_drill.ps1 -BackupPath $BackupPath -EnvFile $EnvFile -ProjectName $ProjectName -BaseUrl $BaseUrl
+    & $PSScriptRoot\restore_drill.ps1 -BackupPath $BackupPath -EnvFile $EnvFile -ProjectName $ProjectName -BaseUrl $BaseUrl -MunicipalityCode $MunicipalityCode
     if ($LASTEXITCODE -ne 0) {
         throw "Restore drill failed with exit code ${LASTEXITCODE}"
     }

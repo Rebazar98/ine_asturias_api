@@ -45,6 +45,12 @@ Para staging preparado:
 .\scripts\release_candidate.ps1 -EnvFile .env.staging.example -ProjectName ine_asturias_staging -BaseUrl http://127.0.0.1:8002
 ```
 
+Para staging o RC con validacion analitica territorial completa:
+
+```powershell
+.\scripts\release_candidate.ps1 -EnvFile .env.staging.example -ProjectName ine_asturias_staging -BaseUrl http://127.0.0.1:8002 -MunicipalityCode 33044
+```
+
 Nota operativa para staging:
 
 - tras un arranque completamente frio, la comprobacion canónica de migraciones sigue siendo `docker compose --env-file ... run --rm migrate`;
@@ -88,6 +94,12 @@ docker compose run --rm migrate
 docker compose run --rm api python scripts/smoke_stack.py --base-url http://api:8000
 ```
 
+Si la RC o staging tienen modelo territorial cargado y quieres validar tambien la nueva capa analitica:
+
+```powershell
+docker compose run --rm api python scripts/smoke_stack.py --base-url http://api:8000 --municipality-code 33044
+```
+
 7. **Restore drill reciente**
    - ejecutar [scripts/restore_drill.ps1](C:/Users/user/OneDrive/Documents/Playground/scripts/restore_drill.ps1) en local, o
    - ejecutar manualmente el workflow `Restore Drill` en GitHub Actions.
@@ -103,10 +115,11 @@ Invoke-RestMethod http://127.0.0.1:8001/health/ready
 Nota para el estado actual del proyecto:
 
 - la validacion minima de RC sigue exigiendo `health`, `ready` y `metrics` como checks de disponibilidad del stack;
-- la nueva capa territorial/geografica introducida en Fase 4 se da por cubierta en RC mediante:
+- la nueva capa territorial/geografica y analitica introducida en Fases 4 y 5 se da por cubierta en RC mediante:
   - `pytest`,
   - smoke test,
-  - y la revalidacion de staging ejecutada en F4-9.
+  - smoke test analitico con `--municipality-code` cuando staging tiene modelo territorial,
+  - y la revalidacion operativa definida en F5-9.
 
 9. **Verificacion de restore**
 
@@ -318,10 +331,13 @@ Si una de estas condiciones no se cumple, la siguiente fase debe permanecer cerr
 
 ## Evidencia operativa reciente
 
-La validacion de F4-9 ha confirmado que el proceso RC sigue siendo repetible tras abrir la primera capa territorial/geografica:
+La actualizacion de F5-9 deja formalizado el criterio de continuidad para la nueva capa analitica:
 
-- staging revalidado con `alembic_version=0005_geocoding_cache`;
-- `/health`, `/health/ready` y `/metrics` correctos;
-- smoke test correcto con job real;
-- `verify_restore.py` correcto con `ingestion_raw=6` e `ine_series_normalized=75`.
+- el RC sigue exigiendo `/health`, `/health/ready`, `/metrics`, smoke y restore verification;
+- cuando staging o RC tienen un municipio canonico disponible, el smoke debe ejecutarse tambien con `--municipality-code` para validar:
+  - `GET /territorios/catalogo`
+  - `GET /territorios/municipio/{codigo_ine}/resumen`
+  - `POST /territorios/municipio/{codigo_ine}/informe`
+  - polling correcto en `/territorios/jobs/{job_id}`;
+- si esa validacion analitica no puede ejecutarse por falta de modelo territorial cargado, la RC puede seguir validando disponibilidad general, pero F5-9 no debe darse por revalidada plenamente en ese entorno.
 
