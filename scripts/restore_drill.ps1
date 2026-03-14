@@ -106,6 +106,9 @@ try {
 
     Wait-Http -Url "$($BaseUrl.TrimEnd('/'))/health"
     Wait-Http -Url "$($BaseUrl.TrimEnd('/'))/health/ready"
+    if ($MunicipalityCode) {
+        Invoke-Compose -Subcommand @('run', '--rm', 'api', 'python', 'scripts/seed_municipality_analytics.py', '--municipality-code', $MunicipalityCode)
+    }
     $smokeCommand = @('run', '--rm', 'api', 'python', 'scripts/smoke_stack.py', '--base-url', 'http://api:8000')
     if ($MunicipalityCode) {
         $smokeCommand += @('--municipality-code', $MunicipalityCode)

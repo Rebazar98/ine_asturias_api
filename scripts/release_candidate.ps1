@@ -64,6 +64,11 @@ Invoke-Compose -Subcommand @('run', '--rm', 'api', 'ruff', 'check', '.')
 Invoke-Compose -Subcommand @('run', '--rm', 'api', 'ruff', 'format', '--check', 'app/api', 'app/core', 'scripts', 'main.py', 'app/settings.py', 'app/worker.py')
 Invoke-Compose -Subcommand @('run', '--rm', 'api', 'pytest')
 Invoke-Compose -Subcommand @('run', '--rm', 'migrate')
+$seedCommand = @('run', '--rm', 'api', 'python', 'scripts/seed_municipality_analytics.py')
+if ($MunicipalityCode) {
+    $seedCommand += @('--municipality-code', $MunicipalityCode)
+    Invoke-Compose -Subcommand $seedCommand
+}
 $smokeCommand = @('run', '--rm', 'api', 'python', 'scripts/smoke_stack.py', '--base-url', 'http://api:8000')
 if ($MunicipalityCode) {
     $smokeCommand += @('--municipality-code', $MunicipalityCode)

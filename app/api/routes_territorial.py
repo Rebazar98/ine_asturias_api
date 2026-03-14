@@ -16,6 +16,7 @@ from app.dependencies import (
     get_cartociudad_client_service,
     get_geocoding_cache_repository,
     get_job_store,
+    get_settings,
     get_territorial_analytics_service,
     get_territorial_repository,
     require_api_key,
@@ -55,7 +56,7 @@ from app.services.territorial_analytics import (
     MUNICIPALITY_REPORT_TYPE,
     TerritorialAnalyticsService,
 )
-from app.settings import Settings, get_settings
+from app.settings import Settings
 
 
 router = APIRouter(tags=["territorial"], dependencies=[Depends(require_api_key)])
@@ -575,6 +576,7 @@ async def create_municipality_report_job(
     analytics_service: TerritorialAnalyticsService = Depends(get_territorial_analytics_service),
     job_store: BaseJobStore = Depends(get_job_store),
     arq_pool: ArqRedis | None = Depends(get_arq_pool),
+    settings: Settings = Depends(get_settings),
 ) -> TerritorialReportJobAcceptedResponse:
     if period_from and period_to and period_from > period_to:
         raise HTTPException(
@@ -602,6 +604,7 @@ async def create_municipality_report_job(
                 job_id,
                 job_params,
                 _job_id=job_id,
+                _queue_name=settings.job_queue_name,
             )
         else:
             task = asyncio.create_task(

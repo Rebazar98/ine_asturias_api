@@ -146,6 +146,14 @@ Si staging tiene cargado el modelo territorial y quieres validar tambien la nuev
 docker compose --env-file .env.staging.local -p ine_asturias_staging run --rm api python scripts/smoke_stack.py --base-url http://api:8000 --municipality-code 33044
 ```
 
+Para entornos locales o RC sin `territorial_units` cargada, puedes sembrar antes un contexto minimo de validacion con:
+
+```bash
+docker compose --env-file .env.staging.local -p ine_asturias_staging run --rm api python scripts/seed_municipality_analytics.py --municipality-code 33044
+```
+
+Ese seed es solo para validacion operativa del smoke analitico y no sustituye a una carga territorial real de staging.
+
 Resultado esperado:
 
 - `/health OK`

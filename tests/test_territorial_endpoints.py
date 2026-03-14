@@ -1,11 +1,13 @@
 import time
 
+from app.dependencies import get_arq_pool
 from app.repositories.territorial import (
     TERRITORIAL_UNIT_LEVEL_AUTONOMOUS_COMMUNITY,
     TERRITORIAL_UNIT_LEVEL_MUNICIPALITY,
     TERRITORIAL_UNIT_LEVEL_PROVINCE,
 )
 from app.schemas import NormalizedSeriesItem
+from app.settings import get_settings
 
 
 def test_list_autonomous_communities_returns_paginated_results(client, dummy_territorial_repo):
@@ -653,3 +655,72 @@ def test_create_municipality_report_job_reuses_persisted_snapshot(
     )
     assert dummy_analytical_snapshot_repo.upsert_calls == 1
     assert dummy_series_repo.latest_indicator_calls == 1
+
+
+def test_create_municipality_report_job_uses_configured_queue_name(
+    client, dummy_territorial_repo, dummy_series_repo
+):
+    class DummyArqPool:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        async def enqueue_job(self, function_name: str, *args: object, **kwargs: object) -> None:
+            self.calls.append(
+                {
+                    "function_name": function_name,
+                    "args": args,
+                    "kwargs": kwargs,
+                }
+            )
+
+    dummy_territorial_repo.detail_by_canonical_code[
+        (TERRITORIAL_UNIT_LEVEL_MUNICIPALITY, "33044")
+    ] = {
+        "id": 33044,
+        "parent_id": 33,
+        "unit_level": "municipality",
+        "canonical_name": "Oviedo",
+        "display_name": "Oviedo",
+        "country_code": "ES",
+        "is_active": True,
+        "canonical_code_strategy": {"source_system": "ine", "code_type": "municipality"},
+        "canonical_code": {
+            "source_system": "ine",
+            "code_type": "municipality",
+            "code_value": "33044",
+            "is_primary": True,
+        },
+        "codes": [
+            {
+                "source_system": "ine",
+                "code_type": "municipality",
+                "code_value": "33044",
+                "is_primary": True,
+            }
+        ],
+        "aliases": [],
+        "attributes": {"population_scope": "municipal"},
+    }
+    dummy_series_repo.items.append(
+        NormalizedSeriesItem(
+            operation_code="22",
+            table_id="2852",
+            variable_id="POP_TOTAL",
+            geography_name="Oviedo",
+            geography_code="33044",
+            period="2024",
+            value=220543,
+            unit="personas",
+            metadata={"series_name": "Poblacion total"},
+        )
+    )
+    arq_pool = DummyArqPool()
+    client.app.dependency_overrides[get_arq_pool] = lambda: arq_pool
+
+    response = client.post("/territorios/municipio/33044/informe?page=1&page_size=10")
+
+    assert response.status_code == 202
+    assert len(arq_pool.calls) == 1
+    call = arq_pool.calls[0]
+    assert call["function_name"] == "run_municipality_report_job"
+    assert call["kwargs"]["_queue_name"] == get_settings().job_queue_name

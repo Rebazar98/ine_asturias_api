@@ -51,6 +51,8 @@ Para staging o RC con validacion analitica territorial completa:
 .\scripts\release_candidate.ps1 -EnvFile .env.staging.example -ProjectName ine_asturias_staging -BaseUrl http://127.0.0.1:8002 -MunicipalityCode 33044
 ```
 
+Cuando se aporta `-MunicipalityCode`, el script siembra automaticamente un contexto minimo e idempotente de municipio e indicadores analiticos antes del smoke. Esto permite validar la ruta municipal en entornos locales o RC sin depender de que la base ya traiga `territorial_units` poblada.
+
 Nota operativa para staging:
 
 - tras un arranque completamente frio, la comprobacion canónica de migraciones sigue siendo `docker compose --env-file ... run --rm migrate`;
@@ -98,6 +100,12 @@ Si la RC o staging tienen modelo territorial cargado y quieres validar tambien l
 
 ```powershell
 docker compose run --rm api python scripts/smoke_stack.py --base-url http://api:8000 --municipality-code 33044
+```
+
+Si se trata de una RC local sin modelo territorial cargado, puedes preparar ese contexto minimo manualmente con:
+
+```powershell
+docker compose run --rm api python scripts/seed_municipality_analytics.py --municipality-code 33044
 ```
 
 7. **Restore drill reciente**
