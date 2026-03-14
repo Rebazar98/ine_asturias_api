@@ -55,7 +55,6 @@ def normalize_cartociudad_geocode_response(
         raise CartoCiudadNormalizationError(
             {
                 "message": "The CartoCiudad result could not be normalized to semantic coordinates.",
-                "query": query,
             }
         )
 
@@ -73,8 +72,7 @@ def normalize_cartociudad_geocode_response(
         label = query
 
     entity_type = (
-        _pick_first(result_item, "entity_type", "type", "tipo", "clase", "category")
-        or "unknown"
+        _pick_first(result_item, "entity_type", "type", "tipo", "clase", "category") or "unknown"
     )
 
     result = GeocodeResultResponse(
@@ -82,16 +80,21 @@ def normalize_cartociudad_geocode_response(
         entity_type=entity_type,
         coordinates=GeocodingCoordinatesResponse(lat=lat, lon=lon),
         address=_pick_first(result_item, "address", "direccion", "direccionPostal"),
-        postal_code=_pick_first(result_item, "postal_code", "postalCode", "codPostal", "codigoPostal"),
+        postal_code=_pick_first(
+            result_item, "postal_code", "postalCode", "codPostal", "codigoPostal"
+        ),
         territorial_context=GeocodingTerritorialContextResponse(
-            country_code=_pick_first(result_item, "country_code", "countryCode", "codigoPais") or "ES",
+            country_code=_pick_first(result_item, "country_code", "countryCode", "codigoPais")
+            or "ES",
             autonomous_community_code=_pick_first(
                 result_item,
                 "autonomous_community_code",
                 "codigoComunidadAutonoma",
                 "comunidadAutonomaCodigo",
             ),
-            province_code=_pick_first(result_item, "province_code", "codigoProvincia", "provinciaCodigo"),
+            province_code=_pick_first(
+                result_item, "province_code", "codigoProvincia", "provinciaCodigo"
+            ),
             municipality_code=_pick_first(
                 result_item,
                 "municipality_code",
@@ -172,8 +175,7 @@ def normalize_cartociudad_reverse_geocode_response(
         label = f"{lat},{lon}"
 
     entity_type = (
-        _pick_first(result_item, "entity_type", "type", "tipo", "clase", "category")
-        or "unknown"
+        _pick_first(result_item, "entity_type", "type", "tipo", "clase", "category") or "unknown"
     )
 
     result = ReverseGeocodeResultResponse(
@@ -181,16 +183,21 @@ def normalize_cartociudad_reverse_geocode_response(
         entity_type=entity_type,
         coordinates=GeocodingCoordinatesResponse(lat=response_lat, lon=response_lon),
         address=_pick_first(result_item, "address", "direccion", "direccionPostal"),
-        postal_code=_pick_first(result_item, "postal_code", "postalCode", "codPostal", "codigoPostal"),
+        postal_code=_pick_first(
+            result_item, "postal_code", "postalCode", "codPostal", "codigoPostal"
+        ),
         territorial_context=GeocodingTerritorialContextResponse(
-            country_code=_pick_first(result_item, "country_code", "countryCode", "codigoPais") or "ES",
+            country_code=_pick_first(result_item, "country_code", "countryCode", "codigoPais")
+            or "ES",
             autonomous_community_code=_pick_first(
                 result_item,
                 "autonomous_community_code",
                 "codigoComunidadAutonoma",
                 "comunidadAutonomaCodigo",
             ),
-            province_code=_pick_first(result_item, "province_code", "codigoProvincia", "provinciaCodigo"),
+            province_code=_pick_first(
+                result_item, "province_code", "codigoProvincia", "provinciaCodigo"
+            ),
             municipality_code=_pick_first(
                 result_item,
                 "municipality_code",
@@ -266,7 +273,9 @@ def _extract_payload_items(payload: dict[str, Any] | list[Any]) -> list[dict[str
     if isinstance(payload, dict):
         return [payload]
 
-    raise CartoCiudadNormalizationError({"message": "CartoCiudad returned an unexpected payload type."})
+    raise CartoCiudadNormalizationError(
+        {"message": "CartoCiudad returned an unexpected payload type."}
+    )
 
 
 def _pick_first(payload: dict[str, Any], *keys: str) -> str | None:

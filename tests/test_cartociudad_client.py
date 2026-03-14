@@ -80,6 +80,8 @@ async def test_http_error_raises_cartociudad_upstream_error() -> None:
         await service.geocode("Oviedo")
 
     assert exc_info.value.status_code == 503
+    assert exc_info.value.detail["request_context"]["query_length"] == 6
+    assert "params" not in exc_info.value.detail
 
 
 @pytest.mark.anyio
@@ -93,6 +95,7 @@ async def test_invalid_json_raises_cartociudad_invalid_payload_error() -> None:
         await service.geocode("Oviedo")
 
     assert exc_info.value.status_code == 502
+    assert exc_info.value.detail["request_context"]["query_terms"] == 1
 
 
 @pytest.mark.anyio
@@ -106,3 +109,4 @@ async def test_unexpected_json_type_raises_cartociudad_invalid_payload_error() -
         await service.geocode("Oviedo")
 
     assert exc_info.value.status_code == 502
+    assert exc_info.value.detail["request_context"]["query_fingerprint"]

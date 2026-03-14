@@ -168,6 +168,29 @@ Resultado esperado:
   - `informe municipal completado`
 - `validacion completada`
 
+### Validacion manual opcional de CartoCiudad
+
+Esta comprobacion NO forma parte del gate obligatorio de staging ni de CI. Sirve solo como evidencia manual de la segunda fuente oficial cuando se quiera comprobar el camino real contra proveedor.
+
+Comandos sugeridos:
+
+```bash
+curl "http://127.0.0.1:8002/geocode?query=Oviedo" -H "X-API-Key: change-me"
+curl "http://127.0.0.1:8002/reverse_geocode?lat=43.3614&lon=-5.8494" -H "X-API-Key: change-me"
+```
+
+Resultado esperado:
+
+- `source=cartociudad`
+- contrato semantico propio del API
+- sin payload raw del proveedor en la respuesta
+- `territorial_resolution` relleno si el cruce con el modelo territorial interno es fiable
+
+Regla operativa:
+
+- si esta validacion falla por disponibilidad del proveedor externo, NO debe tumbar por si sola la aceptacion del entorno;
+- si falla el contrato semantico, la cache persistente o la trazabilidad raw, entonces si debe abrirse incidencia de producto.
+
 ## Evidencia minima
 
 Cada despliegue de staging que se use como ensayo DEBE dejar, como minimo:

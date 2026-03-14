@@ -159,6 +159,8 @@ def _validate_territorial_catalog(client: httpx.Client) -> dict[str, Any]:
     expected_resources = {
         "territorial.autonomous_communities.list",
         "territorial.provinces.list",
+        "territorial.geocode.query",
+        "territorial.reverse_geocode.query",
         "territorial.municipality.detail",
         "territorial.municipality.summary",
         "territorial.municipality.report_job",

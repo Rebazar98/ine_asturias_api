@@ -9,6 +9,10 @@ import httpx
 from app.core.cache import BaseAsyncCache
 from app.core.logging import get_logger
 from app.core.metrics import record_provider_cache_hit, record_provider_request
+from app.services.geocoding_privacy import (
+    build_geocode_audit_request_params,
+    build_reverse_geocode_audit_request_params,
+)
 from app.settings import Settings
 
 
@@ -72,6 +76,7 @@ class CartoCiudadClientService:
         started_at = time.perf_counter()
         endpoint_family = self._endpoint_family(path)
         url = f"{self.settings.cartociudad_base_url.rstrip('/')}/{path}"
+        safe_params = self._sanitize_params(path, params)
 
         try:
             response = await self.http_client.get(url, params=params)
@@ -83,7 +88,7 @@ class CartoCiudadClientService:
                 "cartociudad_upstream_status_error",
                 extra={
                     "path": path,
-                    "params": params or {},
+                    "request_context": safe_params,
                     "status_code": exc.response.status_code,
                     "duration_ms": round(duration_seconds * 1000, 2),
                 },
@@ -93,18 +98,20 @@ class CartoCiudadClientService:
                 detail={
                     "message": "The CartoCiudad service returned an error.",
                     "path": path,
-                    "params": params or {},
+                    "request_context": safe_params,
                     "status_code": exc.response.status_code,
                 },
             ) from exc
         except httpx.RequestError as exc:
             duration_seconds = time.perf_counter() - started_at
-            record_provider_request("cartociudad", endpoint_family, "request_error", duration_seconds)
+            record_provider_request(
+                "cartociudad", endpoint_family, "request_error", duration_seconds
+            )
             self.logger.error(
                 "cartociudad_request_error",
                 extra={
                     "path": path,
-                    "params": params or {},
+                    "request_context": safe_params,
                     "duration_ms": round(duration_seconds * 1000, 2),
                     "error": str(exc),
                 },
@@ -114,7 +121,7 @@ class CartoCiudadClientService:
                 detail={
                     "message": "Could not connect to the CartoCiudad service.",
                     "path": path,
-                    "params": params or {},
+                    "request_context": safe_params,
                 },
             ) from exc
 
@@ -122,17 +129,19 @@ class CartoCiudadClientService:
             payload = response.json()
         except ValueError as exc:
             duration_seconds = time.perf_counter() - started_at
-            record_provider_request("cartociudad", endpoint_family, "invalid_json", duration_seconds)
+            record_provider_request(
+                "cartociudad", endpoint_family, "invalid_json", duration_seconds
+            )
             self.logger.error(
                 "cartociudad_invalid_json",
-                extra={"path": path, "params": params or {}},
+                extra={"path": path, "request_context": safe_params},
             )
             raise CartoCiudadInvalidPayloadError(
                 status_code=502,
                 detail={
                     "message": "The CartoCiudad service returned invalid JSON.",
                     "path": path,
-                    "params": params or {},
+                    "request_context": safe_params,
                 },
             ) from exc
 
@@ -145,7 +154,7 @@ class CartoCiudadClientService:
                 "cartociudad_unexpected_payload",
                 extra={
                     "path": path,
-                    "params": params or {},
+                    "request_context": safe_params,
                     "payload_type": type(payload).__name__,
                 },
             )
@@ -154,7 +163,7 @@ class CartoCiudadClientService:
                 detail={
                     "message": "The CartoCiudad service returned an unexpected JSON format.",
                     "path": path,
-                    "params": params or {},
+                    "request_context": safe_params,
                 },
             )
 
@@ -164,7 +173,7 @@ class CartoCiudadClientService:
             "cartociudad_request_completed",
             extra={
                 "path": path,
-                "params": params or {},
+                "request_context": safe_params,
                 "status_code": response.status_code,
                 "duration_ms": round(duration_seconds * 1000, 2),
             },
@@ -181,3 +190,14 @@ class CartoCiudadClientService:
     @staticmethod
     def _endpoint_family(path: str) -> str:
         return path.split("/", 1)[0]
+
+    @staticmethod
+    def _sanitize_params(path: str, params: dict[str, Any] | None) -> dict[str, Any]:
+        safe_params = dict(params or {})
+        if path == "find":
+            return build_geocode_audit_request_params(str(safe_params.get("q") or ""))
+        if path == "reverseGeocode":
+            lat = float(safe_params.get("lat") or 0.0)
+            lon = float(safe_params.get("lon") or 0.0)
+            return build_reverse_geocode_audit_request_params(lat, lon)
+        return {}

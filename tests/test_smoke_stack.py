@@ -96,6 +96,8 @@ def test_validate_territorial_catalog_accepts_expected_resources() -> None:
         "resources": [
             {"resource_key": "territorial.autonomous_communities.list"},
             {"resource_key": "territorial.provinces.list"},
+            {"resource_key": "territorial.geocode.query"},
+            {"resource_key": "territorial.reverse_geocode.query"},
             {"resource_key": "territorial.municipality.detail"},
             {"resource_key": "territorial.municipality.summary"},
             {"resource_key": "territorial.municipality.report_job"},

@@ -9,21 +9,15 @@ from arq.connections import ArqRedis
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
 from app.core.logging import get_logger
-from app.core.metrics import record_provider_cache_hit
 from app.core.jobs import BaseJobStore
 from app.dependencies import (
     get_arq_pool,
-    get_cartociudad_client_service,
-    get_geocoding_cache_repository,
+    get_cartociudad_geocoding_service,
     get_job_store,
     get_settings,
     get_territorial_analytics_service,
     get_territorial_repository,
     require_api_key,
-)
-from app.repositories.geocoding import (
-    GEOCODING_PROVIDER_CARTOCIUDAD,
-    GeocodingCacheRepository,
 )
 from app.repositories.territorial import (
     TERRITORIAL_UNIT_LEVEL_AUTONOMOUS_COMMUNITY,
@@ -46,12 +40,7 @@ from app.schemas import (
     TerritorialUnitListResponse,
     TerritorialUnitSummaryResponse,
 )
-from app.services.cartociudad_client import CartoCiudadClientService
-from app.services.cartociudad_normalizers import (
-    attach_territorial_resolution,
-    normalize_cartociudad_geocode_response,
-    normalize_cartociudad_reverse_geocode_response,
-)
+from app.services.cartociudad_geocoding import CartoCiudadGeocodingService
 from app.services.territorial_analytics import (
     MUNICIPALITY_REPORT_TYPE,
     TerritorialAnalyticsService,
@@ -121,6 +110,36 @@ def _build_territorial_catalog_resources() -> list[TerritorialCatalogResourceRes
             unit_levels=[TERRITORIAL_UNIT_LEVEL_MUNICIPALITY],
             path_params=["codigo_ine"],
             response_contract="TerritorialUnitDetailResponse",
+        ),
+        TerritorialCatalogResourceResponse(
+            resource_key="territorial.geocode.query",
+            title="Semantic geocode query",
+            category="territorial_read",
+            method="GET",
+            path="/geocode",
+            summary="Resolve a text query through the internal semantic geocoding contract over CartoCiudad.",
+            unit_levels=[
+                TERRITORIAL_UNIT_LEVEL_AUTONOMOUS_COMMUNITY,
+                TERRITORIAL_UNIT_LEVEL_PROVINCE,
+                TERRITORIAL_UNIT_LEVEL_MUNICIPALITY,
+            ],
+            query_params=["query"],
+            response_contract="GeocodeResponse",
+        ),
+        TerritorialCatalogResourceResponse(
+            resource_key="territorial.reverse_geocode.query",
+            title="Semantic reverse geocode query",
+            category="territorial_read",
+            method="GET",
+            path="/reverse_geocode",
+            summary="Resolve coordinates through the internal semantic reverse geocoding contract over CartoCiudad.",
+            unit_levels=[
+                TERRITORIAL_UNIT_LEVEL_AUTONOMOUS_COMMUNITY,
+                TERRITORIAL_UNIT_LEVEL_PROVINCE,
+                TERRITORIAL_UNIT_LEVEL_MUNICIPALITY,
+            ],
+            query_params=["lat", "lon"],
+            response_contract="ReverseGeocodeResponse",
         ),
         TerritorialCatalogResourceResponse(
             resource_key="territorial.municipality.summary",
@@ -224,60 +243,9 @@ async def get_territorial_job_status(
 )
 async def geocode(
     query: str = Query(..., min_length=1, max_length=512),
-    settings: Settings = Depends(get_settings),
-    geocoding_repo: GeocodingCacheRepository = Depends(get_geocoding_cache_repository),
-    cartociudad_client: CartoCiudadClientService = Depends(get_cartociudad_client_service),
-    territorial_repo: TerritorialRepository = Depends(get_territorial_repository),
+    geocoding_service: CartoCiudadGeocodingService = Depends(get_cartociudad_geocoding_service),
 ) -> GeocodeResponse:
-    cached_row = await geocoding_repo.get_geocode_cache(
-        provider=GEOCODING_PROVIDER_CARTOCIUDAD,
-        query=query,
-    )
-    if cached_row is not None:
-        record_provider_cache_hit("cartociudad", "geocode_persistent")
-        logger.info(
-            "geocode_persistent_cache_hit",
-            extra={"provider": GEOCODING_PROVIDER_CARTOCIUDAD, "query": query},
-        )
-        normalized_response = normalize_cartociudad_geocode_response(
-            query=query,
-            payload=cached_row["payload"],
-            cached=True,
-            metadata={
-                **cached_row.get("metadata", {}),
-                "cache_scope": "persistent",
-                "persistent_cache_hit": True,
-            },
-        )
-        return await attach_territorial_resolution(normalized_response, territorial_repo)
-
-    payload = await cartociudad_client.geocode(query)
-    persisted = await geocoding_repo.upsert_geocode_cache(
-        provider=GEOCODING_PROVIDER_CARTOCIUDAD,
-        query=query,
-        payload=payload,
-        ttl_seconds=settings.cache_ttl_seconds,
-        metadata={"endpoint_family": "find"},
-    )
-    logger.info(
-        "geocode_provider_fetch_completed",
-        extra={
-            "provider": GEOCODING_PROVIDER_CARTOCIUDAD,
-            "query": query,
-            "persistent_cache_written": persisted is not None,
-        },
-    )
-    normalized_response = normalize_cartociudad_geocode_response(
-        query=query,
-        payload=payload,
-        cached=False,
-        metadata={
-            "cache_scope": "provider",
-            "persistent_cache_written": persisted is not None,
-            **(persisted.get("metadata", {}) if persisted else {}),
-        },
-    )
-    return await attach_territorial_resolution(normalized_response, territorial_repo)
+    return await geocoding_service.geocode(query)
 
 
 @router.get(
@@ -293,69 +261,9 @@ async def geocode(
 async def reverse_geocode(
     lat: float = Query(..., ge=-90, le=90),
     lon: float = Query(..., ge=-180, le=180),
-    settings: Settings = Depends(get_settings),
-    geocoding_repo: GeocodingCacheRepository = Depends(get_geocoding_cache_repository),
-    cartociudad_client: CartoCiudadClientService = Depends(get_cartociudad_client_service),
-    territorial_repo: TerritorialRepository = Depends(get_territorial_repository),
+    geocoding_service: CartoCiudadGeocodingService = Depends(get_cartociudad_geocoding_service),
 ) -> ReverseGeocodeResponse:
-    cached_row = await geocoding_repo.get_reverse_geocode_cache(
-        provider=GEOCODING_PROVIDER_CARTOCIUDAD,
-        lat=lat,
-        lon=lon,
-    )
-    if cached_row is not None:
-        record_provider_cache_hit("cartociudad", "reverse_geocode_persistent")
-        logger.info(
-            "reverse_geocode_persistent_cache_hit",
-            extra={
-                "provider": GEOCODING_PROVIDER_CARTOCIUDAD,
-                "lat": lat,
-                "lon": lon,
-            },
-        )
-        normalized_response = normalize_cartociudad_reverse_geocode_response(
-            lat=lat,
-            lon=lon,
-            payload=cached_row["payload"],
-            cached=True,
-            metadata={
-                **cached_row.get("metadata", {}),
-                "cache_scope": "persistent",
-                "persistent_cache_hit": True,
-            },
-        )
-        return await attach_territorial_resolution(normalized_response, territorial_repo)
-
-    payload = await cartociudad_client.reverse_geocode(lat, lon)
-    persisted = await geocoding_repo.upsert_reverse_geocode_cache(
-        provider=GEOCODING_PROVIDER_CARTOCIUDAD,
-        lat=lat,
-        lon=lon,
-        payload=payload,
-        ttl_seconds=settings.cache_ttl_seconds,
-        metadata={"endpoint_family": "reverseGeocode"},
-    )
-    logger.info(
-        "reverse_geocode_provider_fetch_completed",
-        extra={
-            "provider": GEOCODING_PROVIDER_CARTOCIUDAD,
-            "lat": lat,
-            "lon": lon,
-            "persistent_cache_written": persisted is not None,
-        },
-    )
-    normalized_response = normalize_cartociudad_reverse_geocode_response(
-        lat=lat,
-        lon=lon,
-        payload=payload,
-        cached=False,
-        metadata={
-            "cache_scope": "provider",
-            "persistent_cache_written": persisted is not None,
-            **(persisted.get("metadata", {}) if persisted else {}),
-        },
-    )
-    return await attach_territorial_resolution(normalized_response, territorial_repo)
+    return await geocoding_service.reverse_geocode(lat, lon)
 
 
 @router.get(

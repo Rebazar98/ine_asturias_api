@@ -108,6 +108,15 @@ Si se trata de una RC local sin modelo territorial cargado, puedes preparar ese 
 docker compose run --rm api python scripts/seed_municipality_analytics.py --municipality-code 33044
 ```
 
+Validacion manual opcional de la segunda fuente oficial, fuera del gate obligatorio:
+
+```powershell
+Invoke-RestMethod "http://127.0.0.1:8001/geocode?query=Oviedo" -Headers @{ "X-API-Key" = "change-me" }
+Invoke-RestMethod "http://127.0.0.1:8001/reverse_geocode?lat=43.3614&lon=-5.8494" -Headers @{ "X-API-Key" = "change-me" }
+```
+
+Esta comprobacion sirve para RC o staging cuando se quiera validar el camino real de CartoCiudad. No sustituye a `pytest` ni entra como gate obligatorio porque depende de un proveedor externo.
+
 7. **Restore drill reciente**
    - ejecutar [scripts/restore_drill.ps1](C:/Users/user/OneDrive/Documents/Playground/scripts/restore_drill.ps1) en local, o
    - ejecutar manualmente el workflow `Restore Drill` en GitHub Actions.
@@ -336,6 +345,11 @@ Antes de abrir CartoCiudad, IGN o cualquier nueva fuente externa, el repositorio
 - no hay regresiones abiertas en ingesta, normalizacion, catalogo o jobs del dominio INE.
 
 Si una de estas condiciones no se cumple, la siguiente fase debe permanecer cerrada y el equipo debe priorizar estabilizacion antes que expansion funcional.
+
+Estado actual de esa condicion:
+
+- CartoCiudad ya queda consolidada como segunda fuente oficial en modo bajo demanda;
+- la siguiente apertura recomendada ya no es otra fuente HTTP aislada, sino capa B2B (`API keys`, auditoria y cuotas) o materializacion selectiva de catalogos geograficos.
 
 ## Evidencia operativa reciente
 

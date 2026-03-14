@@ -6,13 +6,14 @@ from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.dependencies import get_cartociudad_client_service
 from app.main import app
 from app.models import (
     GeocodeCache,
+    IngestionRaw,
     ReverseGeocodeCache,
     TerritorialUnit,
     TerritorialUnitAlias,
@@ -178,6 +179,7 @@ def test_reverse_geocode_endpoint_persists_cache_and_resolves_territorial_unit(m
         province_code = f"33{suffix[:2]}"
         unit_id: int | None = None
         coordinate_key = build_reverse_geocode_coordinate_key(43.3614, -5.8494)
+        raw_record_id: int | None = None
 
         try:
             async with session_factory() as session:
@@ -248,6 +250,31 @@ def test_reverse_geocode_endpoint_persists_cache_and_resolves_territorial_unit(m
                 )
                 assert cached is not None
                 assert cached["payload"]["codigoProvincia"] == province_code
+                raw_rows = (
+                    (
+                        await session.execute(
+                            select(IngestionRaw).where(
+                                IngestionRaw.source_type == "cartociudad_reverse_geocode"
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                assert len(raw_rows) == 1
+                raw_record = raw_rows[0]
+                raw_record_id = raw_record.id
+                source_type = raw_record.source_type
+                request_path = raw_record.request_path
+                request_params = raw_record.request_params
+                assert source_type == "cartociudad_reverse_geocode"
+                assert request_path == "/reverseGeocode"
+                assert request_params == {
+                    "coordinate_hint": "43.3614,-5.8494",
+                    "coordinate_precision": 4,
+                    "request_kind": "coordinates",
+                    "provider_contract_exposed": False,
+                }
 
         finally:
             app.dependency_overrides.clear()
@@ -259,6 +286,10 @@ def test_reverse_geocode_endpoint_persists_cache_and_resolves_territorial_unit(m
                         ReverseGeocodeCache.coordinate_key == coordinate_key,
                     )
                 )
+                if raw_record_id is not None:
+                    await session.execute(
+                        delete(IngestionRaw).where(IngestionRaw.id == raw_record_id)
+                    )
                 if unit_id is not None:
                     await session.execute(
                         delete(TerritorialUnitCode).where(

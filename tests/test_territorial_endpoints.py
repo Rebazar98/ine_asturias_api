@@ -247,9 +247,9 @@ def test_get_territorial_catalog_exposes_resources_and_basic_coverage(
     payload = response.json()
     assert payload["source"] == "internal.catalog.territorial"
     assert payload["summary"] == {
-        "resources_total": 6,
+        "resources_total": 8,
         "territorial_levels_total": 3,
-        "read_resources_total": 3,
+        "read_resources_total": 5,
         "analytics_resources_total": 2,
         "job_resources_total": 1,
     }
@@ -280,11 +280,20 @@ def test_get_territorial_catalog_exposes_resources_and_basic_coverage(
     assert resource_keys == {
         "territorial.autonomous_communities.list",
         "territorial.provinces.list",
+        "territorial.geocode.query",
+        "territorial.reverse_geocode.query",
         "territorial.municipality.detail",
         "territorial.municipality.summary",
         "territorial.municipality.report_job",
         "territorial.jobs.status",
     }
+    geocode_resource = next(
+        resource
+        for resource in payload["resources"]
+        if resource["resource_key"] == "territorial.geocode.query"
+    )
+    assert geocode_resource["query_params"] == ["query"]
+    assert geocode_resource["response_contract"] == "GeocodeResponse"
     report_job_resource = next(
         resource
         for resource in payload["resources"]

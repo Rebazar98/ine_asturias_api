@@ -17,6 +17,7 @@ from app.repositories.series import SeriesRepository
 from app.repositories.territorial import TerritorialRepository
 from app.services.asturias_resolver import AsturiasResolver
 from app.services.cartociudad_client import CartoCiudadClientService
+from app.services.cartociudad_geocoding import CartoCiudadGeocodingService
 from app.services.ine_client import INEClientService
 from app.services.ine_operation_ingestion import INEOperationIngestionService
 from app.services.territorial_analytics import TerritorialAnalyticsService
@@ -124,6 +125,22 @@ def get_territorial_analytics_service(
         series_repo=series_repo,
         analytical_snapshot_repo=analytical_snapshot_repo,
         analytical_snapshot_ttl_seconds=settings.analytical_snapshot_ttl_seconds,
+    )
+
+
+def get_cartociudad_geocoding_service(
+    cartociudad_client: CartoCiudadClientService = Depends(get_cartociudad_client_service),
+    geocoding_repo: GeocodingCacheRepository = Depends(get_geocoding_cache_repository),
+    ingestion_repo: IngestionRepository = Depends(get_ingestion_repository),
+    territorial_repo: TerritorialRepository = Depends(get_territorial_repository),
+    settings: Settings = Depends(get_settings),
+) -> CartoCiudadGeocodingService:
+    return CartoCiudadGeocodingService(
+        cartociudad_client=cartociudad_client,
+        geocoding_repo=geocoding_repo,
+        ingestion_repo=ingestion_repo,
+        territorial_repo=territorial_repo,
+        cache_ttl_seconds=settings.cache_ttl_seconds,
     )
 
 

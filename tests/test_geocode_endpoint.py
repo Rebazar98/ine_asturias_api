@@ -114,7 +114,7 @@ class DummyCartoCiudadClientService:
 
 
 def test_geocode_endpoint_returns_semantic_response_and_persists_cache(
-    client, dummy_territorial_repo
+    client, dummy_territorial_repo, dummy_ingestion_repo
 ):
     cache_repo = DummyGeocodingCacheRepository()
     cartociudad_client = DummyCartoCiudadClientService(
@@ -172,6 +172,18 @@ def test_geocode_endpoint_returns_semantic_response_and_persists_cache(
     assert payload["metadata"]["persistent_cache_written"] is True
     assert payload["metadata"]["provider_result_count"] == 1
     assert cartociudad_client.calls == ["Oviedo"]
+    assert len(dummy_ingestion_repo.records) == 1
+    assert dummy_ingestion_repo.records[0]["source_type"] == "cartociudad_geocode_find"
+    assert "Oviedo" not in dummy_ingestion_repo.records[0]["source_key"]
+    assert dummy_ingestion_repo.records[0]["request_path"] == "/find"
+    assert dummy_ingestion_repo.records[0]["request_params"] == {
+        "query_fingerprint": dummy_ingestion_repo.records[0]["request_params"]["query_fingerprint"],
+        "query_length": 6,
+        "query_terms": 1,
+        "request_kind": "text_query",
+        "provider_contract_exposed": False,
+    }
+    assert "query" not in dummy_ingestion_repo.records[0]["request_params"]
     assert (
         cache_repo.rows[(GEOCODING_PROVIDER_CARTOCIUDAD, normalize_geocode_query("Oviedo"))][
             "payload"
@@ -180,7 +192,9 @@ def test_geocode_endpoint_returns_semantic_response_and_persists_cache(
     )
 
 
-def test_geocode_endpoint_uses_persistent_cache_before_provider(client, dummy_territorial_repo):
+def test_geocode_endpoint_uses_persistent_cache_before_provider(
+    client, dummy_territorial_repo, dummy_ingestion_repo
+):
     cache_repo = DummyGeocodingCacheRepository()
     cache_repo.rows[(GEOCODING_PROVIDER_CARTOCIUDAD, normalize_geocode_query("Oviedo"))] = {
         "id": 1,
@@ -228,6 +242,7 @@ def test_geocode_endpoint_uses_persistent_cache_before_provider(client, dummy_te
     assert payload["metadata"]["persistent_cache_hit"] is True
     assert payload["result"]["territorial_resolution"]["canonical_code"] == "33044"
     assert cartociudad_client.calls == []
+    assert dummy_ingestion_repo.records == []
 
 
 def test_geocode_endpoint_validates_query_parameter(client, dummy_territorial_repo):
@@ -253,8 +268,33 @@ def test_geocode_endpoint_maps_upstream_error(client, dummy_territorial_repo):
     assert response.json()["detail"]["message"] == "The CartoCiudad service returned an error."
 
 
+def test_geocode_endpoint_maps_normalization_error_without_echoing_query(
+    client, dummy_territorial_repo, dummy_ingestion_repo
+):
+    cache_repo = DummyGeocodingCacheRepository()
+    cartociudad_client = DummyCartoCiudadClientService(
+        payload=[
+            {
+                "id": "missing-coords",
+                "type": "municipality",
+                "label": "Oviedo",
+            }
+        ]
+    )
+    app.dependency_overrides[get_geocoding_cache_repository] = lambda: cache_repo
+    app.dependency_overrides[get_cartociudad_client_service] = lambda: cartociudad_client
+
+    response = client.get("/geocode?query=Oviedo")
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == {
+        "message": "The CartoCiudad result could not be normalized to semantic coordinates."
+    }
+    assert len(dummy_ingestion_repo.records) == 1
+
+
 def test_reverse_geocode_endpoint_returns_semantic_response_and_persists_cache(
-    client, dummy_territorial_repo
+    client, dummy_territorial_repo, dummy_ingestion_repo
 ):
     cache_repo = DummyGeocodingCacheRepository()
     cartociudad_client = DummyCartoCiudadClientService(
@@ -308,6 +348,15 @@ def test_reverse_geocode_endpoint_returns_semantic_response_and_persists_cache(
     assert payload["metadata"]["persistent_cache_written"] is True
     assert payload["metadata"]["provider_result_count"] == 1
     assert cartociudad_client.reverse_calls == [(43.3614, -5.8494)]
+    assert len(dummy_ingestion_repo.records) == 1
+    assert dummy_ingestion_repo.records[0]["source_type"] == "cartociudad_reverse_geocode"
+    assert dummy_ingestion_repo.records[0]["request_path"] == "/reverseGeocode"
+    assert dummy_ingestion_repo.records[0]["request_params"] == {
+        "coordinate_hint": "43.3614,-5.8494",
+        "coordinate_precision": 4,
+        "request_kind": "coordinates",
+        "provider_contract_exposed": False,
+    }
     cache_key = build_reverse_geocode_coordinate_key(43.3614, -5.8494)
     assert (
         cache_repo.reverse_rows[(GEOCODING_PROVIDER_CARTOCIUDAD, cache_key)]["payload"]["id"]
@@ -316,7 +365,7 @@ def test_reverse_geocode_endpoint_returns_semantic_response_and_persists_cache(
 
 
 def test_reverse_geocode_endpoint_uses_persistent_cache_before_provider(
-    client, dummy_territorial_repo
+    client, dummy_territorial_repo, dummy_ingestion_repo
 ):
     cache_repo = DummyGeocodingCacheRepository()
     cache_key = build_reverse_geocode_coordinate_key(43.3614, -5.8494)
@@ -364,6 +413,7 @@ def test_reverse_geocode_endpoint_uses_persistent_cache_before_provider(
     assert payload["metadata"]["persistent_cache_hit"] is True
     assert payload["result"]["territorial_resolution"]["canonical_code"] == "33"
     assert cartociudad_client.reverse_calls == []
+    assert dummy_ingestion_repo.records == []
 
 
 def test_reverse_geocode_endpoint_validates_coordinates(client, dummy_territorial_repo):
@@ -387,3 +437,20 @@ def test_reverse_geocode_endpoint_maps_upstream_error(client, dummy_territorial_
 
     assert response.status_code == 503
     assert response.json()["detail"]["message"] == "The CartoCiudad service returned an error."
+
+
+def test_reverse_geocode_endpoint_maps_normalization_error(
+    client, dummy_territorial_repo, dummy_ingestion_repo
+):
+    cache_repo = DummyGeocodingCacheRepository()
+    cartociudad_client = DummyCartoCiudadClientService(payload="unexpected")
+    app.dependency_overrides[get_geocoding_cache_repository] = lambda: cache_repo
+    app.dependency_overrides[get_cartociudad_client_service] = lambda: cartociudad_client
+
+    response = client.get("/reverse_geocode?lat=43.3614&lon=-5.8494")
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == {
+        "message": "CartoCiudad returned an unexpected payload type."
+    }
+    assert len(dummy_ingestion_repo.records) == 1

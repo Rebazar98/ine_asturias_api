@@ -9,6 +9,7 @@ Documentacion disponible en la raiz del proyecto:
 - `README.md`: guia funcional y operativa del backend actual.
 - `DOCUMENTACION_EVOLUCION_PROYECTO.txt`: registro historico y memoria tecnica del proyecto.
 - `PLAN_TECNICO_PLATAFORMA_DATOS_TERRITORIALES.md`: roadmap de evolucion hacia plataforma territorial multi-fuente.
+- `PLAN_FASE_CARTOCIUDAD_IGN_ON_DEMAND.md`: plan ejecutado para consolidar CartoCiudad como segunda fuente oficial bajo demanda.
 - `FASE2_STAGING_OPERATIVO_BACKLOG.md`: contexto de trabajo y backlog ejecutable para la fase de staging operativo real.
 - `FASE3_MODELO_TERRITORIAL_BACKLOG.md`: backlog ejecutable para la fase de modelo territorial operativo y base geoespacial interna.
 - `FASE4_API_TERRITORIAL_BACKLOG.md`: backlog ejecutable para la fase de API territorial unificada y primera integracion geografica.
@@ -226,7 +227,8 @@ Contrato actual de `/geocode`:
 - usa CartoCiudad como provider geografico inicial;
 - consulta primero `geocode_cache` como cache persistente;
 - si no hay hit persistente, hace fallback al adapter del provider;
-- persiste el payload crudo normalizado en `geocode_cache`;
+- persiste el payload crudo del provider en `geocode_cache`;
+- registra tambien la llamada upstream en `ingestion_raw` con `source_type=cartociudad_geocode_find` y parametros saneados;
 - devuelve contrato semantico propio:
   - `source`
   - `query`
@@ -239,13 +241,15 @@ La respuesta NO replica el shape crudo del provider. En esta fase:
 - `territorial_resolution` se rellena cuando el payload de CartoCiudad puede cruzarse de forma fiable con el modelo territorial interno;
 - si no existe match fiable, `territorial_resolution` queda `null`;
 - `cached=true` indica hit de cache persistente del endpoint.
+- los logs operativos y errores upstream ya no exponen la query completa; usan contexto saneado (`query_fingerprint`, longitud y numero de terminos).
 
 Contrato actual de `/reverse_geocode`:
 
 - usa CartoCiudad como provider geografico inicial;
 - consulta primero `reverse_geocode_cache` como cache persistente;
 - si no hay hit persistente, hace fallback al adapter del provider;
-- persiste el payload crudo normalizado en `reverse_geocode_cache`;
+- persiste el payload crudo del provider en `reverse_geocode_cache`;
+- registra tambien la llamada upstream en `ingestion_raw` con `source_type=cartociudad_reverse_geocode` y parametros saneados;
 - devuelve contrato semantico consistente con `/geocode`:
   - `source`
   - `query_coordinates`
@@ -259,6 +263,7 @@ En esta fase:
 - si no existe match fiable, el contrato mantiene `territorial_resolution=null`;
 - `cached=true` indica hit de cache persistente del endpoint;
 - `lat` y `lon` se validan en rango geodesico antes de consultar provider o cache.
+- los logs operativos y errores upstream usan una huella de coordenadas saneada en vez del par completo.
 
 Estrategia territorial actual:
 
@@ -305,6 +310,7 @@ Endpoints territoriales publicos actuales:
 - `GET /territorios/comunidades-autonomas` devuelve comunidades autonomas desde el modelo interno con paginacion basica.
 - `GET /territorios/provincias` devuelve provincias y admite filtro por `autonomous_community_code`.
 - `GET /municipio/{codigo_ine}` devuelve detalle de municipio por codigo canonico INE, incluyendo codigos, aliases y atributos.
+- `GET /territorios/catalogo` publica tambien `GET /geocode` y `GET /reverse_geocode` como recursos oficiales de descubrimiento.
 
 ## Catalogo territorial minimo
 
@@ -318,6 +324,12 @@ El endpoint devuelve:
 - `metadata`: contexto operativo minimo para consumo automatizado.
 
 El catalogo NO expone tablas internas ni payloads raw. Su funcion es descubrir capacidades publicas, no inventariar la base de datos.
+
+Con la consolidacion de CartoCiudad bajo demanda, el catalogo publicado ya incluye:
+
+- `GET /geocode`
+- `GET /reverse_geocode`
+- recursos territoriales y analiticos internos relacionados
 
 ## Contrato base de salidas analiticas
 
@@ -474,6 +486,8 @@ Orden recomendado de consumo:
 Endpoints recomendados hoy para automatizacion:
 
 - `GET /territorios/catalogo`
+- `GET /geocode`
+- `GET /reverse_geocode`
 - `GET /territorios/municipio/{codigo_ine}/resumen`
 - `POST /territorios/municipio/{codigo_ine}/informe`
 - `GET /territorios/jobs/{job_id}`
@@ -534,6 +548,12 @@ Regla semantica clave:
 ## Persistencia
 
 ### `ingestion_raw`
+
+`ingestion_raw` ya no se usa solo para INE. En la fase multi-fuente bajo demanda tambien registra llamadas upstream de CartoCiudad con:
+
+- `source_type=cartociudad_geocode_find`
+- `source_type=cartociudad_reverse_geocode`
+- `request_params` saneados para evitar exponer direcciones completas o coordenadas exactas en auditoria operacional reutilizable
 
 Guarda payloads completos del proveedor con contexto de llamada para auditoria y depuracion.
 
