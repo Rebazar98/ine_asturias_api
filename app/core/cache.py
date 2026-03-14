@@ -79,6 +79,7 @@ class InMemoryTTLCache(BaseAsyncCache):
         async with self._lock:
             self._store.pop(key, None)
 
+
 class RedisTTLCache(BaseAsyncCache):
     def __init__(
         self,
