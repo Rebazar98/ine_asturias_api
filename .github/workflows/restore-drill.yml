@@ -130,7 +130,7 @@ jobs:
           if [ -f ./scripts/restore_drill.ps1 ]; then
             pwsh ./scripts/restore_drill.ps1 \
               -BackupPath "backups/${DB_NAME}_ci.dump" \
-              -BaseUrl "http://api:$API_HOST_PORT"
+              -BaseUrl "http://localhost:$API_HOST_PORT"
           else
             echo "⚠️ restore_drill.ps1 no encontrado, verificar ruta"
             exit 1
