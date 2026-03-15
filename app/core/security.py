@@ -67,10 +67,7 @@ def sanitize_query_params_for_logging(query_params: Mapping[str, Any]) -> dict[s
     if not query_params:
         return {"query_params_count": 0, "query_param_keys": []}
 
-    normalized_items = sorted(
-        (str(key), str(value))
-        for key, value in query_params.items()
-    )
+    normalized_items = sorted((str(key), str(value)) for key, value in query_params.items())
     canonical = "&".join(f"{key}={value}" for key, value in normalized_items)
     return {
         "query_params_count": len(normalized_items),

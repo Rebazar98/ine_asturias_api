@@ -28,7 +28,10 @@ from app.dependencies import (
 from app.repositories.catalog import TableCatalogRepository
 from app.repositories.ingestion import IngestionRepository
 from app.repositories.series import SeriesRepository
-from app.repositories.territorial import INE_TERRITORIAL_SOURCE_SYSTEM, TerritorialRepository
+from app.repositories.territorial import (
+    INE_TERRITORIAL_SOURCE_SYSTEM,
+    TerritorialRepository,
+)
 from app.schemas import (
     BackgroundJobAcceptedResponse,
     BackgroundJobStatusResponse,
