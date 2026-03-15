@@ -45,6 +45,24 @@ Documentacion disponible en la raiz del proyecto:
 - worker dedicado para jobs asincronos
 - `api`, `worker` y `migrate` se ejecutan como usuario non-root (`uid/gid 10001`) con `no-new-privileges` y sin capacidades Linux adicionales.
 
+### Recuperacion local de PostgreSQL
+
+Si `docker compose run --rm migrate` o `pytest` de integracion fallan con `password authentication failed for user "postgres"`, normalmente hay deriva entre las credenciales actuales de `.env` y el volumen persistente `postgres_data` creado con una password anterior.
+
+Recuperacion recomendada en local:
+
+```powershell
+.\scripts\reset_local_postgres_volume.ps1 -Force
+```
+
+Si trabajas con un env file o project name distinto:
+
+```powershell
+.\scripts\reset_local_postgres_volume.ps1 -EnvFile .env.local -ProjectName playground -Force
+```
+
+Este script SOLO esta pensado para desarrollo local. Elimina la base persistente local y la recrea desde cero con las credenciales actuales.
+
 ## Variables de entorno
 
 | Variable | Descripcion | Ejemplo |

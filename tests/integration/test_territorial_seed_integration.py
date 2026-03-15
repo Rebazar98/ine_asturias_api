@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 from uuid import uuid4
 
 import pytest
@@ -15,13 +14,12 @@ from app.repositories.territorial import (
     TerritorialRepository,
 )
 from app.services.territorial_seed import ensure_municipality_analytics_seed
+from tests.integration.postgres import require_integration_postgres
 
 
 @pytest.mark.integration
 def test_municipality_analytics_seed_is_idempotent_with_postgres() -> None:
-    postgres_dsn = os.getenv("INTEGRATION_POSTGRES_DSN") or os.getenv("POSTGRES_DSN")
-    if not postgres_dsn:
-        pytest.skip("PostgreSQL integration DSN not configured.")
+    postgres_dsn = require_integration_postgres()
 
     async def scenario() -> None:
         engine = create_async_engine(postgres_dsn, future=True)

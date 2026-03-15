@@ -220,7 +220,7 @@ async def list_normalized_ine_series(
 ) -> INESeriesListResponse:
     if period_from and period_to and period_from > period_to:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail={
                 "message": "period_from cannot be greater than period_to.",
                 "period_from": period_from,
@@ -230,7 +230,7 @@ async def list_normalized_ine_series(
 
     if geography_code_system != INE_TERRITORIAL_SOURCE_SYSTEM:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail={
                 "message": "Unsupported geography_code_system.",
                 "geography_code_system": geography_code_system,

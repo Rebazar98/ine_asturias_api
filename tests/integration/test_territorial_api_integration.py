@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 from uuid import uuid4
 
 import pytest
@@ -37,6 +36,7 @@ from app.repositories.territorial import (
     normalize_territorial_name,
 )
 from app.settings import get_settings
+from tests.integration.postgres import require_integration_postgres
 
 
 class DummyCartoCiudadClientService:
@@ -56,9 +56,7 @@ class DummyCartoCiudadClientService:
 
 @pytest.mark.integration
 def test_geocode_endpoint_uses_persistent_cache_and_resolves_territorial_unit(monkeypatch):
-    postgres_dsn = os.getenv("INTEGRATION_POSTGRES_DSN") or os.getenv("POSTGRES_DSN")
-    if not postgres_dsn:
-        pytest.skip("PostgreSQL integration DSN not configured.")
+    postgres_dsn = require_integration_postgres()
 
     async def scenario() -> None:
         engine = create_async_engine(postgres_dsn, future=True)
@@ -167,9 +165,7 @@ def test_geocode_endpoint_uses_persistent_cache_and_resolves_territorial_unit(mo
 
 @pytest.mark.integration
 def test_reverse_geocode_endpoint_persists_cache_and_resolves_territorial_unit(monkeypatch):
-    postgres_dsn = os.getenv("INTEGRATION_POSTGRES_DSN") or os.getenv("POSTGRES_DSN")
-    if not postgres_dsn:
-        pytest.skip("PostgreSQL integration DSN not configured.")
+    postgres_dsn = require_integration_postgres()
 
     async def scenario() -> None:
         engine = create_async_engine(postgres_dsn, future=True)
@@ -307,9 +303,7 @@ def test_reverse_geocode_endpoint_persists_cache_and_resolves_territorial_unit(m
 
 @pytest.mark.integration
 def test_municipio_endpoint_returns_detail_from_internal_model(monkeypatch):
-    postgres_dsn = os.getenv("INTEGRATION_POSTGRES_DSN") or os.getenv("POSTGRES_DSN")
-    if not postgres_dsn:
-        pytest.skip("PostgreSQL integration DSN not configured.")
+    postgres_dsn = require_integration_postgres()
 
     async def scenario() -> None:
         engine = create_async_engine(postgres_dsn, future=True)
@@ -430,9 +424,7 @@ def test_municipio_endpoint_returns_detail_from_internal_model(monkeypatch):
 
 @pytest.mark.integration
 def test_territorial_listing_endpoints_return_real_db_results(monkeypatch):
-    postgres_dsn = os.getenv("INTEGRATION_POSTGRES_DSN") or os.getenv("POSTGRES_DSN")
-    if not postgres_dsn:
-        pytest.skip("PostgreSQL integration DSN not configured.")
+    postgres_dsn = require_integration_postgres()
 
     async def scenario() -> None:
         engine = create_async_engine(postgres_dsn, future=True)
