@@ -31,9 +31,7 @@ class Settings(BaseSettings):
     )
     ign_admin_snapshot_url: str | None = Field(default=None, alias="IGN_ADMIN_SNAPSHOT_URL")
     http_timeout_seconds: float = Field(default=15.0, alias="HTTP_TIMEOUT_SECONDS")
-    catastro_timeout_seconds: float = Field(
-        default=20.0, alias="CATASTRO_TIMEOUT_SECONDS", gt=0
-    )
+    catastro_timeout_seconds: float = Field(default=20.0, alias="CATASTRO_TIMEOUT_SECONDS", gt=0)
     provider_total_timeout_seconds: float = Field(
         default=30.0, alias="PROVIDER_TOTAL_TIMEOUT_SECONDS", gt=0
     )
