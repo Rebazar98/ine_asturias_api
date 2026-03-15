@@ -126,7 +126,7 @@ Esta comprobacion sirve para RC o staging cuando se quiera validar el camino rea
 ```powershell
 Invoke-RestMethod http://127.0.0.1:8001/health
 Invoke-RestMethod http://127.0.0.1:8001/health/ready
-(Invoke-WebRequest http://127.0.0.1:8001/metrics -UseBasicParsing).StatusCode
+(Invoke-WebRequest http://127.0.0.1:8001/metrics -Headers @{ "X-API-Key" = "<API_KEY>" } -UseBasicParsing).StatusCode
 ```
 
 Nota para el estado actual del proyecto:
@@ -141,7 +141,7 @@ Nota para el estado actual del proyecto:
 9. **Verificacion de restore**
 
 ```powershell
-docker compose run --rm api python scripts/verify_restore.py --base-url http://api:8000 --postgres-dsn postgresql://postgres:postgres@db:5432/ine_asturias --min-ingestion-rows 1 --min-normalized-rows 1
+docker compose run --rm api python scripts/verify_restore.py --base-url http://api:8000 --min-ingestion-rows 1 --min-normalized-rows 1 --min-catalog-rows 1 --expected-alembic-version 0006_analytical_snapshots --functional-operation-code 22
 ```
 
 10. **Security scan reciente**

@@ -8,9 +8,12 @@ from time import perf_counter
 from arq.connections import ArqRedis
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
-from app.core.logging import get_logger
 from app.core.jobs import BaseJobStore
+from app.core.logging import get_logger
+from app.core.metrics import record_job_duration
+from app.core.rate_limit import RateLimitPolicy
 from app.dependencies import (
+    build_rate_limit_dependency,
     get_arq_pool,
     get_cartociudad_geocoding_service,
     get_job_store,
@@ -52,6 +55,20 @@ router = APIRouter(tags=["territorial"], dependencies=[Depends(require_api_key)]
 logger = get_logger("app.api.routes_territorial")
 MUNICIPALITY_REPORT_JOB_TYPE = "territorial_municipality_report"
 TERRITORIAL_CATALOG_SOURCE = "internal.catalog.territorial"
+GEOCODE_RATE_LIMIT = build_rate_limit_dependency(
+    RateLimitPolicy(
+        name="geocode",
+        public_requests_per_minute=100,
+        authenticated_requests_per_minute=1000,
+    )
+)
+REVERSE_GEOCODE_RATE_LIMIT = build_rate_limit_dependency(
+    RateLimitPolicy(
+        name="reverse_geocode",
+        public_requests_per_minute=100,
+        authenticated_requests_per_minute=1000,
+    )
+)
 TERRITORIAL_CATALOG_LEVEL_PATHS = {
     TERRITORIAL_UNIT_LEVEL_AUTONOMOUS_COMMUNITY: {
         "list_path": "/territorios/comunidades-autonomas",
@@ -243,6 +260,7 @@ async def get_territorial_job_status(
 )
 async def geocode(
     query: str = Query(..., min_length=1, max_length=512),
+    _: None = Depends(GEOCODE_RATE_LIMIT),
     geocoding_service: CartoCiudadGeocodingService = Depends(get_cartociudad_geocoding_service),
 ) -> GeocodeResponse:
     return await geocoding_service.geocode(query)
@@ -261,6 +279,7 @@ async def geocode(
 async def reverse_geocode(
     lat: float = Query(..., ge=-90, le=90),
     lon: float = Query(..., ge=-180, le=180),
+    _: None = Depends(REVERSE_GEOCODE_RATE_LIMIT),
     geocoding_service: CartoCiudadGeocodingService = Depends(get_cartociudad_geocoding_service),
 ) -> ReverseGeocodeResponse:
     return await geocoding_service.reverse_geocode(lat, lon)
@@ -617,9 +636,19 @@ async def _run_municipality_report_job_inline(
                     "duration_ms": round((perf_counter() - started_at) * 1000, 3),
                 },
             )
+            record_job_duration(
+                MUNICIPALITY_REPORT_JOB_TYPE,
+                "failed",
+                perf_counter() - started_at,
+            )
             return
         payload_result = report.model_dump(mode="json")
         await job_store.complete_job(job_id, payload_result)
+        record_job_duration(
+            MUNICIPALITY_REPORT_JOB_TYPE,
+            "completed",
+            perf_counter() - started_at,
+        )
         logger.info(
             "municipality_report_inline_job_completed",
             extra={
@@ -647,4 +676,9 @@ async def _run_municipality_report_job_inline(
                 "codigo_ine": municipality_code,
                 "error": str(exc),
             },
+        )
+        record_job_duration(
+            MUNICIPALITY_REPORT_JOB_TYPE,
+            "failed",
+            perf_counter() - started_at,
         )

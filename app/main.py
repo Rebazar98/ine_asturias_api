@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
 import time
@@ -17,7 +17,10 @@ from app.core.cache import InMemoryTTLCache, LayeredCache, RedisTTLCache
 from app.core.jobs import InMemoryJobStore, RedisJobStore
 from app.core.logging import configure_logging, get_logger
 from app.core.metrics import record_http_request
+from app.core.rate_limit import InMemoryRateLimiter, RedisRateLimiter
 from app.core.redis import redis_settings_from_url
+from app.core.resilience import AsyncCircuitBreaker
+from app.core.security import sanitize_query_params_for_logging
 from app.db import dispose_db, init_db
 from app.services.asturias_resolver import AsturiasResolutionError
 from app.services.cartociudad_client import CartoCiudadClientError
@@ -39,12 +42,29 @@ async def lifespan(app: FastAPI):
     )
     app.state.cache = local_cache
     app.state.http_client = httpx.AsyncClient(
-        timeout=httpx.Timeout(settings.http_timeout_seconds, connect=min(settings.http_timeout_seconds, 5.0)),
+        timeout=httpx.Timeout(
+            settings.http_timeout_seconds, connect=min(settings.http_timeout_seconds, 5.0)
+        ),
     )
     app.state.redis = None
     app.state.arq_redis = None
     app.state.job_store = InMemoryJobStore()
     app.state.inline_job_tasks = set()
+    app.state.rate_limiter = InMemoryRateLimiter()
+    app.state.ine_circuit_breaker = AsyncCircuitBreaker(
+        provider="ine",
+        fail_max=settings.provider_circuit_breaker_failures,
+        reset_timeout_seconds=settings.provider_circuit_breaker_recovery_seconds,
+        half_open_sample_size=settings.provider_circuit_breaker_half_open_sample_size,
+        success_threshold=settings.provider_circuit_breaker_success_threshold,
+    )
+    app.state.cartociudad_circuit_breaker = AsyncCircuitBreaker(
+        provider="cartociudad",
+        fail_max=settings.provider_circuit_breaker_failures,
+        reset_timeout_seconds=settings.provider_circuit_breaker_recovery_seconds,
+        half_open_sample_size=settings.provider_circuit_breaker_half_open_sample_size,
+        success_threshold=settings.provider_circuit_breaker_success_threshold,
+    )
 
     init_db(settings)
 
@@ -54,6 +74,7 @@ async def lifespan(app: FastAPI):
             await app.state.redis.ping()
             app.state.arq_redis = await create_pool(redis_settings_from_url(settings.redis_url))
             app.state.job_store = RedisJobStore(redis=app.state.redis, settings=settings)
+            app.state.rate_limiter = RedisRateLimiter(redis=app.state.redis)
             app.state.cache = LayeredCache(
                 local_cache=local_cache,
                 shared_cache=RedisTTLCache(
@@ -89,6 +110,8 @@ async def lifespan(app: FastAPI):
             "app_version": settings.app_version,
             "app_env": settings.app_env,
             "cache_enabled": settings.enable_cache,
+            "api_key_required": settings.requires_api_key,
+            "rate_limit_enabled": settings.rate_limit_enabled,
             "job_store": type(app.state.job_store).__name__,
         },
     )
@@ -150,7 +173,7 @@ def create_app() -> FastAPI:
                     "method": request.method,
                     "path": request.url.path,
                     "path_template": path_template,
-                    "query": dict(request.query_params),
+                    **sanitize_query_params_for_logging(request.query_params),
                     "duration_ms": round(duration_seconds * 1000, 2),
                 },
             )
@@ -189,14 +212,12 @@ def create_app() -> FastAPI:
         return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
     @app.exception_handler(AsturiasResolutionError)
-    async def asturias_resolution_error_handler(_: Request, exc: AsturiasResolutionError) -> JSONResponse:
+    async def asturias_resolution_error_handler(
+        _: Request, exc: AsturiasResolutionError
+    ) -> JSONResponse:
         return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
     return app
 
 
 app = create_app()
-
-
-
-

@@ -1,0 +1,74 @@
+groups:
+  - name: ine_asturias_api_slo
+    rules:
+      - alert: IneAsturiasApiDown
+        expr: up{job="ine_asturias_api"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: API scrape down
+          description: The ine_asturias_api target has been down for at least 5 minutes.
+
+      - alert: IneAsturiasHigh5xxErrorRate
+        expr: |
+          (
+            sum(rate(ine_asturias_http_requests_total{status_code=~"5.."}[5m]))
+            /
+            clamp_min(sum(rate(ine_asturias_http_requests_total[5m])), 1)
+          ) > 0.005
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: High 5xx error rate
+          description: The API 5xx error rate is above 0.5% over the last 10 minutes.
+
+      - alert: IneAsturiasGeocodeP99LatencyHigh
+        expr: |
+          histogram_quantile(
+            0.99,
+            sum by (le) (rate(ine_asturias_http_request_duration_seconds_bucket{path="/geocode"}[10m]))
+          ) > 0.5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Geocode p99 latency high
+          description: p99 latency for /geocode is above 500ms over the last 10 minutes.
+
+      - alert: IneAsturiasSeriesP99LatencyHigh
+        expr: |
+          histogram_quantile(
+            0.99,
+            sum by (le) (rate(ine_asturias_http_request_duration_seconds_bucket{path="/ine/series"}[10m]))
+          ) > 0.5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: INE series p99 latency high
+          description: p99 latency for /ine/series is above 500ms over the last 10 minutes.
+
+      - alert: IneAsturiasJobP99LatencyHigh
+        expr: |
+          histogram_quantile(
+            0.99,
+            sum by (le, job_type) (rate(ine_asturias_job_duration_seconds_bucket[15m]))
+          ) > 5
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Job p99 latency high
+          description: p99 latency for at least one tracked job type is above 5 seconds over the last 15 minutes.
+
+      - alert: IneAsturiasCircuitBreakerFlapping
+        expr: |
+          sum(rate(ine_asturias_provider_circuit_breaker_transitions_total{new_state="open"}[10m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Provider circuit breaker opened
+          description: A provider circuit breaker opened during the last 10 minutes. Check upstream health and retry pressure.

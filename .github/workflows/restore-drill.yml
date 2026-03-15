@@ -4,13 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       min_ingestion_rows:
-        description: "Minimo de filas esperadas en ingestion_raw"
+        description: "Minimo manual de filas esperadas en ingestion_raw (0 = usar baseline del seed)"
         required: false
-        default: "100000"
+        default: "0"
       min_normalized_rows:
-        description: "Minimo de filas esperadas en ine_series_normalized"
+        description: "Minimo manual de filas esperadas en ine_series_normalized (0 = usar baseline del seed)"
         required: false
-        default: "50000"
+        default: "0"
 
 permissions:
   contents: read
@@ -18,197 +18,328 @@ permissions:
 jobs:
   restore-drill:
     runs-on: ubuntu-latest
-    timeout-minutes: 50
+    timeout-minutes: 60
 
     env:
+      ENVIRONMENT: controlled
       API_HOST_PORT: 8000
       DB_HOST: db
       DB_PORT: 5432
       DB_NAME: ine_asturias
       DB_USER: postgres
-      DB_PASSWORD: postgres
+      DB_PASSWORD: local-dev-postgres-Y8mF3vQ2sL7nR5xC
       REDIS_HOST: redis
+      EXPECTED_ALEMBIC_VERSION: 0006_analytical_snapshots
+      ENABLE_SLACK_NOTIFICATIONS: "false"
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      ENABLE_PAGERDUTY: "false"
+      PAGERDUTY_KEY: ${{ secrets.PAGERDUTY_INTEGRATION_KEY }}
+      ENABLE_METRICS: "true"
+      METRICS_PREFIX: restore_drill
 
     steps:
-      # ============================================================================
-      # SETUP: Crear directorios y preparar ambiente
-      # ============================================================================
       - name: Checkout repository
         uses: actions/checkout@v6
 
       - name: Create required directories
         run: |
           mkdir -p backups artifacts
-          echo "✓ Directorios creados: backups/, artifacts/"
+          echo "[restore-drill] Directories created: backups/, artifacts/"
 
       - name: Prepare environment file
         run: |
           cp .env.example .env
-          if ! grep -q "DATABASE_URL" .env; then
-            echo "⚠️ Advertencia: DATABASE_URL no configurada en .env"
+          if ! grep -q "POSTGRES_DSN" .env; then
+            echo "[restore-drill] WARNING: POSTGRES_DSN not found in .env"
           fi
-          echo "✓ .env.example copiado a .env"
+          echo "[restore-drill] .env.example copied to .env"
 
-      # ============================================================================
-      # INFRASTRUCTURE: Levantar BD y Redis
-      # ============================================================================
-      - name: Start infrastructure (DB + Redis)
+      - name: Pre-flight validation
         run: |
-          echo "🐳 Iniciando PostgreSQL y Redis..."
-          docker compose up --build -d db redis
+          echo "[restore-drill] Running pre-flight validation"
+          echo "[restore-drill] Ref: $GITHUB_REF"
+          echo "[restore-drill] Commit: $GITHUB_SHA"
 
-          until docker compose exec -T db pg_isready -U $DB_USER > /dev/null 2>&1; do
-            echo "⏳ Esperando a que PostgreSQL esté listo..."
-            sleep 2
-          done
-          echo "✓ PostgreSQL y Redis listos"
-
-      - name: Apply database migrations
-        run: |
-          echo "🔄 Aplicando migraciones..."
-          docker compose run --rm migrate
-          echo "✓ Migraciones aplicadas"
-
-      # ============================================================================
-      # START SERVICES: Levantar API y worker
-      # ============================================================================
-      - name: Start API and worker services
-        run: |
-          echo "🚀 Iniciando API y worker..."
-          docker compose up --build -d api worker
-
-          sleep 5
-          until curl -f -s http://localhost:$API_HOST_PORT/health > /dev/null 2>&1; do
-            echo "⏳ Esperando a que API esté lista..."
-            sleep 2
-          done
-          echo "✓ API y worker iniciados"
-
-      # ============================================================================
-      # SEED DATA: Generar datos de prueba
-      # ============================================================================
-      - name: Seed database with test data
-        run: |
-          echo "🌱 Sembrando datos de prueba..."
-          set +e
-          docker compose run --rm api python scripts/smoke_stack.py \
-            --base-url http://api:$API_HOST_PORT | tee artifacts/seed-smoke.txt
-
-          SEED_EXIT=${PIPESTATUS[0]}
-          set -e
-          if [ $SEED_EXIT -ne 0 ]; then
-            echo "⚠️ ADVERTENCIA: Seed falló, pero continuamos con el restore drill"
-            echo "Esto puede ser por indisponibilidad del proveedor externo (INE)"
-          fi
-          echo "✓ Seed completado (o continuamos a pesar del fallo)"
-
-      # ============================================================================
-      # BACKUP: Crear dump de PostgreSQL
-      # ============================================================================
-      - name: Create database backup
-        run: |
-          echo "💾 Creando backup de PostgreSQL..."
-          docker compose exec -T db pg_dump \
-            -U $DB_USER \
-            -d $DB_NAME \
-            -Fc \
-            -f /tmp/${DB_NAME}_ci.dump
-
-          docker compose cp db:/tmp/${DB_NAME}_ci.dump backups/${DB_NAME}_ci.dump
-
-          DUMP_SIZE=$(du -h backups/${DB_NAME}_ci.dump | cut -f1)
-          echo "✓ Backup creado: $DUMP_SIZE"
-
-      # ============================================================================
-      # RESTORE: Ejecutar el drill de restauración
-      # ============================================================================
-      - name: Run database restore drill
-        shell: bash
-        run: |
-          echo "🔧 Ejecutando restore drill..."
-
-          if [ -f ./scripts/restore_drill.ps1 ]; then
-            pwsh ./scripts/restore_drill.ps1 \
-              -BackupPath "backups/${DB_NAME}_ci.dump" \
-              -BaseUrl "http://localhost:$API_HOST_PORT"
-          else
-            echo "⚠️ restore_drill.ps1 no encontrado, verificar ruta"
+          if [ ! -f ".env.example" ]; then
+            echo "[restore-drill] ERROR: .env.example not found"
             exit 1
           fi
 
-          echo "✓ Restore drill completado"
+          if [ ! -f "docker-compose.yml" ]; then
+            echo "[restore-drill] ERROR: docker-compose.yml not found"
+            exit 1
+          fi
 
-      # ============================================================================
-      # VERIFICATION: Validar restauración
-      # ============================================================================
+          if [ ! -f "./scripts/restore_drill.ps1" ]; then
+            echo "[restore-drill] ERROR: scripts/restore_drill.ps1 not found"
+            exit 1
+          fi
+
+          echo "[restore-drill] Pre-flight validation OK"
+
+      - name: Setup environment variables
+        run: |
+          echo "WORKFLOW_START=$(date +%s)" >> "$GITHUB_ENV"
+
+          if [ "$GITHUB_REF" = "refs/heads/main" ] || [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            echo "ENVIRONMENT=production" >> "$GITHUB_ENV"
+            echo "PROD_MODE=true" >> "$GITHUB_ENV"
+            echo "LOG_LEVEL=INFO" >> "$GITHUB_ENV"
+            echo "[restore-drill] Production mode detected"
+          else
+            echo "ENVIRONMENT=staging" >> "$GITHUB_ENV"
+            echo "PROD_MODE=false" >> "$GITHUB_ENV"
+            echo "LOG_LEVEL=DEBUG" >> "$GITHUB_ENV"
+            echo "[restore-drill] Staging/development mode detected"
+          fi
+
+      - name: Start infrastructure (DB + Redis)
+        run: |
+          echo "[restore-drill] Starting PostgreSQL and Redis"
+          docker compose up --build -d db redis
+
+          until docker compose exec -T db pg_isready -U "$DB_USER" > /dev/null 2>&1; do
+            echo "[restore-drill] Waiting for PostgreSQL"
+            sleep 2
+          done
+          echo "[restore-drill] PostgreSQL and Redis ready"
+
+      - name: Apply database migrations
+        run: |
+          echo "[restore-drill] Applying migrations"
+          docker compose run --rm migrate
+          echo "[restore-drill] Migrations applied"
+
+      - name: Start API and worker services
+        run: |
+          echo "[restore-drill] Starting API and worker"
+          docker compose up --build -d api worker
+
+          sleep 5
+          until curl -f -s "http://localhost:$API_HOST_PORT/health" > /dev/null 2>&1; do
+            echo "[restore-drill] Waiting for API"
+            sleep 2
+          done
+          echo "[restore-drill] API and worker ready"
+
+      - name: Seed database with test data
+        run: |
+          echo "[restore-drill] Seeding test data"
+          set +e
+          docker compose run --rm api python scripts/smoke_stack.py \
+            --base-url "http://api:$API_HOST_PORT" | tee artifacts/seed-smoke.txt
+
+          SEED_EXIT=${PIPESTATUS[0]}
+          set -e
+
+          if [ "$SEED_EXIT" -ne 0 ]; then
+            echo "[restore-drill] WARNING: seed failed, continuing with restore drill"
+            echo "[restore-drill] This can happen if the upstream provider is unavailable"
+          fi
+
+          echo "[restore-drill] Seed step completed"
+
+      - name: Capture restore validation baselines
+        run: |
+          echo "[restore-drill] Capturing validation baselines"
+
+          BASELINE_INGESTION_ROWS=$(docker compose exec -T db psql -U "$DB_USER" -d "$DB_NAME" -t -A -c "SELECT COUNT(*) FROM ingestion_raw;")
+          BASELINE_NORMALIZED_ROWS=$(docker compose exec -T db psql -U "$DB_USER" -d "$DB_NAME" -t -A -c "SELECT COUNT(*) FROM ine_series_normalized;")
+          BASELINE_CATALOG_ROWS=$(docker compose exec -T db psql -U "$DB_USER" -d "$DB_NAME" -t -A -c "SELECT COUNT(*) FROM ine_tables_catalog;")
+
+          REQUESTED_MIN_INGESTION=${{ github.event.inputs.min_ingestion_rows || '0' }}
+          REQUESTED_MIN_NORMALIZED=${{ github.event.inputs.min_normalized_rows || '0' }}
+
+          EFFECTIVE_MIN_INGESTION=$BASELINE_INGESTION_ROWS
+          if [ "$REQUESTED_MIN_INGESTION" -gt "$EFFECTIVE_MIN_INGESTION" ]; then
+            EFFECTIVE_MIN_INGESTION=$REQUESTED_MIN_INGESTION
+          fi
+
+          EFFECTIVE_MIN_NORMALIZED=$BASELINE_NORMALIZED_ROWS
+          if [ "$REQUESTED_MIN_NORMALIZED" -gt "$EFFECTIVE_MIN_NORMALIZED" ]; then
+            EFFECTIVE_MIN_NORMALIZED=$REQUESTED_MIN_NORMALIZED
+          fi
+
+          echo "RESTORE_BASELINE_INGESTION_ROWS=$BASELINE_INGESTION_ROWS" >> "$GITHUB_ENV"
+          echo "RESTORE_BASELINE_NORMALIZED_ROWS=$BASELINE_NORMALIZED_ROWS" >> "$GITHUB_ENV"
+          echo "RESTORE_BASELINE_CATALOG_ROWS=$BASELINE_CATALOG_ROWS" >> "$GITHUB_ENV"
+          echo "RESTORE_MIN_INGESTION_ROWS=$EFFECTIVE_MIN_INGESTION" >> "$GITHUB_ENV"
+          echo "RESTORE_MIN_NORMALIZED_ROWS=$EFFECTIVE_MIN_NORMALIZED" >> "$GITHUB_ENV"
+          echo "RESTORE_MIN_CATALOG_ROWS=$BASELINE_CATALOG_ROWS" >> "$GITHUB_ENV"
+
+          if [ "$BASELINE_NORMALIZED_ROWS" -gt 0 ]; then
+            echo "RESTORE_FUNCTIONAL_OPERATION_CODE=22" >> "$GITHUB_ENV"
+            echo "RESTORE_MIN_FUNCTIONAL_SERIES_TOTAL=1" >> "$GITHUB_ENV"
+          else
+            echo "RESTORE_FUNCTIONAL_OPERATION_CODE=" >> "$GITHUB_ENV"
+            echo "RESTORE_MIN_FUNCTIONAL_SERIES_TOTAL=0" >> "$GITHUB_ENV"
+          fi
+
+          echo "[restore-drill] Baseline ingestion_raw: $BASELINE_INGESTION_ROWS"
+          echo "[restore-drill] Baseline ine_series_normalized: $BASELINE_NORMALIZED_ROWS"
+          echo "[restore-drill] Baseline ine_tables_catalog: $BASELINE_CATALOG_ROWS"
+          echo "[restore-drill] Effective ingestion threshold: $EFFECTIVE_MIN_INGESTION"
+          echo "[restore-drill] Effective normalized threshold: $EFFECTIVE_MIN_NORMALIZED"
+
+      - name: Create database backup
+        run: |
+          echo "[restore-drill] Creating PostgreSQL backup"
+          docker compose exec -T db pg_dump \
+            -U "$DB_USER" \
+            -d "$DB_NAME" \
+            -Fc \
+            -f "/tmp/${DB_NAME}_ci.dump"
+
+          docker compose cp "db:/tmp/${DB_NAME}_ci.dump" "backups/${DB_NAME}_ci.dump"
+          BACKUP_SIZE=$(du -h "backups/${DB_NAME}_ci.dump" | cut -f1)
+          echo "[restore-drill] Backup created: $BACKUP_SIZE"
+
+      - name: Run database restore drill
+        shell: bash
+        run: |
+          echo "[restore-drill] Running restore drill"
+          pwsh ./scripts/restore_drill.ps1 \
+            -BackupPath "backups/${DB_NAME}_ci.dump" \
+            -BaseUrl "http://localhost:$API_HOST_PORT"
+          echo "[restore-drill] Restore drill completed"
+
       - name: Verify API health post-restore
         run: |
-          echo "🏥 Verificando salud de la API..."
+          echo "[restore-drill] Verifying API health post-restore"
+          MAX_RETRIES=5
+          RETRY_COUNT=0
+          HEALTH_STATUS=000
 
-          curl -s http://localhost:$API_HOST_PORT/health | tee artifacts/health-check.json
-          curl -s http://localhost:$API_HOST_PORT/health/ready | tee artifacts/health-ready.json
+          while [ "$RETRY_COUNT" -lt "$MAX_RETRIES" ]; do
+            HEALTH_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:$API_HOST_PORT/health")
 
-          echo "✓ API respondiendo correctamente"
+            if [ "$HEALTH_STATUS" = "200" ]; then
+              echo "[restore-drill] Health check OK ($HEALTH_STATUS)"
+              curl -s "http://localhost:$API_HOST_PORT/health" | tee artifacts/health-check.json
+              break
+            fi
+
+            RETRY_COUNT=$((RETRY_COUNT + 1))
+            if [ "$RETRY_COUNT" -lt "$MAX_RETRIES" ]; then
+              echo "[restore-drill] Retrying health check ($RETRY_COUNT/$MAX_RETRIES)"
+              sleep 3
+            fi
+          done
+
+          if [ "$HEALTH_STATUS" != "200" ]; then
+            echo "[restore-drill] ERROR: health check failed after $MAX_RETRIES attempts"
+            exit 1
+          fi
+
+          READY_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:$API_HOST_PORT/health/ready")
+          curl -s "http://localhost:$API_HOST_PORT/health/ready" | tee artifacts/health-ready.json
+
+          if [ "$READY_STATUS" != "200" ]; then
+            echo "[restore-drill] WARNING: readiness check returned $READY_STATUS"
+          else
+            echo "[restore-drill] Readiness check OK ($READY_STATUS)"
+          fi
 
       - name: Verify data integrity post-restore
         run: |
-          echo "✅ Verificando integridad de datos..."
+          echo "[restore-drill] Verifying data integrity"
 
           docker compose run --rm api python scripts/verify_restore.py \
             --base-url "http://api:$API_HOST_PORT" \
             --postgres-dsn "postgresql://$DB_USER:$DB_PASSWORD@$DB_HOST:$DB_PORT/$DB_NAME" \
-            --min-ingestion-rows "${{ github.event.inputs.min_ingestion_rows || '100000' }}" \
-            --min-normalized-rows "${{ github.event.inputs.min_normalized_rows || '50000' }}" | \
+            --min-ingestion-rows "$RESTORE_MIN_INGESTION_ROWS" \
+            --min-normalized-rows "$RESTORE_MIN_NORMALIZED_ROWS" \
+            --min-catalog-rows "$RESTORE_MIN_CATALOG_ROWS" \
+            --expected-alembic-version "$EXPECTED_ALEMBIC_VERSION" \
+            --functional-operation-code "$RESTORE_FUNCTIONAL_OPERATION_CODE" \
+            --min-functional-series-total "$RESTORE_MIN_FUNCTIONAL_SERIES_TOTAL" | \
             tee artifacts/verify-restore.txt
 
-          if [ ${PIPESTATUS[0]} -ne 0 ]; then
-            echo "❌ FALLO en verificación de integridad"
+          if [ "${PIPESTATUS[0]}" -ne 0 ]; then
+            echo "[restore-drill] ERROR: integrity verification failed"
             exit 1
           fi
-          echo "✓ Datos restaurados correctamente"
 
-      # ============================================================================
-      # DIAGNOSTICS: Capturar estado del sistema
-      # ============================================================================
+          echo "[restore-drill] Data verification completed"
+
       - name: Capture Docker Compose status
         if: always()
         run: |
-          echo "📋 Estado de servicios Docker:"
+          echo "[restore-drill] Capturing Docker Compose status"
           docker compose ps | tee artifacts/compose-ps.txt
 
       - name: Capture service logs
         if: always()
         run: |
-          echo "📜 Capturando logs de servicios..."
-
+          echo "[restore-drill] Capturing service logs"
           docker compose logs --no-color api 2>&1 | tee artifacts/api.log || true
           docker compose logs --no-color worker 2>&1 | tee artifacts/worker.log || true
           docker compose logs --no-color migrate 2>&1 | tee artifacts/migrate.log || true
           docker compose logs --no-color db 2>&1 | tee artifacts/db.log || true
           docker compose logs --no-color redis 2>&1 | tee artifacts/redis.log || true
 
-          echo "✓ Logs capturados"
-
       - name: Capture system diagnostics
         if: always()
         run: |
-          echo "🔍 Diagnósticos del sistema:"
+          echo "[restore-drill] Capturing system diagnostics"
+          {
+            echo "=== Docker Images ==="
+            docker images
+            echo
+            echo "=== Disk Usage ==="
+            df -h
+            echo
+            echo "=== Network Inspect ==="
+            docker network ls || true
+          } | tee artifacts/diagnostics.txt
 
-          echo "=== Docker Images ===" | tee artifacts/diagnostics.txt
-          docker images | tee -a artifacts/diagnostics.txt
+      - name: Calculate and log performance metrics
+        if: always()
+        run: |
+          echo "[restore-drill] Calculating performance metrics"
+          WORKFLOW_END=$(date +%s)
+          WORKFLOW_START_VALUE=${WORKFLOW_START:-$WORKFLOW_END}
+          WORKFLOW_DURATION=$((WORKFLOW_END - WORKFLOW_START_VALUE))
+          BACKUP_SIZE=$(du -h "backups/${DB_NAME}_ci.dump" 2>/dev/null | cut -f1 || echo "N/A")
+          INGESTION_ROWS=$(grep -oE 'ingestion_raw=[0-9]+' artifacts/verify-restore.txt 2>/dev/null | head -n1 | cut -d= -f2 || echo "N/A")
+          NORMALIZED_ROWS=$(grep -oE 'ine_series_normalized=[0-9]+' artifacts/verify-restore.txt 2>/dev/null | head -n1 | cut -d= -f2 || echo "N/A")
+          CATALOG_ROWS=$(grep -oE 'ine_tables_catalog=[0-9]+' artifacts/verify-restore.txt 2>/dev/null | head -n1 | cut -d= -f2 || echo "N/A")
 
-          echo "=== Disk Usage ===" | tee -a artifacts/diagnostics.txt
-          df -h | tee -a artifacts/diagnostics.txt
+          cat > artifacts/performance-metrics.txt <<EOF
+          RESTORE DRILL PERFORMANCE METRICS
+          workflow_duration_seconds=$WORKFLOW_DURATION
+          backup_size=$BACKUP_SIZE
+          ingestion_rows=$INGESTION_ROWS
+          normalized_rows=$NORMALIZED_ROWS
+          catalog_rows=$CATALOG_ROWS
+          environment=${ENVIRONMENT:-unknown}
+          timestamp=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+          EOF
 
-          echo "=== Network Inspect ===" | tee -a artifacts/diagnostics.txt
-          docker network ls | tee -a artifacts/diagnostics.txt || true
+          cat artifacts/performance-metrics.txt
 
-      # ============================================================================
-      # UPLOAD: Subir artefactos
-      # ============================================================================
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "[restore-drill] Preparing failure notification"
+          WORKFLOW_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          SHORT_SHA=$(echo "$GITHUB_SHA" | cut -c1-7)
+
+          cat > artifacts/failure-notification.txt <<EOF
+          RESTORE DRILL FAILED
+          repository=${{ github.repository }}
+          ref=$GITHUB_REF
+          commit=$SHORT_SHA
+          run_number=${{ github.run_number }}
+          workflow_url=$WORKFLOW_URL
+          suggested_actions=review_logs,inspect_services,escalate_if_needed
+          EOF
+
+          cat artifacts/failure-notification.txt
+
       - name: Upload restore drill artifacts
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: restore-drill-artifacts-${{ github.run_number }}
           path: |
@@ -217,27 +348,44 @@ jobs:
           retention-days: 7
           if-no-files-found: warn
 
-      # ============================================================================
-      # CLEANUP: Derribar infraestructura
-      # ============================================================================
       - name: Tear down Docker Compose stack
         if: always()
         run: |
-          echo "🧹 Limpiando infraestructura..."
+          echo "[restore-drill] Tearing down Docker Compose stack"
           docker compose down -v --remove-orphans
-          echo "✓ Stack desmontado, volúmenes eliminados"
+          echo "[restore-drill] Stack removed"
 
-      # ============================================================================
-      # SUMMARY: Resumen de ejecución
-      # ============================================================================
       - name: Print execution summary
         if: always()
         run: |
-          echo "════════════════════════════════════════════════════════════"
-          echo "✅ RESTORE DRILL - RESUMEN DE EJECUCIÓN"
-          echo "════════════════════════════════════════════════════════════"
-          echo "Run ID: ${{ github.run_number }}"
-          echo "Timestamp: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-          echo "Artefactos disponibles en: artifacts/"
-          echo "Retention: 7 días"
-          echo "════════════════════════════════════════════════════════════"
+          if grep -q "\[restore-verify\] verificacion completada" artifacts/verify-restore.txt 2>/dev/null; then
+            VERIFY_STATUS="PASS"
+          elif [ -f artifacts/verify-restore.txt ]; then
+            VERIFY_STATUS="WARNINGS"
+          else
+            VERIFY_STATUS="FAILED"
+          fi
+
+          OVERALL_STATUS="${{ job.status }}"
+          BRANCH_NAME="${GITHUB_REF_NAME:-unknown}"
+          SHORT_SHA=$(echo "$GITHUB_SHA" | cut -c1-7)
+
+          cat <<EOF
+
+          ============================================================
+          RESTORE DRILL EXECUTION SUMMARY
+          ============================================================
+          overall_status=$OVERALL_STATUS
+          integrity_verification=$VERIFY_STATUS
+          run_number=${{ github.run_number }}
+          timestamp=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+          environment=${ENVIRONMENT:-unknown}
+          branch=$BRANCH_NAME
+          commit=$SHORT_SHA
+          artifacts_retention_days=7
+          workflow_url=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          baseline_ingestion_rows=${RESTORE_BASELINE_INGESTION_ROWS:-n/a}
+          baseline_normalized_rows=${RESTORE_BASELINE_NORMALIZED_ROWS:-n/a}
+          baseline_catalog_rows=${RESTORE_BASELINE_CATALOG_ROWS:-n/a}
+          ============================================================
+          EOF

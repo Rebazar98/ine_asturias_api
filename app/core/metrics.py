@@ -28,10 +28,30 @@ PROVIDER_REQUEST_DURATION_SECONDS = Histogram(
     "Provider request latency.",
     ["provider", "endpoint_family"],
 )
+PROVIDER_RETRIES_TOTAL = Counter(
+    "ine_asturias_provider_retries_total",
+    "Provider retries performed after retryable failures.",
+    ["provider", "endpoint_family", "reason"],
+)
+PROVIDER_CIRCUIT_BREAKER_TRANSITIONS_TOTAL = Counter(
+    "ine_asturias_provider_circuit_breaker_transitions_total",
+    "Circuit breaker state transitions for providers.",
+    ["provider", "previous_state", "new_state"],
+)
 PROVIDER_CACHE_HITS_TOTAL = Counter(
     "ine_asturias_provider_cache_hits_total",
     "Provider cache hits.",
     ["provider", "scope"],
+)
+AUTH_FAILURES_TOTAL = Counter(
+    "ine_asturias_auth_failures_total",
+    "Authentication failures by reason.",
+    ["reason"],
+)
+RATE_LIMIT_REJECTIONS_TOTAL = Counter(
+    "ine_asturias_rate_limit_rejections_total",
+    "Requests rejected by rate limiting.",
+    ["policy", "auth_mode"],
 )
 ANALYTICAL_FLOW_TOTAL = Counter(
     "ine_asturias_analytical_flow_total",
@@ -95,6 +115,12 @@ JOB_EVENTS_TOTAL = Counter(
     "Job lifecycle events.",
     ["job_type", "status"],
 )
+JOB_DURATION_SECONDS = Histogram(
+    "ine_asturias_job_duration_seconds",
+    "Background and inline job duration.",
+    ["job_type", "outcome"],
+    buckets=(0.1, 0.25, 0.5, 1, 2, 5, 10, 30, 60, 120, 300),
+)
 WORKER_HEARTBEAT_TIMESTAMP = Gauge(
     "ine_asturias_worker_heartbeat_timestamp",
     "Latest worker heartbeat timestamp.",
@@ -154,8 +180,34 @@ def record_provider_request(
     ).observe(duration_seconds)
 
 
+def record_provider_retry(provider: str, endpoint_family: str, reason: str) -> None:
+    PROVIDER_RETRIES_TOTAL.labels(
+        provider=provider,
+        endpoint_family=endpoint_family,
+        reason=reason,
+    ).inc()
+
+
+def record_provider_circuit_breaker_transition(
+    provider: str, previous_state: str, new_state: str
+) -> None:
+    PROVIDER_CIRCUIT_BREAKER_TRANSITIONS_TOTAL.labels(
+        provider=provider,
+        previous_state=previous_state,
+        new_state=new_state,
+    ).inc()
+
+
 def record_provider_cache_hit(provider: str, scope: str) -> None:
     PROVIDER_CACHE_HITS_TOTAL.labels(provider=provider, scope=scope).inc()
+
+
+def record_auth_failure(reason: str) -> None:
+    AUTH_FAILURES_TOTAL.labels(reason=reason).inc()
+
+
+def record_rate_limit_rejection(policy: str, auth_mode: str) -> None:
+    RATE_LIMIT_REJECTIONS_TOTAL.labels(policy=policy, auth_mode=auth_mode).inc()
 
 
 def record_analytical_flow(
@@ -224,6 +276,11 @@ def record_catalog_event(event: str) -> None:
 
 def record_job_event(job_type: str, status: str) -> None:
     JOB_EVENTS_TOTAL.labels(job_type=job_type, status=status).inc()
+
+
+def record_job_duration(job_type: str, outcome: str, duration_seconds: float) -> None:
+    if duration_seconds >= 0:
+        JOB_DURATION_SECONDS.labels(job_type=job_type, outcome=outcome).observe(duration_seconds)
 
 
 def record_worker_heartbeat(queue_name: str) -> None:

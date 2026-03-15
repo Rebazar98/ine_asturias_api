@@ -13,7 +13,9 @@ from redis.asyncio import Redis
 from app.core.cache import InMemoryTTLCache, LayeredCache, RedisTTLCache
 from app.core.jobs import RedisJobStore
 from app.core.logging import configure_logging, get_logger
+from app.core.metrics import record_job_duration
 from app.core.redis import redis_settings_from_url
+from app.core.resilience import AsyncCircuitBreaker
 from app.db import dispose_db, init_db, session_scope
 from app.repositories.analytics_snapshots import AnalyticalSnapshotRepository
 from app.repositories.catalog import TableCatalogRepository
@@ -42,6 +44,7 @@ async def run_operation_asturias_job(
     resolver: AsturiasResolver = ctx["resolver"]
 
     op_code = payload["operation_code"]
+    started_at = perf_counter()
 
     async def report_progress(progress: dict[str, Any]) -> None:
         await job_store.update_progress(job_id, **progress)
@@ -86,6 +89,11 @@ async def run_operation_asturias_job(
             )
 
         await job_store.complete_job(job_id, result)
+        record_job_duration(
+            "operation_asturias_ingestion",
+            "completed",
+            perf_counter() - started_at,
+        )
         logger.info(
             "asturias_worker_job_completed",
             extra={"job_id": job_id, "operation_code": op_code, "app_env": settings.app_env},
@@ -93,6 +101,11 @@ async def run_operation_asturias_job(
         return result
     except (AsturiasResolutionError, INEClientError) as exc:
         await job_store.fail_job(job_id, exc.detail)
+        record_job_duration(
+            "operation_asturias_ingestion",
+            "failed",
+            perf_counter() - started_at,
+        )
         logger.warning(
             "asturias_worker_job_failed",
             extra={"job_id": job_id, "operation_code": op_code, "error": exc.detail},
@@ -112,6 +125,11 @@ async def run_operation_asturias_job(
             }
         )
         await job_store.fail_job(job_id, detail)
+        record_job_duration(
+            "operation_asturias_ingestion",
+            "failed",
+            perf_counter() - started_at,
+        )
     return None
 
 
@@ -177,6 +195,11 @@ async def run_municipality_report_job(
 
         payload_result = report.model_dump(mode="json")
         await job_store.complete_job(job_id, payload_result)
+        record_job_duration(
+            "territorial_municipality_report",
+            "completed",
+            perf_counter() - started_at,
+        )
         logger.info(
             "municipality_report_worker_job_completed",
             extra={
@@ -206,6 +229,11 @@ async def run_municipality_report_job(
                 "error": str(exc),
             },
         )
+        record_job_duration(
+            "territorial_municipality_report",
+            "failed",
+            perf_counter() - started_at,
+        )
     return None
 
 
@@ -234,7 +262,18 @@ async def startup(ctx: dict[str, Any]) -> None:
             namespace="provider-cache",
         ),
     )
-    ine_client = INEClientService(http_client=http_client, settings=settings, cache=cache)
+    ine_client = INEClientService(
+        http_client=http_client,
+        settings=settings,
+        cache=cache,
+        circuit_breaker=AsyncCircuitBreaker(
+            provider="ine",
+            fail_max=settings.provider_circuit_breaker_failures,
+            reset_timeout_seconds=settings.provider_circuit_breaker_recovery_seconds,
+            half_open_sample_size=settings.provider_circuit_breaker_half_open_sample_size,
+            success_threshold=settings.provider_circuit_breaker_success_threshold,
+        ),
+    )
     resolver = AsturiasResolver(ine_client=ine_client, cache=cache)
 
     ctx["settings"] = settings

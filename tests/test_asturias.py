@@ -171,6 +171,12 @@ def test_asturias_endpoint_accepts_manual_override_and_returns_partial_results(
     dummy_ingestion_repo,
     dummy_series_repo,
 ):
+    """
+    Validate partial results when one upstream table keeps returning 503.
+
+    The INE client now retries retryable upstream failures, so the failing table
+    is requested three times before the endpoint returns a partial-success payload.
+    """
     called_paths = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -206,9 +212,14 @@ def test_asturias_endpoint_accepts_manual_override_and_returns_partial_results(
     assert payload["errors"][0]["table_id"] == "502"
     assert len(dummy_series_repo.items) == 1
     assert dummy_series_repo.items[0].table_id == "501"
+    assert called_paths.count("/TABLAS_OPERACION/OP_AST") == 1
+    assert called_paths.count("/DATOS_TABLA/501") == 1
+    assert called_paths.count("/DATOS_TABLA/502") == 3
     assert called_paths == [
         "/TABLAS_OPERACION/OP_AST",
         "/DATOS_TABLA/501",
+        "/DATOS_TABLA/502",
+        "/DATOS_TABLA/502",
         "/DATOS_TABLA/502",
     ]
 

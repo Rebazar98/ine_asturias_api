@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any, Literal
 
 from arq.connections import ArqRedis
@@ -9,6 +10,8 @@ from fastapi.responses import JSONResponse
 
 from app.core.jobs import BaseJobStore
 from app.core.logging import get_logger
+from app.core.metrics import record_job_duration
+from app.core.rate_limit import RateLimitPolicy
 from app.dependencies import (
     get_arq_pool,
     get_asturias_resolver,
@@ -19,12 +22,16 @@ from app.dependencies import (
     get_series_repository,
     get_table_catalog_repository,
     get_territorial_repository,
+    build_rate_limit_dependency,
     require_api_key,
 )
 from app.repositories.catalog import TableCatalogRepository
 from app.repositories.ingestion import IngestionRepository
 from app.repositories.series import SeriesRepository
-from app.repositories.territorial import INE_TERRITORIAL_SOURCE_SYSTEM, TerritorialRepository
+from app.repositories.territorial import (
+    INE_TERRITORIAL_SOURCE_SYSTEM,
+    TerritorialRepository,
+)
 from app.schemas import (
     BackgroundJobAcceptedResponse,
     BackgroundJobStatusResponse,
@@ -46,6 +53,20 @@ router = APIRouter(tags=["ine"], dependencies=[Depends(require_api_key)])
 logger = get_logger("app.api.routes_ine")
 DEV_MAX_TABLES_DEFAULT = 3
 BACKGROUND_JOB_TYPE = "operation_asturias_ingestion"
+INE_SERIES_RATE_LIMIT = build_rate_limit_dependency(
+    RateLimitPolicy(
+        name="ine_series",
+        public_requests_per_minute=50,
+        authenticated_requests_per_minute=1000,
+    )
+)
+INE_OPERATION_RATE_LIMIT = build_rate_limit_dependency(
+    RateLimitPolicy(
+        name="ine_operation",
+        public_requests_per_minute=10,
+        authenticated_requests_per_minute=1000,
+    )
+)
 
 
 @router.get(
@@ -88,6 +109,7 @@ async def get_operation_variables(
     op_code: str,
     ine_client: INEClientService = Depends(get_ine_client_service),
     ingestion_repo: IngestionRepository = Depends(get_ingestion_repository),
+    _: None = Depends(INE_OPERATION_RATE_LIMIT),
 ) -> JSONPayload:
     payload = await ine_client.get_operation_variables(op_code)
     await ingestion_repo.save_raw(
@@ -111,6 +133,7 @@ async def get_variable_values(
     variable_id: str,
     ine_client: INEClientService = Depends(get_ine_client_service),
     ingestion_repo: IngestionRepository = Depends(get_ingestion_repository),
+    _: None = Depends(INE_OPERATION_RATE_LIMIT),
 ) -> JSONPayload:
     payload = await ine_client.get_variable_values(op_code, variable_id)
     await ingestion_repo.save_raw(
@@ -191,6 +214,7 @@ async def list_normalized_ine_series(
     period_to: str | None = Query(default=None),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
+    _: None = Depends(INE_SERIES_RATE_LIMIT),
     series_repo: SeriesRepository = Depends(get_series_repository),
     territorial_repo: TerritorialRepository = Depends(get_territorial_repository),
 ) -> INESeriesListResponse:
@@ -280,6 +304,7 @@ async def get_asturias_operation_data(
     max_tables: int | None = Query(default=None, ge=1, le=25),
     background: bool | None = Query(default=None),
     skip_known_no_data: bool = Query(default=False),
+    _: None = Depends(INE_OPERATION_RATE_LIMIT),
     settings: Settings = Depends(get_settings),
     ine_client: INEClientService = Depends(get_ine_client_service),
     resolver: AsturiasResolver = Depends(get_asturias_resolver),
@@ -424,6 +449,8 @@ async def _run_asturias_operation_job_inline(
     operation_service: INEOperationIngestionService,
     job_id: str,
 ) -> None:
+    started_at = time.perf_counter()
+
     async def report_progress(progress: dict[str, Any]) -> None:
         await job_store.update_progress(job_id, **progress)
 
@@ -456,8 +483,10 @@ async def _run_asturias_operation_job_inline(
             progress_reporter=report_progress,
         )
         await job_store.complete_job(job_id, payload)
+        record_job_duration(BACKGROUND_JOB_TYPE, "completed", time.perf_counter() - started_at)
     except (AsturiasResolutionError, INEClientError) as exc:
         await job_store.fail_job(job_id, exc.detail)
+        record_job_duration(BACKGROUND_JOB_TYPE, "failed", time.perf_counter() - started_at)
     except Exception as exc:
         detail = (
             exc.args[0]
@@ -469,6 +498,7 @@ async def _run_asturias_operation_job_inline(
             }
         )
         await job_store.fail_job(job_id, detail)
+        record_job_duration(BACKGROUND_JOB_TYPE, "failed", time.perf_counter() - started_at)
 
 
 def _resolve_max_tables(max_tables: int | None, settings: Settings) -> int | None:
