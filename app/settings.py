@@ -25,8 +25,15 @@ class Settings(BaseSettings):
         default="https://www.cartociudad.es/geocoder/api/geocoder",
         alias="CARTOCIUDAD_BASE_URL",
     )
+    catastro_base_url: str = Field(
+        default="https://www.catastro.hacienda.gob.es",
+        alias="CATASTRO_BASE_URL",
+    )
     ign_admin_snapshot_url: str | None = Field(default=None, alias="IGN_ADMIN_SNAPSHOT_URL")
     http_timeout_seconds: float = Field(default=15.0, alias="HTTP_TIMEOUT_SECONDS")
+    catastro_timeout_seconds: float = Field(
+        default=20.0, alias="CATASTRO_TIMEOUT_SECONDS", gt=0
+    )
     provider_total_timeout_seconds: float = Field(
         default=30.0, alias="PROVIDER_TOTAL_TIMEOUT_SECONDS", gt=0
     )
@@ -46,6 +53,10 @@ class Settings(BaseSettings):
     territorial_export_ttl_seconds: int = Field(
         default=86400, alias="TERRITORIAL_EXPORT_TTL_SECONDS", ge=0
     )
+    catastro_cache_ttl_seconds: int = Field(
+        default=604800, alias="CATASTRO_CACHE_TTL_SECONDS", ge=0
+    )
+    catastro_urbano_year: str | None = Field(default=None, alias="CATASTRO_URBANO_YEAR")
     max_concurrent_table_fetches: int = Field(
         default=3, alias="MAX_CONCURRENT_TABLE_FETCHES", ge=1, le=10
     )
@@ -80,6 +91,7 @@ class Settings(BaseSettings):
         "redis_url",
         "worker_metrics_url",
         "ign_admin_snapshot_url",
+        "catastro_urbano_year",
         mode="before",
     )
     @classmethod

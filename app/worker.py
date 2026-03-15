@@ -18,12 +18,14 @@ from app.core.redis import redis_settings_from_url
 from app.core.resilience import AsyncCircuitBreaker
 from app.db import dispose_db, init_db, session_scope
 from app.repositories.analytics_snapshots import AnalyticalSnapshotRepository
+from app.repositories.catastro_cache import CatastroMunicipalityAggregateCacheRepository
 from app.repositories.catalog import TableCatalogRepository
 from app.repositories.ingestion import IngestionRepository
 from app.repositories.series import SeriesRepository
 from app.repositories.territorial_export_artifacts import TerritorialExportArtifactRepository
 from app.repositories.territorial import TerritorialRepository
 from app.services.asturias_resolver import AsturiasResolutionError, AsturiasResolver
+from app.services.catastro_client import CatastroClientError, CatastroClientService
 from app.services.ine_client import INEClientError, INEClientService
 from app.services.ine_operation_ingestion import INEOperationIngestionService
 from app.services.territorial_analytics import (
@@ -264,19 +266,31 @@ async def run_territorial_export_job(
             territorial_repo = TerritorialRepository(session=session)
             series_repo = SeriesRepository(session=session)
             analytical_snapshot_repo = AnalyticalSnapshotRepository(session=session)
+            catastro_cache_repo = CatastroMunicipalityAggregateCacheRepository(session=session)
             artifact_repo = TerritorialExportArtifactRepository(session=session)
+            ingestion_repo = IngestionRepository(session=session)
             analytics_service = TerritorialAnalyticsService(
                 territorial_repo=territorial_repo,
                 series_repo=series_repo,
                 analytical_snapshot_repo=analytical_snapshot_repo,
                 analytical_snapshot_ttl_seconds=settings.analytical_snapshot_ttl_seconds,
             )
+            catastro_client = CatastroClientService(
+                http_client=ctx["http_client"],
+                settings=settings,
+                cache=ctx["cache"],
+                circuit_breaker=ctx["catastro_circuit_breaker"],
+            )
             export_service = TerritorialExportService(
                 territorial_repo=territorial_repo,
                 series_repo=series_repo,
                 analytics_service=analytics_service,
+                catastro_client=catastro_client,
+                catastro_cache_repo=catastro_cache_repo,
+                ingestion_repo=ingestion_repo,
                 artifact_repo=artifact_repo,
                 export_ttl_seconds=settings.territorial_export_ttl_seconds,
+                catastro_cache_ttl_seconds=settings.catastro_cache_ttl_seconds,
             )
             result = await export_service.build_export(
                 job_id=job_id,
@@ -330,6 +344,22 @@ async def run_territorial_export_job(
             },
         )
         return payload_result
+    except CatastroClientError as exc:
+        await job_store.fail_job(job_id, exc.detail)
+        record_job_duration(
+            TERRITORIAL_EXPORT_JOB_TYPE,
+            "failed",
+            perf_counter() - started_at,
+        )
+        logger.warning(
+            "territorial_export_worker_job_failed",
+            extra={
+                "job_id": job_id,
+                "unit_level": payload.get("unit_level"),
+                "code_value": payload.get("code_value"),
+                "error": exc.detail,
+            },
+        )
     except Exception as exc:
         logger.exception(
             "territorial_export_worker_job_unexpected_error",
@@ -394,6 +424,13 @@ async def startup(ctx: dict[str, Any]) -> None:
         ),
     )
     resolver = AsturiasResolver(ine_client=ine_client, cache=cache)
+    catastro_circuit_breaker = AsyncCircuitBreaker(
+        provider="catastro",
+        fail_max=settings.provider_circuit_breaker_failures,
+        reset_timeout_seconds=settings.provider_circuit_breaker_recovery_seconds,
+        half_open_sample_size=settings.provider_circuit_breaker_half_open_sample_size,
+        success_threshold=settings.provider_circuit_breaker_success_threshold,
+    )
 
     ctx["settings"] = settings
     ctx["redis"] = redis
@@ -402,6 +439,7 @@ async def startup(ctx: dict[str, Any]) -> None:
     ctx["cache"] = cache
     ctx["ine_client"] = ine_client
     ctx["resolver"] = resolver
+    ctx["catastro_circuit_breaker"] = catastro_circuit_breaker
     ctx["worker_id"] = f"{socket.gethostname()}:{settings.job_queue_name}"
     ctx["heartbeat_task"] = asyncio.create_task(
         _heartbeat_loop(

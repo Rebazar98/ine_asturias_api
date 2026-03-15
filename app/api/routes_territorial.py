@@ -55,6 +55,7 @@ from app.schemas import (
     TerritorialUnitSummaryResponse,
 )
 from app.services.cartociudad_geocoding import CartoCiudadGeocodingService
+from app.services.catastro_client import CatastroClientError
 from app.services.ign_admin_boundaries import (
     IGN_ADMIN_BOUNDARY_SOURCE,
     IGN_ADMIN_CATALOG_RESOURCE_KEY,
@@ -282,7 +283,10 @@ def _build_territorial_catalog_resources() -> list[TerritorialCatalogResourceRes
             category="territorial_jobs",
             method="POST",
             path="/territorios/export",
-            summary="Queue a multi-source territorial export bundle for a canonical territorial entity.",
+            summary=(
+                "Queue a multi-source territorial export bundle for a canonical territorial entity, "
+                "including opt-in Catastro municipality aggregates."
+            ),
             unit_levels=[
                 TERRITORIAL_UNIT_LEVEL_AUTONOMOUS_COMMUNITY,
                 TERRITORIAL_UNIT_LEVEL_MUNICIPALITY,
@@ -749,7 +753,12 @@ async def get_territorial_catalog(
             "intended_consumers": ["n8n", "agents", "programmatic_clients"],
             "raw_provider_contracts_exposed": False,
             "discovery_scope": "published_territorial_resources",
-            "official_sources": ["ine", "cartociudad", IGN_ADMIN_BOUNDARY_SOURCE],
+            "official_sources": [
+                "ine",
+                "cartociudad",
+                IGN_ADMIN_BOUNDARY_SOURCE,
+                "catastro_urbano",
+            ],
         },
     )
 
@@ -1100,6 +1109,22 @@ async def _run_territorial_export_job_inline(
                 "artifact_reused": result.summary.get("artifact_reused"),
                 "byte_size": result.summary.get("byte_size"),
             },
+        )
+    except CatastroClientError as exc:
+        logger.warning(
+            "territorial_export_inline_job_failed",
+            extra={
+                "job_id": job_id,
+                "unit_level": export_request.unit_level,
+                "code_value": export_request.code_value,
+                "error": exc.detail,
+            },
+        )
+        await job_store.fail_job(job_id, exc.detail)
+        record_job_duration(
+            TERRITORIAL_EXPORT_JOB_TYPE,
+            "failed",
+            perf_counter() - started_at,
         )
     except Exception as exc:
         logger.exception(

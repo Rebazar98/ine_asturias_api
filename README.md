@@ -73,6 +73,10 @@ Este script SOLO esta pensado para desarrollo local. Elimina la base persistente
 | `INE_BASE_URL` | Base URL del INE | `https://servicios.ine.es/wstempus/js/ES` |
 | `CARTOCIUDAD_BASE_URL` | Base URL del provider geografico CartoCiudad | `https://www.cartociudad.es/geocoder/api/geocoder` |
 | `IGN_ADMIN_SNAPSHOT_URL` | Snapshot versionable IGN/CNIG para carga administrativa directa | `https://.../recintos_municipales.zip` |
+| `CATASTRO_BASE_URL` | Base URL del Portal del Catastro para agregados municipales urbanos | `https://www.catastro.hacienda.gob.es` |
+| `CATASTRO_TIMEOUT_SECONDS` | Timeout individual para llamadas Catastro | `20` |
+| `CATASTRO_CACHE_TTL_SECONDS` | TTL de cache persistente para agregados municipales Catastro | `604800` |
+| `CATASTRO_URBANO_YEAR` | Ano de referencia fijo de Catastro Urbano; vacio = auto-discovery | `` |
 | `HTTP_TIMEOUT_SECONDS` | Timeout HTTP hacia el proveedor | `15` |
 | `PROVIDER_TOTAL_TIMEOUT_SECONDS` | Presupuesto total por llamada upstream incluyendo reintentos | `30` |
 | `HTTP_RETRY_MAX_ATTEMPTS` | Numero maximo de intentos HTTP por llamada upstream | `3` |
@@ -445,6 +449,7 @@ Contrato de `POST /territorios/export`:
 - `code_value`: codigo canonico interno de la entidad
 - `format`: fijo en `zip`
 - `include_providers`: lista opcional; por defecto `["territorial", "ine", "analytics"]`
+- `include_providers=["catastro"]` o combinado con otros providers activa Catastro Urbano municipal como provider opt-in
 
 Reglas operativas:
 
@@ -453,6 +458,8 @@ Reglas operativas:
 - el bundle se reutiliza mientras siga fresco en `territorial_export_artifacts`;
 - la expiracion se controla con `TERRITORIAL_EXPORT_TTL_SECONDS`;
 - si `analytics` no aplica al nivel pedido, el manifiesto lo marca como `applicable=false` y el export sigue siendo valido.
+- si `catastro` se pide para `autonomous_community`, el manifiesto lo marca como `applicable=false` y el export sigue siendo valido.
+- si `catastro` se pide para `municipality` y no existe cache valido ni respuesta correcta del upstream, el job termina en `failed`.
 
 Estructura del ZIP v1:
 
@@ -462,12 +469,22 @@ Estructura del ZIP v1:
 - `datasets/ine_series.ndjson`
 - `datasets/analytics_municipality_summary.json` cuando aplica
 - `datasets/analytics_municipality_report.json` cuando aplica
+- `datasets/catastro_municipality_aggregates.json` cuando `include_providers` incluye `catastro`
 
 Garantias del contrato:
 
 - `manifest.json` usa `source=internal.export.territorial_bundle`;
 - el bundle NO expone `geometry`, `centroid`, GeoJSON publico ni payloads raw de proveedor;
 - `ine_series` se exporta en `NDJSON` para soportar volumen y futuras fuentes heterogeneas;
+- `catastro` se mantiene como provider opt-in y solo aplica a `municipality` en v1;
+- el dataset Catastro v1 contiene agregados municipales urbanos oficiales y NO exporta inmuebles individuales, parcelas ni payload raw del proveedor;
+
+Trazabilidad y cache de Catastro v1:
+
+- cada fetch live de Catastro Urbano municipal se persiste en `ingestion_raw` con `source_type=catastro_urbano_municipality_aggregates`;
+- la reutilizacion operativa del provider se apoya en `catastro_municipality_aggregate_cache`;
+- el TTL del cache Catastro se controla con `CATASTRO_CACHE_TTL_SECONDS`;
+- `CATASTRO_URBANO_YEAR` permite fijar un ano concreto; si queda vacio, el adapter hace auto-discovery del ultimo ano disponible.
 - futuras fuentes como Catastro deben entrar como `provider` adicional y nuevos `datasets/*`, sin romper el manifiesto base ni el API publico.
 
 ## Contrato base de salidas analiticas
@@ -920,7 +937,7 @@ docker compose run --rm migrate
 curl http://127.0.0.1:8001/health
 curl http://127.0.0.1:8001/health/ready
 docker compose run --rm api python scripts/smoke_stack.py
-docker compose run --rm api python scripts/verify_restore.py --base-url http://api:8000 --min-ingestion-rows 1 --min-normalized-rows 1 --min-catalog-rows 1 --expected-alembic-version 0007_territorial_exports --functional-operation-code 22
+docker compose run --rm api python scripts/verify_restore.py --base-url http://api:8000 --min-ingestion-rows 1 --min-normalized-rows 1 --min-catalog-rows 1 --expected-alembic-version 0008_catastro_cache --functional-operation-code 22
 ```
 
 ### Regla operativa
@@ -1124,7 +1141,7 @@ Despues de restaurar la base en un entorno controlado:
 
 ```bash
 docker compose run --rm migrate
-docker compose run --rm api python scripts/verify_restore.py --base-url http://api:8000 --min-ingestion-rows 1 --min-catalog-rows 1 --expected-alembic-version 0007_territorial_exports --functional-operation-code 22
+docker compose run --rm api python scripts/verify_restore.py --base-url http://api:8000 --min-ingestion-rows 1 --min-catalog-rows 1 --expected-alembic-version 0008_catastro_cache --functional-operation-code 22
 ```
 
 La verificacion reutiliza `API_KEY` del entorno si existe o acepta `--api-key` para entornos protegidos como staging.

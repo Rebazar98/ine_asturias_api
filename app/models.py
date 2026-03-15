@@ -277,6 +277,34 @@ class TerritorialExportArtifact(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
 
 
+class CatastroMunicipalityAggregateCache(Base):
+    __tablename__ = "catastro_municipality_aggregate_cache"
+    __table_args__ = (
+        UniqueConstraint(
+            "provider_family",
+            "municipality_code",
+            "reference_year",
+            name="uq_catastro_municipality_aggregate_cache_scope",
+        ),
+        Index(
+            "ix_catastro_municipality_aggregate_cache_scope_expires",
+            "provider_family",
+            "municipality_code",
+            "reference_year",
+            "expires_at",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    provider_family: Mapped[str] = mapped_column(String(64), index=True)
+    municipality_code: Mapped[str] = mapped_column(String(128), index=True)
+    reference_year: Mapped[str] = mapped_column(String(8), index=True)
+    payload: Mapped[dict[str, Any] | list[Any]] = mapped_column(JSONB)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, default=dict)
+    cached_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
 class TerritorialUnit(Base):
     __tablename__ = "territorial_units"
     __table_args__ = (

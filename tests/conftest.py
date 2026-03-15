@@ -10,6 +10,8 @@ from fastapi.testclient import TestClient
 from app.core.cache import InMemoryTTLCache
 from app.dependencies import (
     get_analytical_snapshot_repository,
+    get_catastro_client_service,
+    get_catastro_municipality_cache_repository,
     get_ingestion_repository,
     get_ine_client_service,
     get_series_repository,
@@ -41,6 +43,164 @@ class DummyIngestionRepository:
     async def save_raw(self, **kwargs):
         self.records.append(kwargs)
         return len(self.records)
+
+
+class DummyCatastroMunicipalityAggregateCacheRepository:
+    def __init__(self) -> None:
+        self.rows: dict[tuple[str, str, str], dict] = {}
+        self.get_calls = 0
+        self.upsert_calls = 0
+        self._next_id = 1
+
+    async def get_fresh_payload(
+        self,
+        *,
+        provider_family: str,
+        municipality_code: str,
+        reference_year: str,
+        now: datetime | None = None,
+    ):
+        self.get_calls += 1
+        key = (provider_family, municipality_code, reference_year)
+        row = self.rows.get(key)
+        if row is None:
+            return None
+        lookup_time = now or datetime.now(timezone.utc)
+        if row["expires_at"] <= lookup_time:
+            return None
+        return deepcopy(row)
+
+    async def upsert_payload(
+        self,
+        *,
+        provider_family: str,
+        municipality_code: str,
+        reference_year: str,
+        payload: dict | list,
+        ttl_seconds: int,
+        metadata: dict | None = None,
+        now: datetime | None = None,
+    ):
+        self.upsert_calls += 1
+        write_time = now or datetime.now(timezone.utc)
+        key = (provider_family, municipality_code, reference_year)
+        existing = self.rows.get(key)
+        row = {
+            "id": existing["id"] if existing is not None else self._next_id,
+            "provider_family": provider_family,
+            "municipality_code": municipality_code,
+            "reference_year": reference_year,
+            "payload": deepcopy(payload),
+            "metadata": deepcopy(metadata or {}),
+            "cached_at": write_time,
+            "expires_at": write_time + timedelta(seconds=ttl_seconds),
+        }
+        self.rows[key] = deepcopy(row)
+        if existing is None:
+            self._next_id += 1
+        return deepcopy(row)
+
+
+class DummyCatastroClientService:
+    def __init__(self) -> None:
+        self.reference_year = "2025"
+        self.calls: list[dict] = []
+        self.payload: dict = {
+            "reference_year": "2025",
+            "province_file_code": "04133",
+            "province_label": "Asturias",
+            "municipality_option_value": "0043",
+            "municipality_label": "Oviedo",
+            "indicators": [
+                {
+                    "series_key": "catastro_urbano.last_valuation_year",
+                    "label": "Ano ultima valoracion",
+                    "value": 2013,
+                    "unit": "anos",
+                    "metadata": {"provider": "catastro"},
+                },
+                {
+                    "series_key": "catastro_urbano.urban_parcels",
+                    "label": "Parcelas urbanas",
+                    "value": 23783,
+                    "unit": "unidades",
+                    "metadata": {"provider": "catastro"},
+                },
+                {
+                    "series_key": "catastro_urbano.urban_parcel_area_hectares",
+                    "label": "Superficie parcelas urbanas",
+                    "value": 3277.79,
+                    "unit": "hectareas",
+                    "metadata": {"provider": "catastro"},
+                },
+                {
+                    "series_key": "catastro_urbano.real_estate_assets",
+                    "label": "Bienes inmuebles",
+                    "value": 243583,
+                    "unit": "unidades",
+                    "metadata": {"provider": "catastro"},
+                },
+                {
+                    "series_key": "catastro_urbano.cadastral_construction_value",
+                    "label": "Valor catastral construccion",
+                    "value": 6430733.88,
+                    "unit": "miles_euros",
+                    "metadata": {"provider": "catastro"},
+                },
+                {
+                    "series_key": "catastro_urbano.cadastral_land_value",
+                    "label": "Valor catastral suelo",
+                    "value": 8120131.57,
+                    "unit": "miles_euros",
+                    "metadata": {"provider": "catastro"},
+                },
+                {
+                    "series_key": "catastro_urbano.cadastral_total_value",
+                    "label": "Valor catastral total",
+                    "value": 14550865.45,
+                    "unit": "miles_euros",
+                    "metadata": {"provider": "catastro"},
+                },
+            ],
+            "raw": {
+                "content_type": "text/html",
+                "reference_year": "2025",
+                "province_file_code": "04133",
+                "province_label": "Asturias",
+                "municipality_option_value": "0043",
+                "municipality_label": "Oviedo",
+                "result_html": "<table><tr><td>Oviedo</td></tr></table>",
+            },
+            "metadata": {
+                "provider": "catastro",
+                "provider_family": "catastro_urbano",
+                "reference_year": "2025",
+                "province_file_code": "04133",
+                "province_label": "Asturias",
+                "municipality_option_value": "0043",
+                "municipality_label": "Oviedo",
+            },
+        }
+        self.raise_error: Exception | None = None
+
+    async def get_reference_year(self) -> str:
+        return self.reference_year
+
+    async def fetch_municipality_aggregates(
+        self,
+        *,
+        province_candidates,
+        municipality_candidates,
+    ):
+        self.calls.append(
+            {
+                "province_candidates": list(province_candidates),
+                "municipality_candidates": list(municipality_candidates),
+            }
+        )
+        if self.raise_error is not None:
+            raise self.raise_error
+        return deepcopy(self.payload)
 
 
 class DummySeriesRepository:
@@ -739,6 +899,20 @@ def dummy_ingestion_repo() -> DummyIngestionRepository:
     repo = DummyIngestionRepository()
     app.dependency_overrides[get_ingestion_repository] = lambda: repo
     return repo
+
+
+@pytest.fixture
+def dummy_catastro_cache_repo() -> DummyCatastroMunicipalityAggregateCacheRepository:
+    repo = DummyCatastroMunicipalityAggregateCacheRepository()
+    app.dependency_overrides[get_catastro_municipality_cache_repository] = lambda: repo
+    return repo
+
+
+@pytest.fixture
+def dummy_catastro_client_service() -> DummyCatastroClientService:
+    service = DummyCatastroClientService()
+    app.dependency_overrides[get_catastro_client_service] = lambda: service
+    return service
 
 
 @pytest.fixture

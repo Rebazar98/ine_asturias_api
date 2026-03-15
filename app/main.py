@@ -23,6 +23,7 @@ from app.core.resilience import AsyncCircuitBreaker
 from app.core.security import sanitize_query_params_for_logging
 from app.db import dispose_db, init_db
 from app.services.asturias_resolver import AsturiasResolutionError
+from app.services.catastro_client import CatastroClientError
 from app.services.cartociudad_client import CartoCiudadClientError
 from app.services.cartociudad_normalizers import CartoCiudadNormalizationError
 from app.services.ine_client import INEClientError
@@ -60,6 +61,13 @@ async def lifespan(app: FastAPI):
     )
     app.state.cartociudad_circuit_breaker = AsyncCircuitBreaker(
         provider="cartociudad",
+        fail_max=settings.provider_circuit_breaker_failures,
+        reset_timeout_seconds=settings.provider_circuit_breaker_recovery_seconds,
+        half_open_sample_size=settings.provider_circuit_breaker_half_open_sample_size,
+        success_threshold=settings.provider_circuit_breaker_success_threshold,
+    )
+    app.state.catastro_circuit_breaker = AsyncCircuitBreaker(
+        provider="catastro",
         fail_max=settings.provider_circuit_breaker_failures,
         reset_timeout_seconds=settings.provider_circuit_breaker_recovery_seconds,
         half_open_sample_size=settings.provider_circuit_breaker_half_open_sample_size,
@@ -209,6 +217,10 @@ def create_app() -> FastAPI:
     async def cartociudad_normalization_error_handler(
         _: Request, exc: CartoCiudadNormalizationError
     ) -> JSONResponse:
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
+    @app.exception_handler(CatastroClientError)
+    async def catastro_client_error_handler(_: Request, exc: CatastroClientError) -> JSONResponse:
         return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
     @app.exception_handler(AsturiasResolutionError)

@@ -58,6 +58,7 @@ Los services DEBEN encapsular logica de dominio y adaptacion externa. En el esta
 - `INEClientService`: provider adapter actual del INE
 - `CartoCiudadClientService`: provider adapter geografico actual
 - `IGNAdministrativeSnapshotClient`: adapter actual para snapshots administrativos versionables IGN/CNIG
+- `CatastroClientService`: adapter actual para agregados municipales urbanos de Catastro
 - `IGNAdministrativeBoundariesLoaderService`: orquestacion interna de `fetch -> raw -> validacion -> matching -> upsert` sobre el modelo territorial
 - `TerritorialExportService`: orquestacion interna de bundles semanticos multi-fuente por entidad territorial
 - `AsturiasResolver`: logica de resolucion geografica para operaciones del INE
@@ -73,7 +74,7 @@ Los services DEBEN:
 
 #### Providers
 
-El proyecto DEBE tratar a cada proveedor externo como una capa explicita de adaptacion. En el codigo actual esto ya existe para INE, CartoCiudad e IGN administrativo en `app/services`. Toda nueva fuente futura DEBE seguir el mismo patron.
+El proyecto DEBE tratar a cada proveedor externo como una capa explicita de adaptacion. En el codigo actual esto ya existe para INE, CartoCiudad, IGN administrativo y Catastro en `app/services`. Toda nueva fuente futura DEBE seguir el mismo patron.
 
 Un provider adapter DEBE:
 
@@ -607,9 +608,10 @@ Reglas:
 
 La hoja de ruta tecnica del proyecto DEBE alinearse con estas lineas:
 
-### 12.1 IGN y CartoCiudad
+### 12.1 IGN, CartoCiudad y Catastro
 
 - YA existen un provider adapter dedicado para CartoCiudad y un adapter/versioned loader para IGN administrativo
+- YA existe un provider adapter dedicado para agregados municipales urbanos de Catastro
 - DEBEN existir contratos normalizados para geocodificacion y reverse geocoding
 - DEBE persistirse cache para consultas repetidas de alto valor
 - NO DEBE exponerse el payload crudo del proveedor como contrato principal

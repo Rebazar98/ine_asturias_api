@@ -11,10 +11,18 @@ from typing import Any
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from app.core.logging import get_logger
+from app.core.metrics import record_provider_cache_hit
+from app.repositories.catastro_cache import (
+    CATASTRO_PROVIDER_FAMILY_URBANO,
+    CatastroMunicipalityAggregateCacheRepository,
+)
+from app.repositories.ingestion import IngestionRepository
 from app.repositories.series import SeriesRepository
 from app.repositories.territorial import (
     TERRITORIAL_UNIT_LEVEL_AUTONOMOUS_COMMUNITY,
     TERRITORIAL_UNIT_LEVEL_MUNICIPALITY,
+    TERRITORIAL_UNIT_LEVEL_PROVINCE,
+    normalize_territorial_name,
     TerritorialRepository,
 )
 from app.repositories.territorial_export_artifacts import (
@@ -30,6 +38,7 @@ from app.schemas import (
     TerritorialUnitDetailResponse,
     TerritorialUnitSummaryResponse,
 )
+from app.services.catastro_client import CatastroClientService
 from app.services.territorial_analytics import TerritorialAnalyticsService
 
 
@@ -40,6 +49,7 @@ TERRITORIAL_EXPORT_FORMAT = "zip"
 EXPORT_PROVIDER_TERRITORIAL = "territorial"
 EXPORT_PROVIDER_INE = "ine"
 EXPORT_PROVIDER_ANALYTICS = "analytics"
+EXPORT_PROVIDER_CATASTRO = "catastro"
 EXPORT_DEFAULT_PROVIDERS = [
     EXPORT_PROVIDER_TERRITORIAL,
     EXPORT_PROVIDER_INE,
@@ -51,6 +61,7 @@ EXPORT_SUPPORTED_UNIT_LEVELS = [
 ]
 EXPORT_INE_PAGE_SIZE = 1000
 EXPORT_ANALYTICS_PAGE_SIZE = 10000
+CATASTRO_EXPORT_SOURCE = "catastro.municipality.aggregates"
 
 
 @dataclass(slots=True)
@@ -256,6 +267,174 @@ class AnalyticsTerritorialExportProvider(TerritorialExportProvider):
         )
 
 
+class CatastroMunicipalityExportProvider(TerritorialExportProvider):
+    provider_key = EXPORT_PROVIDER_CATASTRO
+
+    def __init__(
+        self,
+        *,
+        catastro_client: CatastroClientService,
+        catastro_cache_repo: CatastroMunicipalityAggregateCacheRepository,
+        ingestion_repo: IngestionRepository,
+        cache_ttl_seconds: int,
+        now_factory: Callable[[], datetime],
+    ) -> None:
+        self.catastro_client = catastro_client
+        self.catastro_cache_repo = catastro_cache_repo
+        self.ingestion_repo = ingestion_repo
+        self.cache_ttl_seconds = max(0, cache_ttl_seconds)
+        self.now_factory = now_factory
+        self.logger = get_logger("app.services.territorial_exports.catastro")
+
+    def supports(self, unit_level: str) -> bool:
+        return unit_level == TERRITORIAL_UNIT_LEVEL_MUNICIPALITY
+
+    async def build_datasets(self, *, context: ExportContext) -> list[ExportDataset]:
+        municipality_code = context.territorial_context.municipality_code
+        if not municipality_code:
+            raise ValueError("Catastro municipality export requires municipality_code.")
+
+        province_candidates = _build_hierarchy_level_name_candidates(
+            context.hierarchy,
+            TERRITORIAL_UNIT_LEVEL_PROVINCE,
+        )
+        if not province_candidates:
+            raise ValueError("Catastro municipality export requires province context.")
+
+        reference_year = await self.catastro_client.get_reference_year()
+        cached = await self.catastro_cache_repo.get_fresh_payload(
+            provider_family=CATASTRO_PROVIDER_FAMILY_URBANO,
+            municipality_code=municipality_code,
+            reference_year=reference_year,
+            now=self.now_factory(),
+        )
+        cache_status = "hit" if cached is not None else "miss"
+        payload: dict[str, Any]
+        provider_metadata: dict[str, Any]
+        if cached is not None:
+            record_provider_cache_hit("catastro", "municipality_aggregates")
+            payload = dict(cached["payload"])
+            provider_metadata = dict(cached.get("metadata") or {})
+        else:
+            fetched = await self.catastro_client.fetch_municipality_aggregates(
+                province_candidates=province_candidates,
+                municipality_candidates=_build_unit_name_candidates(context.unit),
+            )
+            payload = {
+                "reference_year": fetched["reference_year"],
+                "province_file_code": fetched["province_file_code"],
+                "province_label": fetched["province_label"],
+                "municipality_option_value": fetched["municipality_option_value"],
+                "municipality_label": fetched["municipality_label"],
+                "indicators": fetched["indicators"],
+            }
+            provider_metadata = dict(fetched["metadata"])
+            await self.ingestion_repo.save_raw(
+                source_type="catastro_urbano_municipality_aggregates",
+                source_key=f"{municipality_code}:{fetched['reference_year']}",
+                request_path="/jaxi/tabla.do",
+                request_params={
+                    "reference_year": fetched["reference_year"],
+                    "province_file_code": fetched["province_file_code"],
+                    "municipality_code": municipality_code,
+                    "municipality_option_value": fetched["municipality_option_value"],
+                },
+                payload=fetched["raw"],
+            )
+            await self.catastro_cache_repo.upsert_payload(
+                provider_family=CATASTRO_PROVIDER_FAMILY_URBANO,
+                municipality_code=municipality_code,
+                reference_year=fetched["reference_year"],
+                payload=payload,
+                ttl_seconds=self.cache_ttl_seconds,
+                metadata=provider_metadata,
+                now=self.now_factory(),
+            )
+
+        dataset_payload = self._build_dataset_payload(
+            context=context,
+            municipality_code=municipality_code,
+            payload=payload,
+            metadata=provider_metadata,
+            cache_status=cache_status,
+        )
+        self.logger.info(
+            "catastro_export_dataset_built",
+            extra={
+                "municipality_code": municipality_code,
+                "reference_year": payload["reference_year"],
+                "cache_status": cache_status,
+                "series_count": len(dataset_payload["series"]),
+            },
+        )
+        return [
+            ExportDataset(
+                dataset_key="catastro_municipality_aggregates",
+                provider=self.provider_key,
+                relative_path="datasets/catastro_municipality_aggregates.json",
+                content_type="application/json",
+                record_count=len(dataset_payload["series"]),
+                applicable=True,
+                payload_bytes=_json_bytes(dataset_payload),
+            )
+        ]
+
+    def build_not_applicable_datasets(self, *, context: ExportContext) -> list[ExportDataset]:
+        return [
+            ExportDataset(
+                dataset_key="catastro_municipality_aggregates",
+                provider=self.provider_key,
+                relative_path=None,
+                content_type="application/json",
+                record_count=0,
+                applicable=False,
+            )
+        ]
+
+    def _build_dataset_payload(
+        self,
+        *,
+        context: ExportContext,
+        municipality_code: str,
+        payload: dict[str, Any],
+        metadata: dict[str, Any],
+        cache_status: str,
+    ) -> dict[str, Any]:
+        indicators = list(payload.get("indicators") or [])
+        summary = {
+            "indicators_total": len(indicators),
+            "reference_year": payload.get("reference_year"),
+            "municipality_code": municipality_code,
+            "parcelas_urbanas": _indicator_value(indicators, "catastro_urbano.urban_parcels"),
+            "bienes_inmuebles": _indicator_value(indicators, "catastro_urbano.real_estate_assets"),
+            "valor_catastral_total_miles_euros": _indicator_value(
+                indicators, "catastro_urbano.cadastral_total_value"
+            ),
+        }
+        return {
+            "source": CATASTRO_EXPORT_SOURCE,
+            "generated_at": self.now_factory().isoformat(),
+            "territorial_context": context.territorial_context.model_dump(mode="json"),
+            "filters": {
+                "reference_year": payload.get("reference_year"),
+                "unit_level": context.unit.unit_level,
+                "code_value": municipality_code,
+            },
+            "summary": summary,
+            "series": indicators,
+            "metadata": {
+                "provider": "catastro",
+                "provider_family": metadata.get("provider_family", "catastro_urbano"),
+                "coverage": "municipality",
+                "reference_year": payload.get("reference_year"),
+                "province_file_code": payload.get("province_file_code"),
+                "province_label": payload.get("province_label"),
+                "municipality_label": payload.get("municipality_label"),
+                "cache_status": cache_status,
+            },
+        }
+
+
 class TerritorialExportService:
     def __init__(
         self,
@@ -263,15 +442,23 @@ class TerritorialExportService:
         territorial_repo: TerritorialRepository,
         series_repo: SeriesRepository,
         analytics_service: TerritorialAnalyticsService,
+        catastro_client: CatastroClientService,
+        catastro_cache_repo: CatastroMunicipalityAggregateCacheRepository,
+        ingestion_repo: IngestionRepository,
         artifact_repo: TerritorialExportArtifactRepository,
         export_ttl_seconds: int,
+        catastro_cache_ttl_seconds: int,
         now_factory: Callable[[], datetime] | None = None,
     ) -> None:
         self.territorial_repo = territorial_repo
         self.series_repo = series_repo
         self.analytics_service = analytics_service
+        self.catastro_client = catastro_client
+        self.catastro_cache_repo = catastro_cache_repo
+        self.ingestion_repo = ingestion_repo
         self.artifact_repo = artifact_repo
         self.export_ttl_seconds = max(0, export_ttl_seconds)
+        self.catastro_cache_ttl_seconds = max(0, catastro_cache_ttl_seconds)
         self.now_factory = now_factory or (lambda: datetime.now(timezone.utc))
         self.logger = get_logger("app.services.territorial_exports")
         self.providers: dict[str, TerritorialExportProvider] = {
@@ -279,6 +466,13 @@ class TerritorialExportService:
             EXPORT_PROVIDER_INE: INESeriesExportProvider(series_repo=series_repo),
             EXPORT_PROVIDER_ANALYTICS: AnalyticsTerritorialExportProvider(
                 analytics_service=analytics_service
+            ),
+            EXPORT_PROVIDER_CATASTRO: CatastroMunicipalityExportProvider(
+                catastro_client=catastro_client,
+                catastro_cache_repo=catastro_cache_repo,
+                ingestion_repo=ingestion_repo,
+                cache_ttl_seconds=self.catastro_cache_ttl_seconds,
+                now_factory=self.now_factory,
             ),
         }
 
@@ -292,7 +486,9 @@ class TerritorialExportService:
         include_providers: Sequence[str] | None = None,
         progress_reporter: ProgressReporter | None = None,
     ) -> TerritorialExportResultResponse | None:
-        normalized_providers = normalize_export_provider_keys(list(include_providers or []))
+        normalized_providers = normalize_export_provider_keys(
+            list(include_providers) if include_providers is not None else None
+        )
         if artifact_format != TERRITORIAL_EXPORT_FORMAT:
             raise ValueError("Unsupported export format.")
         if not normalized_providers:
@@ -540,6 +736,42 @@ def _canonical_code_value(unit: TerritorialUnitSummaryResponse | None) -> str | 
     if unit is None or unit.canonical_code is None:
         return None
     return unit.canonical_code.code_value
+
+
+def _build_unit_name_candidates(unit: TerritorialUnitDetailResponse) -> list[str]:
+    candidates = [unit.canonical_name, unit.display_name]
+    candidates.extend(alias.alias for alias in unit.aliases)
+    unique_candidates: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        normalized = normalize_territorial_name(candidate)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        unique_candidates.append(candidate)
+    return unique_candidates
+
+
+def _build_hierarchy_level_name_candidates(
+    hierarchy: Sequence[TerritorialUnitSummaryResponse],
+    unit_level: str,
+) -> list[str]:
+    candidates: list[str] = []
+    for item in hierarchy:
+        if item.unit_level != unit_level:
+            continue
+        for candidate in (item.canonical_name, item.display_name):
+            normalized = normalize_territorial_name(candidate)
+            if normalized and candidate not in candidates:
+                candidates.append(candidate)
+    return candidates
+
+
+def _indicator_value(indicators: Sequence[dict[str, Any]], series_key: str) -> Any:
+    for indicator in indicators:
+        if indicator.get("series_key") == series_key:
+            return indicator.get("value")
+    return None
 
 
 def _json_bytes(value: Any) -> bytes:

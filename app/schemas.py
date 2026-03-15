@@ -6,7 +6,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, RootModel, field_validator
 
 from app.repositories.territorial_export_artifacts import (
-    SUPPORTED_EXPORT_PROVIDERS,
+    DEFAULT_EXPORT_PROVIDERS,
     normalize_export_provider_keys,
 )
 
@@ -336,8 +336,8 @@ class TerritorialExportRequest(BaseModel):
     unit_level: Literal["municipality", "autonomous_community"]
     code_value: str = Field(min_length=1, max_length=128)
     format: Literal["zip"] = "zip"
-    include_providers: list[Literal["territorial", "ine", "analytics"]] = Field(
-        default_factory=lambda: ["territorial", "ine", "analytics"]
+    include_providers: list[Literal["territorial", "ine", "analytics", "catastro"]] = Field(
+        default_factory=lambda: list(DEFAULT_EXPORT_PROVIDERS)
     )
 
     @field_validator("code_value", mode="before")
@@ -348,7 +348,10 @@ class TerritorialExportRequest(BaseModel):
     @field_validator("include_providers", mode="before")
     @classmethod
     def normalize_providers(cls, value: list[str] | None) -> list[str]:
-        providers = normalize_export_provider_keys(value or list(SUPPORTED_EXPORT_PROVIDERS))
+        if value is None:
+            return list(DEFAULT_EXPORT_PROVIDERS)
+
+        providers = normalize_export_provider_keys(value)
         if not providers:
             raise ValueError("include_providers must include at least one supported provider.")
         return providers

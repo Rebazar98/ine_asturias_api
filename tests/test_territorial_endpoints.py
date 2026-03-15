@@ -470,7 +470,12 @@ def test_get_territorial_catalog_exposes_resources_and_basic_coverage(
         "intended_consumers": ["n8n", "agents", "programmatic_clients"],
         "raw_provider_contracts_exposed": False,
         "discovery_scope": "published_territorial_resources",
-        "official_sources": ["ine", "cartociudad", "ign_administrative_boundaries"],
+        "official_sources": [
+            "ine",
+            "cartociudad",
+            "ign_administrative_boundaries",
+            "catastro_urbano",
+        ],
     }
     assert [level["unit_level"] for level in payload["territorial_levels"]] == [
         "autonomous_community",
@@ -1275,6 +1280,101 @@ def test_create_territorial_export_job_completes_for_autonomous_community(
         assert datasets_by_key["analytics_municipality_summary"]["applicable"] is False
         assert datasets_by_key["analytics_municipality_report"]["applicable"] is False
     assert dummy_territorial_export_artifact_repo.upsert_calls == 1
+
+
+def test_create_territorial_export_job_completes_with_catastro_bundle(
+    client,
+    dummy_territorial_repo,
+    dummy_series_repo,
+    dummy_ingestion_repo,
+    dummy_catastro_cache_repo,
+    dummy_catastro_client_service,
+    dummy_territorial_export_artifact_repo,
+):
+    _seed_municipality_export_context(dummy_territorial_repo, dummy_series_repo)
+
+    response = client.post(
+        "/territorios/export",
+        json={
+            "unit_level": "municipality",
+            "code_value": "33044",
+            "format": "zip",
+            "include_providers": ["territorial", "ine", "analytics", "catastro"],
+        },
+    )
+
+    assert response.status_code == 202
+    accepted = response.json()
+    job_payload = None
+    for _ in range(50):
+        status_response = client.get(accepted["status_path"])
+        assert status_response.status_code == 200
+        job_payload = status_response.json()
+        if job_payload["status"] == "completed":
+            break
+        time.sleep(0.02)
+
+    assert job_payload is not None
+    assert job_payload["status"] == "completed"
+    download_response = client.get(job_payload["result"]["download_path"])
+    assert download_response.status_code == 200
+    with ZipFile(io.BytesIO(download_response.content)) as archive:
+        names = sorted(archive.namelist())
+        assert "datasets/catastro_municipality_aggregates.json" in names
+        manifest = json.loads(archive.read("manifest.json"))
+        assert manifest["providers_requested"] == ["territorial", "ine", "analytics", "catastro"]
+        catastro_payload = json.loads(
+            archive.read("datasets/catastro_municipality_aggregates.json").decode("utf-8")
+        )
+        assert catastro_payload["source"] == "catastro.municipality.aggregates"
+        assert catastro_payload["metadata"]["cache_status"] == "miss"
+    assert len(dummy_ingestion_repo.records) == 1
+    assert dummy_catastro_cache_repo.upsert_calls == 1
+    assert len(dummy_catastro_client_service.calls) == 1
+
+
+def test_create_territorial_export_job_fails_when_catastro_provider_fails(
+    client,
+    dummy_territorial_repo,
+    dummy_series_repo,
+    dummy_catastro_client_service,
+):
+    from app.services.catastro_client import CatastroUpstreamError
+
+    _seed_municipality_export_context(dummy_territorial_repo, dummy_series_repo)
+    dummy_catastro_client_service.raise_error = CatastroUpstreamError(
+        status_code=503,
+        detail={
+            "message": "The Catastro service is temporarily unavailable.",
+            "path": "/jaxi/tabla.do",
+            "retryable": True,
+        },
+    )
+
+    response = client.post(
+        "/territorios/export",
+        json={
+            "unit_level": "municipality",
+            "code_value": "33044",
+            "format": "zip",
+            "include_providers": ["territorial", "catastro"],
+        },
+    )
+
+    assert response.status_code == 202
+    accepted = response.json()
+    job_payload = None
+    for _ in range(50):
+        status_response = client.get(accepted["status_path"])
+        assert status_response.status_code == 200
+        job_payload = status_response.json()
+        if job_payload["status"] == "failed":
+            break
+        time.sleep(0.02)
+
+    assert job_payload is not None
+    assert job_payload["status"] == "failed"
+    assert job_payload["error"]["message"] == "The Catastro service is temporarily unavailable."
 
 
 def test_create_territorial_export_job_fails_when_unit_is_unknown(client):

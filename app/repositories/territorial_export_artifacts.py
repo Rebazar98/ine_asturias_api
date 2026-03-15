@@ -16,7 +16,8 @@ from app.core.metrics import record_persistence_batch
 from app.models import TerritorialExportArtifact
 
 
-SUPPORTED_EXPORT_PROVIDERS = ("territorial", "ine", "analytics")
+SUPPORTED_EXPORT_PROVIDERS = ("territorial", "ine", "analytics", "catastro")
+DEFAULT_EXPORT_PROVIDERS = ("territorial", "ine", "analytics")
 
 
 def normalize_export_scope_key(unit_level: str, code_value: str) -> str:
@@ -28,9 +29,12 @@ def normalize_export_scope_key(unit_level: str, code_value: str) -> str:
 def normalize_export_provider_keys(
     include_providers: list[str] | tuple[str, ...] | None,
 ) -> list[str]:
-    requested = {str(value or "").strip().casefold() for value in include_providers or [] if value}
+    if include_providers is None:
+        requested = set(DEFAULT_EXPORT_PROVIDERS)
+    else:
+        requested = {str(value or "").strip().casefold() for value in include_providers if value}
     if not requested:
-        return list(SUPPORTED_EXPORT_PROVIDERS)
+        return []
     return [provider for provider in SUPPORTED_EXPORT_PROVIDERS if provider in requested]
 
 
