@@ -14,10 +14,12 @@ from app.dependencies import (
     get_ine_client_service,
     get_series_repository,
     get_table_catalog_repository,
+    get_territorial_export_artifact_repository,
     get_territorial_repository,
 )
 from app.main import app
 from app.repositories.analytics_snapshots import build_snapshot_key
+from app.repositories.territorial_export_artifacts import build_export_key
 from app.repositories.territorial import (
     TERRITORIAL_DISCOVERY_LEVELS,
     TERRITORIAL_UNIT_LEVEL_MUNICIPALITY,
@@ -313,8 +315,11 @@ class DummyTerritorialRepository:
         self.by_name: dict[str, dict] = {}
         self.by_canonical_code: dict[tuple[str, str], dict] = {}
         self.detail_by_canonical_code: dict[tuple[str, str], dict] = {}
+        self.detail_by_id: dict[int, dict] = {}
+        self.hierarchy_by_unit_id: dict[int, list[dict]] = {}
         self.units_by_level: dict[str, list[dict]] = {}
         self.upsert_boundary_calls: list[dict[str, object]] = []
+        self.point_resolution_payload: dict | None = None
 
     async def get_unit_by_name(
         self, name: str, source_system=None, alias_type=None, unit_level=None
@@ -328,6 +333,12 @@ class DummyTerritorialRepository:
 
     async def get_unit_detail_by_canonical_code(self, *, unit_level: str, code_value: str):
         return self.detail_by_canonical_code.get((unit_level, code_value))
+
+    async def get_unit_detail_by_id(self, territorial_unit_id: int):
+        return self.detail_by_id.get(territorial_unit_id)
+
+    async def list_hierarchy(self, territorial_unit_id: int):
+        return deepcopy(self.hierarchy_by_unit_id.get(territorial_unit_id, []))
 
     async def list_units(
         self,
@@ -462,6 +473,27 @@ class DummyTerritorialRepository:
             "created": True,
         }
 
+    async def resolve_point(self, *, lat: float, lon: float):
+        if self.point_resolution_payload is None:
+            return {
+                "matched_by": "geometry_cover",
+                "best_match": None,
+                "hierarchy": [],
+                "coverage": {
+                    "boundary_source": None,
+                    "levels_considered": [
+                        "country",
+                        "autonomous_community",
+                        "province",
+                        "municipality",
+                    ],
+                    "levels_matched": [],
+                },
+                "ambiguity_detected": False,
+                "ambiguity_by_level": {},
+            }
+        return deepcopy(self.point_resolution_payload)
+
 
 class DummyAnalyticalSnapshotRepository:
     def __init__(self) -> None:
@@ -535,6 +567,92 @@ class DummyAnalyticalSnapshotRepository:
         return deepcopy(row)
 
 
+class DummyTerritorialExportArtifactRepository:
+    def __init__(self) -> None:
+        self.rows_by_key: dict[str, dict] = {}
+        self.rows_by_id: dict[int, dict] = {}
+        self.get_calls = 0
+        self.upsert_calls = 0
+        self._next_id = 1
+
+    async def get_fresh_artifact(
+        self,
+        *,
+        unit_level: str,
+        code_value: str,
+        artifact_format: str,
+        include_providers: list[str] | tuple[str, ...] | None = None,
+        now: datetime | None = None,
+    ):
+        self.get_calls += 1
+        export_key = build_export_key(
+            unit_level=unit_level,
+            code_value=code_value,
+            artifact_format=artifact_format,
+            include_providers=include_providers,
+        )
+        row = self.rows_by_key.get(export_key)
+        if row is None:
+            return None
+        lookup_time = now or datetime.now(timezone.utc)
+        if row["expires_at"] <= lookup_time:
+            return None
+        return deepcopy(row)
+
+    async def get_by_export_id(self, export_id: int):
+        row = self.rows_by_id.get(export_id)
+        if row is None:
+            return None
+        return deepcopy(row)
+
+    async def upsert_artifact(
+        self,
+        *,
+        territorial_unit_id: int | None,
+        unit_level: str,
+        code_value: str,
+        artifact_format: str,
+        content_type: str,
+        filename: str,
+        payload_bytes: bytes,
+        ttl_seconds: int,
+        include_providers: list[str] | tuple[str, ...] | None = None,
+        metadata: dict | None = None,
+        now: datetime | None = None,
+    ):
+        self.upsert_calls += 1
+        write_time = now or datetime.now(timezone.utc)
+        export_key = build_export_key(
+            unit_level=unit_level,
+            code_value=code_value,
+            artifact_format=artifact_format,
+            include_providers=include_providers,
+        )
+        existing = self.rows_by_key.get(export_key)
+        row = {
+            "export_id": existing["export_id"] if existing is not None else self._next_id,
+            "export_key": export_key,
+            "territorial_unit_id": territorial_unit_id,
+            "unit_level": unit_level,
+            "code_value": code_value,
+            "artifact_format": artifact_format,
+            "content_type": content_type,
+            "filename": filename,
+            "payload_bytes": bytes(payload_bytes),
+            "payload_sha256": "dummy",
+            "byte_size": len(payload_bytes),
+            "metadata": deepcopy(metadata or {}),
+            "created_at": existing["created_at"] if existing is not None else write_time,
+            "updated_at": write_time,
+            "expires_at": write_time + timedelta(seconds=ttl_seconds),
+        }
+        self.rows_by_key[export_key] = deepcopy(row)
+        self.rows_by_id[row["export_id"]] = deepcopy(row)
+        if existing is None:
+            self._next_id += 1
+        return deepcopy(row)
+
+
 def seed_municipality_analytics_context(
     territorial_repo: DummyTerritorialRepository,
     series_repo: DummySeriesRepository,
@@ -569,6 +687,11 @@ def seed_municipality_analytics_context(
         "aliases": [],
         "attributes": {"population_scope": "municipal"},
     }
+    territorial_repo.detail_by_id[int(municipality_code)] = deepcopy(
+        territorial_repo.detail_by_canonical_code[
+            (TERRITORIAL_UNIT_LEVEL_MUNICIPALITY, municipality_code)
+        ]
+    )
     series_repo.items.extend(
         [
             NormalizedSeriesItem(
@@ -643,6 +766,13 @@ def dummy_territorial_repo() -> DummyTerritorialRepository:
 def dummy_analytical_snapshot_repo() -> DummyAnalyticalSnapshotRepository:
     repo = DummyAnalyticalSnapshotRepository()
     app.dependency_overrides[get_analytical_snapshot_repository] = lambda: repo
+    return repo
+
+
+@pytest.fixture
+def dummy_territorial_export_artifact_repo() -> DummyTerritorialExportArtifactRepository:
+    repo = DummyTerritorialExportArtifactRepository()
+    app.dependency_overrides[get_territorial_export_artifact_repository] = lambda: repo
     return repo
 
 

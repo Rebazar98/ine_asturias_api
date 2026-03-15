@@ -11,6 +11,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -222,6 +223,51 @@ class AnalyticalSnapshot(Base):
         server_default=func.now(),
         index=True,
     )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class TerritorialExportArtifact(Base):
+    __tablename__ = "territorial_export_artifacts"
+    __table_args__ = (
+        UniqueConstraint(
+            "export_key",
+            name="uq_territorial_export_artifacts_key",
+        ),
+        Index(
+            "ix_territorial_export_artifacts_unit_expires",
+            "unit_level",
+            "code_value",
+            "expires_at",
+        ),
+        Index(
+            "ix_territorial_export_artifacts_unit_format",
+            "territorial_unit_id",
+            "artifact_format",
+        ),
+    )
+
+    export_id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    export_key: Mapped[str] = mapped_column(String(128), index=True)
+    territorial_unit_id: Mapped[int | None] = mapped_column(
+        ForeignKey("territorial_units.id"),
+        nullable=True,
+        index=True,
+    )
+    unit_level: Mapped[str] = mapped_column(String(32), index=True)
+    code_value: Mapped[str] = mapped_column(String(128), index=True)
+    artifact_format: Mapped[str] = mapped_column(String(32), default="zip", server_default="zip")
+    content_type: Mapped[str] = mapped_column(String(128), default="", server_default="")
+    filename: Mapped[str] = mapped_column(String(255), default="", server_default="")
+    payload_bytes: Mapped[bytes] = mapped_column(LargeBinary)
+    payload_sha256: Mapped[str] = mapped_column(String(64), index=True)
+    byte_size: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

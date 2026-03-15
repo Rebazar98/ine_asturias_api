@@ -117,6 +117,37 @@ Invoke-RestMethod "http://127.0.0.1:8001/reverse_geocode?lat=43.3614&lon=-5.8494
 
 Esta comprobacion sirve para RC o staging cuando se quiera validar el camino real de CartoCiudad. No sustituye a `pytest` ni entra como gate obligatorio porque depende de un proveedor externo.
 
+Si el entorno ya tiene cobertura administrativa IGN cargada, puede añadirse esta comprobacion espacial semantica, tambien fuera del gate obligatorio:
+
+```powershell
+Invoke-RestMethod "http://127.0.0.1:8001/territorios/resolve-point?lat=43.3614&lon=-5.8494" -Headers @{ "X-API-Key" = "change-me" }
+```
+
+Resultado esperado:
+
+- `source=internal.territorial.point_resolution`
+- `result.best_match` relleno con la unidad mas especifica disponible
+- `result.hierarchy` ordenada por niveles internos
+- sin `geometry`, `centroid` ni GeoJSON en el contrato publico
+
+Validacion manual opcional del bundle de exportacion territorial, tambien fuera del gate obligatorio:
+
+```powershell
+$job = Invoke-RestMethod "http://127.0.0.1:8001/territorios/export" `
+  -Method Post `
+  -Headers @{ "X-API-Key" = "change-me"; "Content-Type" = "application/json" } `
+  -Body '{"unit_level":"municipality","code_value":"33044","format":"zip","include_providers":["territorial","ine","analytics"]}'
+Invoke-RestMethod ("http://127.0.0.1:8001" + $job.status_path) -Headers @{ "X-API-Key" = "change-me" }
+Invoke-WebRequest ("http://127.0.0.1:8001/territorios/exports/" + $job.job_id + "/download") -Headers @{ "X-API-Key" = "change-me" } -OutFile territorial_export_municipality_33044.zip
+```
+
+Resultado esperado:
+
+- `job_type=territorial_export`
+- estado final `completed`
+- ZIP con `manifest.json` y `datasets/ine_series.ndjson`
+- sin `geometry`, `centroid` ni payloads raw del proveedor en el bundle
+
 7. **Restore drill reciente**
    - ejecutar [scripts/restore_drill.ps1](C:/Users/user/OneDrive/Documents/Playground/scripts/restore_drill.ps1) en local, o
    - ejecutar manualmente el workflow `Restore Drill` en GitHub Actions.

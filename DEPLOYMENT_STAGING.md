@@ -60,6 +60,7 @@ Variables que deben revisarse como minimo:
 - `REDIS_HOST_PORT`
 - `REDIS_URL`
 - `WORKER_METRICS_URL`
+- `TERRITORIAL_EXPORT_TTL_SECONDS`
 
 Reglas operativas:
 
@@ -200,6 +201,7 @@ Comandos sugeridos:
 ```bash
 docker compose --env-file .env.staging.local -p ine_asturias_staging run --rm api python scripts/load_ign_admin_boundaries.py --pretty
 curl "http://127.0.0.1:8002/territorios/catalogo" -H "X-API-Key: change-me"
+curl "http://127.0.0.1:8002/territorios/resolve-point?lat=43.3614&lon=-5.8494" -H "X-API-Key: change-me"
 ```
 
 Si se quiere forzar un fichero local concreto montado en el contenedor:
@@ -214,11 +216,40 @@ Resultado esperado:
 - `features_upserted > 0`
 - `raw_records_saved > 0`
 - `/territorios/catalogo` refleja `boundary_source=ign_administrative_boundaries` y conteos `geometry_units` / `centroid_units` en el nivel cargado
+- `/territorios/resolve-point` devuelve contrato semantico interno con `best_match` y `hierarchy`, sin geometria publica
 
 Regla operativa:
 
 - si falta snapshot o la URL no esta disponible, la validacion queda como pendiente manual y NO tumba por si sola staging;
 - si la carga completa pero no deja trazabilidad raw o no actualiza cobertura en catalogo, si debe abrirse incidencia.
+
+### Validacion manual opcional de exportacion territorial
+
+Esta comprobacion tampoco forma parte del gate obligatorio. Sirve para validar el bundle multi-fuente cuando staging ya dispone de datos territoriales e indicadores normalizados para la entidad elegida.
+
+Ejemplo para municipio:
+
+```bash
+curl -X POST "http://127.0.0.1:8002/territorios/export" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: change-me" \
+  -d '{"unit_level":"municipality","code_value":"33044","format":"zip","include_providers":["territorial","ine","analytics"]}'
+curl "http://127.0.0.1:8002/territorios/exports/<job_id>" -H "X-API-Key: change-me"
+curl -L "http://127.0.0.1:8002/territorios/exports/<job_id>/download" -H "X-API-Key: change-me" --output territorial_export_municipality_33044.zip
+```
+
+Resultado esperado:
+
+- `POST /territorios/export` devuelve `202` con `job_type=territorial_export`
+- `GET /territorios/exports/{job_id}` acaba en `completed`
+- el ZIP contiene `manifest.json` y `datasets/ine_series.ndjson`
+- si el nivel es `municipality`, tambien puede incluir `analytics_municipality_summary.json` y `analytics_municipality_report.json`
+- el manifiesto NO expone `geometry`, `centroid` ni payloads raw
+
+Regla operativa:
+
+- si staging no tiene datos suficientes para la entidad, el export puede completar con datasets vacios y eso NO implica fallo estructural;
+- si el job no completa, el download devuelve un artefacto sin `manifest.json` o el bundle expone payloads raw, si debe abrirse incidencia.
 
 ## Evidencia minima
 

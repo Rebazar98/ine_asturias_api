@@ -27,7 +27,7 @@ Documentacion disponible en la raiz del proyecto:
 
 - `app/api`: routers FastAPI.
 - `app/services`: cliente INE, CartoCiudad, adapter IGN administrativo, resolucion de Asturias, normalizacion y orquestacion de ingesta.
-- `app/repositories`: persistencia raw, normalizada, catalogo, base territorial y cache geoespacial persistente.
+- `app/repositories`: persistencia raw, normalizada, catalogo, base territorial, cache geoespacial persistente y artefactos de exportacion reutilizables.
 - `app/core`: logging JSON, cache TTL, jobs, metricas y utilidades de Redis.
 - `app/models.py`: modelos SQLAlchemy, incluyendo el nucleo territorial preparado para PostGIS.
 - `alembic/`: migraciones versionadas.
@@ -91,6 +91,7 @@ Este script SOLO esta pensado para desarrollo local. Elimina la base persistente
 | `API_HOST_PORT` | Puerto del host para la API | `8001` |
 | `JOB_QUEUE_NAME` | Nombre de cola `arq` | `ine_jobs` |
 | `JOB_RESULT_TTL_SECONDS` | TTL de resultados de jobs en Redis | `86400` |
+| `TERRITORIAL_EXPORT_TTL_SECONDS` | TTL de reutilizacion para bundles ZIP de exportacion territorial | `86400` |
 | `RATE_LIMIT_ENABLED` | Activa rate limiting por IP y por `API_KEY` | `true` |
 | `PROVIDER_CIRCUIT_BREAKER_FAILURES` | Fallos consecutivos para abrir el circuit breaker | `5` |
 | `PROVIDER_CIRCUIT_BREAKER_RECOVERY_SECONDS` | Tiempo de enfriamiento antes de `HALF_OPEN` | `30` |
@@ -225,10 +226,14 @@ Politicas de proteccion actuales:
 GET /ine/series?operation_code=22&geography_code=33&page=1&page_size=50
 GET /geocode?query=Oviedo
 GET /reverse_geocode?lat=43.3614&lon=-5.8494
+GET /territorios/resolve-point?lat=43.3614&lon=-5.8494
 GET /territorios/comunidades-autonomas
 GET /territorios/provincias?autonomous_community_code=03
 GET /territorios/municipio/33044/resumen
 GET /municipio/33044
+POST /territorios/export
+GET /territorios/exports/{job_id}
+GET /territorios/exports/{job_id}/download
 ```
 
 Filtros soportados en `/ine/series`:
@@ -313,6 +318,33 @@ En esta fase:
 - los logs operativos y errores upstream usan una huella de coordenadas saneada en vez del par completo.
 - el cliente aplica el mismo esquema de reintentos acotados y circuit breaker antes de devolver error controlado.
 
+### Resolucion territorial semantica por punto
+
+```http
+GET /territorios/resolve-point?lat=43.3614&lon=-5.8494
+```
+
+Contrato actual de `/territorios/resolve-point`:
+
+- resuelve un par `lat` / `lon` solo contra cobertura administrativa interna ya cargada desde IGN/CNIG;
+- NO hace reverse geocoding contra provider externo ni expone `geometry`, `centroid` o GeoJSON publico;
+- devuelve contrato semantico propio:
+  - `source`
+  - `query_coordinates`
+  - `result`
+  - `metadata`
+- `result.best_match` devuelve la unidad territorial mas especifica que cubre el punto;
+- `result.hierarchy` devuelve la jerarquia interna contenida (`country -> autonomous_community -> province -> municipality`) segun la cobertura realmente disponible;
+- `result.coverage` expone `boundary_source`, `levels_considered` y `levels_matched`;
+- si el punto cae fuera de la cobertura cargada, el endpoint devuelve `200` con `result=null` y `metadata.reason=outside_loaded_coverage`;
+- si no hay limites administrativos cargados, devuelve `200` con `result=null` y `metadata.reason=no_boundary_coverage_loaded`.
+
+Reglas operativas:
+
+- la resolucion usa limites administrativos internos y `ST_Covers`, sin fallback por centroides en esta fase;
+- el endpoint comparte el mismo perfil de rate limiting que `/geocode` y `/reverse_geocode`;
+- el smoke obligatorio solo valida que el recurso esta publicado en `/territorios/catalogo`; la comprobacion funcional real queda como validacion manual opcional cuando IGN administrativo ya esta cargado en el entorno.
+
 Estrategia territorial actual:
 
 - el cruce territorial futuro debe apoyarse en `territorial_unit_codes`
@@ -361,6 +393,9 @@ Endpoints territoriales publicos actuales:
 - `GET /municipio/{codigo_ine}` devuelve detalle de municipio por codigo canonico INE, incluyendo codigos, aliases y atributos.
 - `GET /territorios/catalogo` publica tambien `GET /geocode` y `GET /reverse_geocode` como recursos oficiales de descubrimiento.
 - `GET /territorios/catalogo` anuncia tambien la cobertura administrativa cargada desde IGN/CNIG y el conteo de unidades con geometria/centroide por nivel.
+- `POST /territorios/export` crea un job asincrono de exportacion multi-fuente por entidad territorial.
+- `GET /territorios/exports/{job_id}` expone el estado y el resultado operativo del export.
+- `GET /territorios/exports/{job_id}/download` devuelve el bundle ZIP de un export completado.
 
 ## Catalogo territorial minimo
 
@@ -379,6 +414,10 @@ Con la consolidacion de CartoCiudad bajo demanda, el catalogo publicado ya inclu
 
 - `GET /geocode`
 - `GET /reverse_geocode`
+- `GET /territorios/resolve-point`
+- `POST /territorios/export`
+- `GET /territorios/exports/{job_id}`
+- `GET /territorios/exports/{job_id}/download`
 - `territorial.ign_administrative_boundaries.catalog`
 - recursos territoriales y analiticos internos relacionados
 
@@ -387,6 +426,49 @@ La carga administrativa directa de IGN/CNIG NO abre aun endpoints publicos de ge
 - enriquecer `territorial_units` con `geometry` y `centroid` en SRID `4326`
 - dejar trazabilidad raw versionable en `ingestion_raw`
 - publicar cobertura interna reutilizable desde `/territorios/catalogo`
+
+## Exportacion territorial multi-fuente
+
+La API incorpora ya una primera capacidad de descarga asincrona por entidad territorial. El objetivo es entregar un bundle semantico reutilizable por automatizaciones, clientes API y agentes sin exponer payloads raw de proveedor.
+
+Endpoints actuales:
+
+```http
+POST /territorios/export
+GET /territorios/exports/{job_id}
+GET /territorios/exports/{job_id}/download
+```
+
+Contrato de `POST /territorios/export`:
+
+- `unit_level`: `municipality` o `autonomous_community`
+- `code_value`: codigo canonico interno de la entidad
+- `format`: fijo en `zip`
+- `include_providers`: lista opcional; por defecto `["territorial", "ine", "analytics"]`
+
+Reglas operativas:
+
+- siempre responde `202` y devuelve `job_id` y `status_path`;
+- el export se ejecuta siempre como background job;
+- el bundle se reutiliza mientras siga fresco en `territorial_export_artifacts`;
+- la expiracion se controla con `TERRITORIAL_EXPORT_TTL_SECONDS`;
+- si `analytics` no aplica al nivel pedido, el manifiesto lo marca como `applicable=false` y el export sigue siendo valido.
+
+Estructura del ZIP v1:
+
+- `manifest.json`
+- `datasets/territorial_unit.json`
+- `datasets/territorial_hierarchy.json`
+- `datasets/ine_series.ndjson`
+- `datasets/analytics_municipality_summary.json` cuando aplica
+- `datasets/analytics_municipality_report.json` cuando aplica
+
+Garantias del contrato:
+
+- `manifest.json` usa `source=internal.export.territorial_bundle`;
+- el bundle NO expone `geometry`, `centroid`, GeoJSON publico ni payloads raw de proveedor;
+- `ine_series` se exporta en `NDJSON` para soportar volumen y futuras fuentes heterogeneas;
+- futuras fuentes como Catastro deben entrar como `provider` adicional y nuevos `datasets/*`, sin romper el manifiesto base ni el API publico.
 
 ## Contrato base de salidas analiticas
 

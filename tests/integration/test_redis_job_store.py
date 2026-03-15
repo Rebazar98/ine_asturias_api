@@ -1,20 +1,17 @@
 from __future__ import annotations
 
 import asyncio
-import os
-
 import pytest
 from redis.asyncio import Redis
 
 from app.core.jobs import RedisJobStore
 from app.settings import Settings
+from tests.integration.redis import require_integration_redis
 
 
 @pytest.mark.integration
 def test_redis_job_store_roundtrip_when_redis_is_available():
-    redis_url = os.getenv("INTEGRATION_REDIS_URL") or os.getenv("REDIS_URL")
-    if not redis_url:
-        pytest.skip("Redis integration URL not configured.")
+    redis_url = require_integration_redis()
 
     async def scenario() -> None:
         redis = Redis.from_url(redis_url, decode_responses=True)

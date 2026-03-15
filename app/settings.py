@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     analytical_snapshot_ttl_seconds: int = Field(
         default=21600, alias="ANALYTICAL_SNAPSHOT_TTL_SECONDS", ge=0
     )
+    territorial_export_ttl_seconds: int = Field(
+        default=86400, alias="TERRITORIAL_EXPORT_TTL_SECONDS", ge=0
+    )
     max_concurrent_table_fetches: int = Field(
         default=3, alias="MAX_CONCURRENT_TABLE_FETCHES", ge=1, le=10
     )

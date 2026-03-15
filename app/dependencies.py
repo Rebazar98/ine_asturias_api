@@ -18,6 +18,7 @@ from app.repositories.catalog import TableCatalogRepository
 from app.repositories.geocoding import GeocodingCacheRepository
 from app.repositories.ingestion import IngestionRepository
 from app.repositories.series import SeriesRepository
+from app.repositories.territorial_export_artifacts import TerritorialExportArtifactRepository
 from app.repositories.territorial import TerritorialRepository
 from app.services.asturias_resolver import AsturiasResolver
 from app.services.cartociudad_client import CartoCiudadClientService
@@ -25,6 +26,7 @@ from app.services.cartociudad_geocoding import CartoCiudadGeocodingService
 from app.services.ine_client import INEClientService
 from app.services.ine_operation_ingestion import INEOperationIngestionService
 from app.services.territorial_analytics import TerritorialAnalyticsService
+from app.services.territorial_exports import TerritorialExportService
 from app.settings import Settings, get_settings
 
 
@@ -110,6 +112,12 @@ def get_territorial_repository(
     return TerritorialRepository(session=session)
 
 
+def get_territorial_export_artifact_repository(
+    session: AsyncSession | None = Depends(get_db_session),
+) -> TerritorialExportArtifactRepository:
+    return TerritorialExportArtifactRepository(session=session)
+
+
 def get_operation_ingestion_service(
     ingestion_repo: IngestionRepository = Depends(get_ingestion_repository),
     series_repo: SeriesRepository = Depends(get_series_repository),
@@ -135,6 +143,24 @@ def get_territorial_analytics_service(
         series_repo=series_repo,
         analytical_snapshot_repo=analytical_snapshot_repo,
         analytical_snapshot_ttl_seconds=settings.analytical_snapshot_ttl_seconds,
+    )
+
+
+def get_territorial_export_service(
+    territorial_repo: TerritorialRepository = Depends(get_territorial_repository),
+    series_repo: SeriesRepository = Depends(get_series_repository),
+    analytics_service: TerritorialAnalyticsService = Depends(get_territorial_analytics_service),
+    artifact_repo: TerritorialExportArtifactRepository = Depends(
+        get_territorial_export_artifact_repository
+    ),
+    settings: Settings = Depends(get_settings),
+) -> TerritorialExportService:
+    return TerritorialExportService(
+        territorial_repo=territorial_repo,
+        series_repo=series_repo,
+        analytics_service=analytics_service,
+        artifact_repo=artifact_repo,
+        export_ttl_seconds=settings.territorial_export_ttl_seconds,
     )
 
 

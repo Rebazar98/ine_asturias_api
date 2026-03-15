@@ -4,6 +4,7 @@ import json
 import re
 import unicodedata
 from collections.abc import Sequence
+from time import perf_counter
 from typing import Any
 
 from sqlalchemy import Select, func, select, update
@@ -395,6 +396,179 @@ class TerritorialRepository:
             return None
 
         return await self._serialize_unit_detail(unit)
+
+    async def get_unit_detail_by_id(self, territorial_unit_id: int) -> dict[str, Any] | None:
+        if self.session is None:
+            return None
+
+        statement = (
+            select(TerritorialUnit).where(TerritorialUnit.id == territorial_unit_id).limit(1)
+        )
+        result = await self.session.execute(statement)
+        unit = result.scalars().first()
+        if unit is None:
+            return None
+        return await self._serialize_unit_detail(unit)
+
+    async def list_hierarchy(self, territorial_unit_id: int) -> list[dict[str, Any]]:
+        if self.session is None:
+            return []
+
+        hierarchy_units: list[TerritorialUnit] = []
+        current_id: int | None = territorial_unit_id
+
+        while current_id is not None:
+            statement = select(TerritorialUnit).where(TerritorialUnit.id == current_id).limit(1)
+            result = await self.session.execute(statement)
+            unit = result.scalars().first()
+            if unit is None:
+                break
+            hierarchy_units.append(unit)
+            current_id = unit.parent_id
+
+        hierarchy_units.reverse()
+        return [await self._serialize_unit_summary(unit) for unit in hierarchy_units]
+
+    async def resolve_point(self, *, lat: float, lon: float) -> dict[str, Any] | None:
+        if self.session is None:
+            return None
+
+        started_at = perf_counter()
+        levels_considered = list(CANONICAL_TERRITORIAL_CODE_BY_LEVEL)
+        geometry_levels_statement = (
+            select(TerritorialUnit.unit_level, func.count(TerritorialUnit.id))
+            .where(
+                TerritorialUnit.unit_level.in_(levels_considered),
+                TerritorialUnit.geometry.is_not(None),
+                TerritorialUnit.is_active.is_(True),
+            )
+            .group_by(TerritorialUnit.unit_level)
+        )
+        geometry_levels_result = await self.session.execute(geometry_levels_statement)
+        levels_with_geometry = {
+            str(unit_level)
+            for unit_level, count in geometry_levels_result.all()
+            if int(count or 0) > 0
+        }
+        boundary_source = "ign_administrative_boundaries" if levels_with_geometry else None
+        point_expr = func.ST_SetSRID(func.ST_MakePoint(lon, lat), POSTGIS_DEFAULT_SRID)
+        matched_units: list[tuple[TerritorialUnit, TerritorialUnitCode | None]] = []
+        ambiguity_by_level: dict[str, list[dict[str, Any]]] = {}
+
+        for unit_level in levels_considered:
+            strategy = get_canonical_code_strategy(unit_level)
+            statement = (
+                select(TerritorialUnit, TerritorialUnitCode)
+                .outerjoin(
+                    TerritorialUnitCode,
+                    (
+                        (TerritorialUnitCode.territorial_unit_id == TerritorialUnit.id)
+                        & (
+                            TerritorialUnitCode.source_system
+                            == (strategy["source_system"] if strategy else "")
+                        )
+                        & (
+                            TerritorialUnitCode.code_type
+                            == (strategy["code_type"] if strategy else "")
+                        )
+                        & TerritorialUnitCode.is_primary.is_(True)
+                    ),
+                )
+                .where(
+                    TerritorialUnit.unit_level == unit_level,
+                    TerritorialUnit.geometry.is_not(None),
+                    TerritorialUnit.is_active.is_(True),
+                    func.ST_Covers(TerritorialUnit.geometry, point_expr),
+                )
+                .order_by(
+                    func.ST_Area(func.ST_Transform(TerritorialUnit.geometry, 3857)).asc(),
+                    TerritorialUnit.id.asc(),
+                )
+            )
+            result = await self.session.execute(statement)
+            rows = result.all()
+            if not rows:
+                continue
+            if len(rows) > 1:
+                ambiguity_by_level[unit_level] = [
+                    {
+                        "territorial_unit_id": unit.id,
+                        "canonical_name": unit.canonical_name,
+                        "canonical_code": code.code_value if code is not None else None,
+                    }
+                    for unit, code in rows
+                ]
+                self.logger.warning(
+                    "territorial_point_resolution_ambiguous_level",
+                    extra={
+                        "unit_level": unit_level,
+                        "lat_hint": round(lat, 2),
+                        "lon_hint": round(lon, 2),
+                        "candidate_count": len(rows),
+                        "candidate_ids": [unit.id for unit, _ in rows],
+                    },
+                )
+            matched_units.append(rows[0])
+
+        if not matched_units:
+            self.logger.info(
+                "territorial_point_resolution_no_match",
+                extra={
+                    "lat_hint": round(lat, 2),
+                    "lon_hint": round(lon, 2),
+                    "levels_considered": levels_considered,
+                    "duration_ms": round((perf_counter() - started_at) * 1000, 2),
+                },
+            )
+            return {
+                "matched_by": "geometry_cover",
+                "best_match": None,
+                "hierarchy": [],
+                "coverage": {
+                    "boundary_source": boundary_source,
+                    "levels_considered": levels_considered,
+                    "levels_matched": [],
+                },
+                "ambiguity_detected": False,
+                "ambiguity_by_level": {},
+            }
+
+        hierarchy = [
+            self._serialize_unit_summary_payload(unit, code)
+            for unit, code in sorted(
+                matched_units,
+                key=lambda row: levels_considered.index(row[0].unit_level),
+            )
+        ]
+        best_match = hierarchy[-1]
+        levels_matched = [item["unit_level"] for item in hierarchy]
+        ambiguity_detected = bool(ambiguity_by_level)
+
+        self.logger.info(
+            "territorial_point_resolution_resolved",
+            extra={
+                "lat_hint": round(lat, 2),
+                "lon_hint": round(lon, 2),
+                "levels_considered": levels_considered,
+                "levels_matched": levels_matched,
+                "best_match_unit_level": best_match["unit_level"],
+                "best_match_id": best_match["id"],
+                "ambiguity_detected": ambiguity_detected,
+                "duration_ms": round((perf_counter() - started_at) * 1000, 2),
+            },
+        )
+        return {
+            "matched_by": "geometry_cover",
+            "best_match": best_match,
+            "hierarchy": hierarchy,
+            "coverage": {
+                "boundary_source": boundary_source,
+                "levels_considered": levels_considered,
+                "levels_matched": levels_matched,
+            },
+            "ambiguity_detected": ambiguity_detected,
+            "ambiguity_by_level": ambiguity_by_level,
+        }
 
     async def upsert_boundary_unit(
         self,

@@ -137,6 +137,17 @@ TERRITORIAL_BOUNDARY_LOAD_DURATION_SECONDS = Histogram(
     ["source", "outcome"],
     buckets=(0.1, 0.25, 0.5, 1, 2, 5, 10, 30, 60, 120, 300),
 )
+TERRITORIAL_POINT_RESOLUTION_TOTAL = Counter(
+    "ine_asturias_territorial_point_resolution_total",
+    "Territorial point resolution outcomes.",
+    ["outcome"],
+)
+TERRITORIAL_POINT_RESOLUTION_DURATION_SECONDS = Histogram(
+    "ine_asturias_territorial_point_resolution_duration_seconds",
+    "Territorial point resolution duration.",
+    ["outcome"],
+    buckets=(0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5),
+)
 
 
 def metrics_payload() -> bytes:
@@ -322,6 +333,14 @@ def record_territorial_boundary_load(
             source=source,
             outcome=outcome,
         ).observe(duration_seconds)
+
+
+def record_territorial_point_resolution(outcome: str, duration_seconds: float) -> None:
+    TERRITORIAL_POINT_RESOLUTION_TOTAL.labels(outcome=outcome).inc()
+    if duration_seconds >= 0:
+        TERRITORIAL_POINT_RESOLUTION_DURATION_SECONDS.labels(outcome=outcome).observe(
+            duration_seconds
+        )
 
 
 def _iter_prometheus_lines(payload: bytes) -> Iterable[str]:

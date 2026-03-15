@@ -3,7 +3,12 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, RootModel
+from pydantic import BaseModel, Field, RootModel, field_validator
+
+from app.repositories.territorial_export_artifacts import (
+    SUPPORTED_EXPORT_PROVIDERS,
+    normalize_export_provider_keys,
+)
 
 
 class HealthResponse(BaseModel):
@@ -327,6 +332,60 @@ class TerritorialReportJobAcceptedResponse(BaseModel):
     params: dict[str, Any] = Field(default_factory=dict)
 
 
+class TerritorialExportRequest(BaseModel):
+    unit_level: Literal["municipality", "autonomous_community"]
+    code_value: str = Field(min_length=1, max_length=128)
+    format: Literal["zip"] = "zip"
+    include_providers: list[Literal["territorial", "ine", "analytics"]] = Field(
+        default_factory=lambda: ["territorial", "ine", "analytics"]
+    )
+
+    @field_validator("code_value", mode="before")
+    @classmethod
+    def strip_code_value(cls, value: str) -> str:
+        return str(value).strip()
+
+    @field_validator("include_providers", mode="before")
+    @classmethod
+    def normalize_providers(cls, value: list[str] | None) -> list[str]:
+        providers = normalize_export_provider_keys(value or list(SUPPORTED_EXPORT_PROVIDERS))
+        if not providers:
+            raise ValueError("include_providers must include at least one supported provider.")
+        return providers
+
+
+class TerritorialExportResultResponse(BaseModel):
+    export_id: int
+    export_key: str
+    format: Literal["zip"] = "zip"
+    territorial_context: AnalyticalTerritorialContextResponse
+    summary: dict[str, Any] = Field(default_factory=dict)
+    download_path: str
+    expires_at: datetime
+
+
+class TerritorialExportJobAcceptedResponse(BaseModel):
+    job_id: str
+    job_type: Literal["territorial_export"] = "territorial_export"
+    status: Literal["queued", "running", "completed", "failed"]
+    background: Literal[True] = True
+    status_path: str
+    params: TerritorialExportRequest
+
+
+class TerritorialExportJobStatusResponse(BaseModel):
+    job_id: str
+    job_type: Literal["territorial_export"] = "territorial_export"
+    status: Literal["queued", "running", "completed", "failed"]
+    created_at: str
+    started_at: str | None = None
+    finished_at: str | None = None
+    params: TerritorialExportRequest
+    progress: dict[str, Any] = Field(default_factory=dict)
+    result: TerritorialExportResultResponse | None = None
+    error: Any = None
+
+
 class TerritorialUnitListFiltersResponse(BaseModel):
     unit_level: str
     country_code: str | None = None
@@ -396,6 +455,28 @@ class TerritorialCatalogResponse(BaseModel):
 class GeocodingCoordinatesResponse(BaseModel):
     lat: float
     lon: float
+
+
+class TerritorialPointResolutionCoverageResponse(BaseModel):
+    boundary_source: str | None = None
+    levels_considered: list[str] = Field(default_factory=list)
+    levels_matched: list[str] = Field(default_factory=list)
+
+
+class TerritorialPointResolutionResultResponse(BaseModel):
+    matched_by: Literal["geometry_cover"] = "geometry_cover"
+    best_match: TerritorialUnitSummaryResponse
+    hierarchy: list[TerritorialUnitSummaryResponse] = Field(default_factory=list)
+    coverage: TerritorialPointResolutionCoverageResponse
+
+
+class TerritorialPointResolutionResponse(BaseModel):
+    source: Literal["internal.territorial.point_resolution"] = (
+        "internal.territorial.point_resolution"
+    )
+    query_coordinates: GeocodingCoordinatesResponse
+    result: TerritorialPointResolutionResultResponse | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class GeocodingTerritorialContextResponse(BaseModel):

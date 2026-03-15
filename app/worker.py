@@ -21,6 +21,7 @@ from app.repositories.analytics_snapshots import AnalyticalSnapshotRepository
 from app.repositories.catalog import TableCatalogRepository
 from app.repositories.ingestion import IngestionRepository
 from app.repositories.series import SeriesRepository
+from app.repositories.territorial_export_artifacts import TerritorialExportArtifactRepository
 from app.repositories.territorial import TerritorialRepository
 from app.services.asturias_resolver import AsturiasResolutionError, AsturiasResolver
 from app.services.ine_client import INEClientError, INEClientService
@@ -29,6 +30,7 @@ from app.services.territorial_analytics import (
     MUNICIPALITY_REPORT_TYPE,
     TerritorialAnalyticsService,
 )
+from app.services.territorial_exports import TERRITORIAL_EXPORT_JOB_TYPE, TerritorialExportService
 from app.settings import get_settings
 
 
@@ -237,6 +239,123 @@ async def run_municipality_report_job(
     return None
 
 
+async def run_territorial_export_job(
+    ctx: dict[str, Any], job_id: str, payload: dict[str, Any]
+) -> dict[str, Any] | None:
+    settings = ctx["settings"]
+    job_store: RedisJobStore = ctx["job_store"]
+    started_at = perf_counter()
+
+    async def report_progress(progress: dict[str, Any]) -> None:
+        await job_store.update_progress(job_id, **progress)
+
+    try:
+        await job_store.mark_running(job_id)
+        await report_progress(
+            {
+                "stage": "starting_export",
+                "unit_level": payload["unit_level"],
+                "code_value": payload["code_value"],
+                "format": payload.get("format", "zip"),
+            }
+        )
+
+        async with session_scope() as session:
+            territorial_repo = TerritorialRepository(session=session)
+            series_repo = SeriesRepository(session=session)
+            analytical_snapshot_repo = AnalyticalSnapshotRepository(session=session)
+            artifact_repo = TerritorialExportArtifactRepository(session=session)
+            analytics_service = TerritorialAnalyticsService(
+                territorial_repo=territorial_repo,
+                series_repo=series_repo,
+                analytical_snapshot_repo=analytical_snapshot_repo,
+                analytical_snapshot_ttl_seconds=settings.analytical_snapshot_ttl_seconds,
+            )
+            export_service = TerritorialExportService(
+                territorial_repo=territorial_repo,
+                series_repo=series_repo,
+                analytics_service=analytics_service,
+                artifact_repo=artifact_repo,
+                export_ttl_seconds=settings.territorial_export_ttl_seconds,
+            )
+            result = await export_service.build_export(
+                job_id=job_id,
+                unit_level=payload["unit_level"],
+                code_value=payload["code_value"],
+                artifact_format=payload.get("format", "zip"),
+                include_providers=payload.get("include_providers"),
+                progress_reporter=report_progress,
+            )
+
+        if result is None:
+            await job_store.fail_job(
+                job_id,
+                {
+                    "message": "Territorial unit code was not found.",
+                    "unit_level": payload["unit_level"],
+                    "code_value": payload["code_value"],
+                },
+            )
+            logger.warning(
+                "territorial_export_worker_job_not_found",
+                extra={
+                    "job_id": job_id,
+                    "unit_level": payload["unit_level"],
+                    "code_value": payload["code_value"],
+                },
+            )
+            record_job_duration(
+                TERRITORIAL_EXPORT_JOB_TYPE,
+                "failed",
+                perf_counter() - started_at,
+            )
+            return None
+
+        payload_result = result.model_dump(mode="json")
+        await job_store.complete_job(job_id, payload_result)
+        record_job_duration(
+            TERRITORIAL_EXPORT_JOB_TYPE,
+            "completed",
+            perf_counter() - started_at,
+        )
+        logger.info(
+            "territorial_export_worker_job_completed",
+            extra={
+                "job_id": job_id,
+                "unit_level": payload["unit_level"],
+                "code_value": payload["code_value"],
+                "export_id": result.export_id,
+                "byte_size": result.summary.get("byte_size"),
+                "artifact_reused": result.summary.get("artifact_reused"),
+            },
+        )
+        return payload_result
+    except Exception as exc:
+        logger.exception(
+            "territorial_export_worker_job_unexpected_error",
+            extra={
+                "job_id": job_id,
+                "unit_level": payload.get("unit_level"),
+                "code_value": payload.get("code_value"),
+            },
+        )
+        await job_store.fail_job(
+            job_id,
+            {
+                "message": "Unexpected error while generating the territorial export.",
+                "unit_level": payload.get("unit_level"),
+                "code_value": payload.get("code_value"),
+                "error": str(exc),
+            },
+        )
+        record_job_duration(
+            TERRITORIAL_EXPORT_JOB_TYPE,
+            "failed",
+            perf_counter() - started_at,
+        )
+    return None
+
+
 async def startup(ctx: dict[str, Any]) -> None:
     settings = get_settings()
     configure_logging(settings.log_level)
@@ -351,7 +470,11 @@ def _start_worker_metrics_server(port: int):
 
 
 class WorkerSettings:
-    functions = [run_operation_asturias_job, run_municipality_report_job]
+    functions = [
+        run_operation_asturias_job,
+        run_municipality_report_job,
+        run_territorial_export_job,
+    ]
     on_startup = startup
     on_shutdown = shutdown
     redis_settings = redis_settings_from_url(get_settings().redis_url or "redis://localhost:6379/0")

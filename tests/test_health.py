@@ -177,3 +177,85 @@ def test_metrics_endpoint_exposes_analytical_flow_metrics(
         )
         is not None
     )
+
+
+def test_metrics_endpoint_exposes_territorial_point_resolution_metrics(
+    client, dummy_territorial_repo
+):
+    client.app.state.settings.worker_metrics_url = None
+    dummy_territorial_repo.point_resolution_payload = {
+        "matched_by": "geometry_cover",
+        "best_match": {
+            "id": 33044,
+            "parent_id": 33,
+            "unit_level": "municipality",
+            "canonical_name": "Oviedo",
+            "display_name": "Oviedo",
+            "country_code": "ES",
+            "is_active": True,
+            "canonical_code_strategy": {
+                "source_system": "ine",
+                "code_type": "municipality",
+            },
+            "canonical_code": {
+                "source_system": "ine",
+                "code_type": "municipality",
+                "code_value": "33044",
+                "is_primary": True,
+            },
+        },
+        "hierarchy": [
+            {
+                "id": 33044,
+                "parent_id": 33,
+                "unit_level": "municipality",
+                "canonical_name": "Oviedo",
+                "display_name": "Oviedo",
+                "country_code": "ES",
+                "is_active": True,
+                "canonical_code_strategy": {
+                    "source_system": "ine",
+                    "code_type": "municipality",
+                },
+                "canonical_code": {
+                    "source_system": "ine",
+                    "code_type": "municipality",
+                    "code_value": "33044",
+                    "is_primary": True,
+                },
+            }
+        ],
+        "coverage": {
+            "boundary_source": "ign_administrative_boundaries",
+            "levels_considered": [
+                "country",
+                "autonomous_community",
+                "province",
+                "municipality",
+            ],
+            "levels_matched": ["municipality"],
+        },
+        "ambiguity_detected": False,
+        "ambiguity_by_level": {},
+    }
+
+    resolve_response = client.get("/territorios/resolve-point?lat=43.3614&lon=-5.8494")
+    assert resolve_response.status_code == 200
+
+    response = client.get("/metrics")
+
+    assert response.status_code == 200
+    assert (
+        re.search(
+            r'ine_asturias_territorial_point_resolution_total\{[^}]*outcome="matched"[^}]*\}',
+            response.text,
+        )
+        is not None
+    )
+    assert (
+        re.search(
+            r'ine_asturias_territorial_point_resolution_duration_seconds_bucket\{[^}]*outcome="matched"[^}]*\}',
+            response.text,
+        )
+        is not None
+    )

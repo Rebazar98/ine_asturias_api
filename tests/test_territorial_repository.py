@@ -32,15 +32,19 @@ class FakeScalarResult:
 
 
 class FakeExecuteResult:
-    def __init__(self, first_value=None, scalar_values=None):
+    def __init__(self, first_value=None, scalar_values=None, all_values=None):
         self._first_value = first_value
         self._scalar_values = scalar_values or []
+        self._all_values = all_values or []
 
     def first(self):
         return self._first_value
 
     def scalars(self):
         return FakeScalarResult(self._scalar_values)
+
+    def all(self):
+        return self._all_values
 
 
 class FakeSession:
@@ -558,3 +562,367 @@ def test_get_unit_detail_by_canonical_code_returns_codes_aliases_and_attributes(
     assert len(result["codes"]) == 2
     assert result["aliases"][0]["alias"] == "Uvieu"
     assert result["attributes"] == {"population_scope": "municipal"}
+
+
+def test_get_unit_detail_by_id_returns_codes_aliases_and_attributes():
+    unit = SimpleNamespace(
+        id=44,
+        parent_id=33,
+        unit_level=TERRITORIAL_UNIT_LEVEL_MUNICIPALITY,
+        canonical_name="Oviedo",
+        display_name="Oviedo",
+        country_code="ES",
+        is_active=True,
+        attributes_json={"population_scope": "municipal"},
+    )
+    canonical_code = SimpleNamespace(
+        source_system=INE_TERRITORIAL_SOURCE_SYSTEM,
+        code_type=INE_MUNICIPALITY_CODE_TYPE,
+        code_value="33044",
+        is_primary=True,
+    )
+    alternate_code = SimpleNamespace(
+        source_system=INE_TERRITORIAL_SOURCE_SYSTEM,
+        code_type=INE_MUNICIPALITY_CODE_TYPE,
+        code_value="330440000",
+        is_primary=False,
+    )
+    alias = SimpleNamespace(
+        id=1,
+        source_system="internal",
+        alias="Uvieu",
+        normalized_alias="uvieu",
+        alias_type="alternate_name",
+    )
+    session = FakeSession(
+        FakeExecuteResult(scalar_values=[unit]),
+        FakeExecuteResult(scalar_values=[canonical_code]),
+        FakeExecuteResult(scalar_values=[canonical_code, alternate_code]),
+        FakeExecuteResult(scalar_values=[alias]),
+    )
+    repository = TerritorialRepository(session=session)
+
+    result = asyncio.run(repository.get_unit_detail_by_id(44))
+
+    assert result is not None
+    assert result["id"] == 44
+    assert result["canonical_code"]["code_value"] == "33044"
+    assert len(result["codes"]) == 2
+    assert result["aliases"][0]["alias"] == "Uvieu"
+    assert result["attributes"] == {"population_scope": "municipal"}
+
+
+def test_list_hierarchy_returns_root_to_leaf_order():
+    country = SimpleNamespace(
+        id=1,
+        parent_id=None,
+        unit_level=TERRITORIAL_UNIT_LEVEL_COUNTRY,
+        canonical_name="Espana",
+        display_name="Espana",
+        country_code="ES",
+        is_active=True,
+    )
+    province = SimpleNamespace(
+        id=33,
+        parent_id=1,
+        unit_level=TERRITORIAL_UNIT_LEVEL_PROVINCE,
+        canonical_name="Asturias",
+        display_name="Asturias",
+        country_code="ES",
+        is_active=True,
+    )
+    municipality = SimpleNamespace(
+        id=44,
+        parent_id=33,
+        unit_level=TERRITORIAL_UNIT_LEVEL_MUNICIPALITY,
+        canonical_name="Oviedo",
+        display_name="Oviedo",
+        country_code="ES",
+        is_active=True,
+    )
+    country_code = SimpleNamespace(
+        source_system=ISO3166_TERRITORIAL_SOURCE_SYSTEM,
+        code_type=ISO3166_ALPHA2_CODE_TYPE,
+        code_value="ES",
+        is_primary=True,
+    )
+    province_code = SimpleNamespace(
+        source_system=INE_TERRITORIAL_SOURCE_SYSTEM,
+        code_type=INE_PROVINCE_CODE_TYPE,
+        code_value="33",
+        is_primary=True,
+    )
+    municipality_code = SimpleNamespace(
+        source_system=INE_TERRITORIAL_SOURCE_SYSTEM,
+        code_type=INE_MUNICIPALITY_CODE_TYPE,
+        code_value="33044",
+        is_primary=True,
+    )
+    session = FakeSession(
+        FakeExecuteResult(scalar_values=[municipality]),
+        FakeExecuteResult(scalar_values=[province]),
+        FakeExecuteResult(scalar_values=[country]),
+        FakeExecuteResult(scalar_values=[country_code]),
+        FakeExecuteResult(scalar_values=[province_code]),
+        FakeExecuteResult(scalar_values=[municipality_code]),
+    )
+    repository = TerritorialRepository(session=session)
+
+    result = asyncio.run(repository.list_hierarchy(44))
+
+    assert [item["unit_level"] for item in result] == [
+        TERRITORIAL_UNIT_LEVEL_COUNTRY,
+        TERRITORIAL_UNIT_LEVEL_PROVINCE,
+        TERRITORIAL_UNIT_LEVEL_MUNICIPALITY,
+    ]
+    assert [item["canonical_code"]["code_value"] for item in result] == ["ES", "33", "33044"]
+
+
+def test_resolve_point_returns_hierarchy_and_best_match():
+    country = SimpleNamespace(
+        id=1,
+        parent_id=None,
+        unit_level=TERRITORIAL_UNIT_LEVEL_COUNTRY,
+        canonical_name="Espana",
+        display_name="Espana",
+        country_code="ES",
+        is_active=True,
+    )
+    community = SimpleNamespace(
+        id=2,
+        parent_id=1,
+        unit_level=TERRITORIAL_UNIT_LEVEL_AUTONOMOUS_COMMUNITY,
+        canonical_name="Asturias",
+        display_name="Principado de Asturias",
+        country_code="ES",
+        is_active=True,
+    )
+    province = SimpleNamespace(
+        id=3,
+        parent_id=2,
+        unit_level=TERRITORIAL_UNIT_LEVEL_PROVINCE,
+        canonical_name="Asturias",
+        display_name="Asturias",
+        country_code="ES",
+        is_active=True,
+    )
+    municipality = SimpleNamespace(
+        id=4,
+        parent_id=3,
+        unit_level=TERRITORIAL_UNIT_LEVEL_MUNICIPALITY,
+        canonical_name="Oviedo",
+        display_name="Oviedo",
+        country_code="ES",
+        is_active=True,
+    )
+    country_code = SimpleNamespace(
+        source_system=ISO3166_TERRITORIAL_SOURCE_SYSTEM,
+        code_type=ISO3166_ALPHA2_CODE_TYPE,
+        code_value="ES",
+        is_primary=True,
+    )
+    community_code = SimpleNamespace(
+        source_system=INE_TERRITORIAL_SOURCE_SYSTEM,
+        code_type=INE_AUTONOMOUS_COMMUNITY_CODE_TYPE,
+        code_value="03",
+        is_primary=True,
+    )
+    province_code = SimpleNamespace(
+        source_system=INE_TERRITORIAL_SOURCE_SYSTEM,
+        code_type=INE_PROVINCE_CODE_TYPE,
+        code_value="33",
+        is_primary=True,
+    )
+    municipality_code = SimpleNamespace(
+        source_system=INE_TERRITORIAL_SOURCE_SYSTEM,
+        code_type=INE_MUNICIPALITY_CODE_TYPE,
+        code_value="33044",
+        is_primary=True,
+    )
+    session = FakeSession(
+        FakeExecuteResult(all_values=[(TERRITORIAL_UNIT_LEVEL_COUNTRY, 1)]),
+        FakeExecuteResult(all_values=[(country, country_code)]),
+        FakeExecuteResult(all_values=[(community, community_code)]),
+        FakeExecuteResult(all_values=[(province, province_code)]),
+        FakeExecuteResult(all_values=[(municipality, municipality_code)]),
+    )
+    repository = TerritorialRepository(session=session)
+
+    result = asyncio.run(repository.resolve_point(lat=43.3614, lon=-5.8494))
+
+    assert result["matched_by"] == "geometry_cover"
+    assert result["coverage"] == {
+        "boundary_source": "ign_administrative_boundaries",
+        "levels_considered": ["country", "autonomous_community", "province", "municipality"],
+        "levels_matched": ["country", "autonomous_community", "province", "municipality"],
+    }
+    assert result["best_match"]["canonical_code"]["code_value"] == "33044"
+    assert [item["unit_level"] for item in result["hierarchy"]] == [
+        "country",
+        "autonomous_community",
+        "province",
+        "municipality",
+    ]
+    assert result["ambiguity_detected"] is False
+
+
+def test_resolve_point_returns_no_coverage_when_no_boundaries_are_loaded():
+    session = FakeSession(
+        FakeExecuteResult(all_values=[]),
+        FakeExecuteResult(all_values=[]),
+        FakeExecuteResult(all_values=[]),
+        FakeExecuteResult(all_values=[]),
+        FakeExecuteResult(all_values=[]),
+    )
+    repository = TerritorialRepository(session=session)
+
+    result = asyncio.run(repository.resolve_point(lat=43.3614, lon=-5.8494))
+
+    assert result["best_match"] is None
+    assert result["hierarchy"] == []
+    assert result["coverage"] == {
+        "boundary_source": None,
+        "levels_considered": ["country", "autonomous_community", "province", "municipality"],
+        "levels_matched": [],
+    }
+    assert result["ambiguity_detected"] is False
+
+
+def test_resolve_point_marks_ambiguity_when_multiple_units_cover_same_level():
+    municipality_a = SimpleNamespace(
+        id=4,
+        parent_id=3,
+        unit_level=TERRITORIAL_UNIT_LEVEL_MUNICIPALITY,
+        canonical_name="Oviedo",
+        display_name="Oviedo",
+        country_code="ES",
+        is_active=True,
+    )
+    municipality_b = SimpleNamespace(
+        id=5,
+        parent_id=3,
+        unit_level=TERRITORIAL_UNIT_LEVEL_MUNICIPALITY,
+        canonical_name="Llanera",
+        display_name="Llanera",
+        country_code="ES",
+        is_active=True,
+    )
+    municipality_code_a = SimpleNamespace(
+        source_system=INE_TERRITORIAL_SOURCE_SYSTEM,
+        code_type=INE_MUNICIPALITY_CODE_TYPE,
+        code_value="33044",
+        is_primary=True,
+    )
+    municipality_code_b = SimpleNamespace(
+        source_system=INE_TERRITORIAL_SOURCE_SYSTEM,
+        code_type=INE_MUNICIPALITY_CODE_TYPE,
+        code_value="33035",
+        is_primary=True,
+    )
+    session = FakeSession(
+        FakeExecuteResult(all_values=[(TERRITORIAL_UNIT_LEVEL_MUNICIPALITY, 2)]),
+        FakeExecuteResult(all_values=[]),
+        FakeExecuteResult(all_values=[]),
+        FakeExecuteResult(all_values=[]),
+        FakeExecuteResult(
+            all_values=[
+                (municipality_a, municipality_code_a),
+                (municipality_b, municipality_code_b),
+            ]
+        ),
+    )
+    repository = TerritorialRepository(session=session)
+
+    result = asyncio.run(repository.resolve_point(lat=43.4, lon=-5.8))
+
+    assert result["best_match"]["canonical_code"]["code_value"] == "33044"
+    assert result["ambiguity_detected"] is True
+    assert result["ambiguity_by_level"]["municipality"] == [
+        {
+            "territorial_unit_id": 4,
+            "canonical_name": "Oviedo",
+            "canonical_code": "33044",
+        },
+        {
+            "territorial_unit_id": 5,
+            "canonical_name": "Llanera",
+            "canonical_code": "33035",
+        },
+    ]
+
+
+def test_resolve_point_returns_deepest_available_match_when_municipality_is_not_loaded():
+    country = SimpleNamespace(
+        id=1,
+        parent_id=None,
+        unit_level=TERRITORIAL_UNIT_LEVEL_COUNTRY,
+        canonical_name="Espana",
+        display_name="Espana",
+        country_code="ES",
+        is_active=True,
+    )
+    community = SimpleNamespace(
+        id=2,
+        parent_id=1,
+        unit_level=TERRITORIAL_UNIT_LEVEL_AUTONOMOUS_COMMUNITY,
+        canonical_name="Asturias",
+        display_name="Principado de Asturias",
+        country_code="ES",
+        is_active=True,
+    )
+    province = SimpleNamespace(
+        id=3,
+        parent_id=2,
+        unit_level=TERRITORIAL_UNIT_LEVEL_PROVINCE,
+        canonical_name="Asturias",
+        display_name="Asturias",
+        country_code="ES",
+        is_active=True,
+    )
+    country_code = SimpleNamespace(
+        source_system=ISO3166_TERRITORIAL_SOURCE_SYSTEM,
+        code_type=ISO3166_ALPHA2_CODE_TYPE,
+        code_value="ES",
+        is_primary=True,
+    )
+    community_code = SimpleNamespace(
+        source_system=INE_TERRITORIAL_SOURCE_SYSTEM,
+        code_type=INE_AUTONOMOUS_COMMUNITY_CODE_TYPE,
+        code_value="03",
+        is_primary=True,
+    )
+    province_code = SimpleNamespace(
+        source_system=INE_TERRITORIAL_SOURCE_SYSTEM,
+        code_type=INE_PROVINCE_CODE_TYPE,
+        code_value="33",
+        is_primary=True,
+    )
+    session = FakeSession(
+        FakeExecuteResult(
+            all_values=[
+                (TERRITORIAL_UNIT_LEVEL_COUNTRY, 1),
+                (TERRITORIAL_UNIT_LEVEL_AUTONOMOUS_COMMUNITY, 1),
+                (TERRITORIAL_UNIT_LEVEL_PROVINCE, 1),
+            ]
+        ),
+        FakeExecuteResult(all_values=[(country, country_code)]),
+        FakeExecuteResult(all_values=[(community, community_code)]),
+        FakeExecuteResult(all_values=[(province, province_code)]),
+        FakeExecuteResult(all_values=[]),
+    )
+    repository = TerritorialRepository(session=session)
+
+    result = asyncio.run(repository.resolve_point(lat=43.1, lon=-5.8))
+
+    assert result["best_match"]["unit_level"] == TERRITORIAL_UNIT_LEVEL_PROVINCE
+    assert result["best_match"]["canonical_code"]["code_value"] == "33"
+    assert result["coverage"] == {
+        "boundary_source": "ign_administrative_boundaries",
+        "levels_considered": ["country", "autonomous_community", "province", "municipality"],
+        "levels_matched": ["country", "autonomous_community", "province"],
+    }
+    assert [item["unit_level"] for item in result["hierarchy"]] == [
+        "country",
+        "autonomous_community",
+        "province",
+    ]

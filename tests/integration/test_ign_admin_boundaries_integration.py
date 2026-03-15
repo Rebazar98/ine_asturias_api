@@ -165,6 +165,41 @@ def test_ign_admin_loader_roundtrip_with_postgis():
                     assert row[4] == "ST_Point"
                     assert int(row[5]) == 4326
 
+                point_resolution = await TerritorialRepository(session=session).resolve_point(
+                    lat=0.5,
+                    lon=0.5,
+                )
+                assert point_resolution is not None
+                assert point_resolution["matched_by"] == "geometry_cover"
+                assert point_resolution["coverage"]["boundary_source"] == (
+                    "ign_administrative_boundaries"
+                )
+                assert point_resolution["coverage"]["levels_matched"] == [
+                    "country",
+                    "autonomous_community",
+                    "province",
+                    "municipality",
+                ]
+                assert point_resolution["best_match"]["canonical_code"]["code_value"] == (
+                    municipality_code
+                )
+                assert [item["unit_level"] for item in point_resolution["hierarchy"]] == [
+                    "country",
+                    "autonomous_community",
+                    "province",
+                    "municipality",
+                ]
+                assert point_resolution["ambiguity_detected"] is False
+
+                border_resolution = await TerritorialRepository(session=session).resolve_point(
+                    lat=0.0,
+                    lon=0.0,
+                )
+                assert border_resolution is not None
+                assert border_resolution["best_match"]["canonical_code"]["code_value"] == (
+                    municipality_code
+                )
+
                 alias_rows = (
                     (
                         await session.execute(

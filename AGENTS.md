@@ -59,6 +59,7 @@ Los services DEBEN encapsular logica de dominio y adaptacion externa. En el esta
 - `CartoCiudadClientService`: provider adapter geografico actual
 - `IGNAdministrativeSnapshotClient`: adapter actual para snapshots administrativos versionables IGN/CNIG
 - `IGNAdministrativeBoundariesLoaderService`: orquestacion interna de `fetch -> raw -> validacion -> matching -> upsert` sobre el modelo territorial
+- `TerritorialExportService`: orquestacion interna de bundles semanticos multi-fuente por entidad territorial
 - `AsturiasResolver`: logica de resolucion geografica para operaciones del INE
 - `normalizers.py`: capa de normalizacion y flatten de payloads INE
 - `cartociudad_normalizers.py`: traduccion inicial de payloads geograficos al contrato semantico interno
@@ -109,6 +110,7 @@ Los repositories DEBEN encapsular toda escritura y lectura persistente. Hoy exis
 - `TableCatalogRepository`
 - `GeocodingCacheRepository`
 - `AnalyticalSnapshotRepository`
+- `TerritorialExportArtifactRepository`
 
 La persistence layer DEBE encargarse de:
 
@@ -117,6 +119,7 @@ La persistence layer DEBE encargarse de:
 - mantener el catalogo de tablas y su estado operativo
 - mantener cache persistente de geocodificacion y reverse geocoding cuando aplique
 - mantener snapshots analiticos reutilizables cuando exista una justificacion operativa explicita
+- mantener artefactos de exportacion territorial reutilizables cuando exista un contrato publico de bundle semantico
 - aislar al resto del sistema de detalles SQLAlchemy y PostgreSQL
 
 #### Catalog system
@@ -397,11 +400,14 @@ El modelo DEBE separar con claridad:
 - tablas normalizadas: observaciones canonicas para consulta
 - tablas de catalogo: control operativo y cobertura
 - tablas de snapshots analiticos: salidas semanticas reutilizables con clave logica y expiracion
+- tablas de artefactos de exportacion: bundles publicos reutilizables con TTL, hash y metadata de manifiesto
 - futuras tablas dimensionales o espaciales: territorios, geometria, codigos y relaciones
 
 Las tablas raw NO DEBEN mezclarse con las analiticas ni reutilizarse como fuente directa de endpoints semanticos.
 
 Los snapshots analiticos NO DEBEN sustituir al modelo normalizado ni convertirse en nueva fuente de verdad del dominio. Su funcion DEBE limitarse a reutilizacion operativa, reduccion de recalculo y soporte a automatizacion.
+
+Los artefactos de exportacion territorial NO DEBEN convertirse en fuente primaria del dominio. Su funcion DEBE limitarse a distribucion controlada, reutilizacion temporal y entrega de bundles semanticos multi-fuente.
 
 ### 7.4 Estrategia de codigo territorial canonico
 

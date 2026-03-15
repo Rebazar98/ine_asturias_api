@@ -6,11 +6,11 @@ from datetime import datetime, timezone
 from time import perf_counter
 
 from arq.connections import ArqRedis
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 
 from app.core.jobs import BaseJobStore
 from app.core.logging import get_logger
-from app.core.metrics import record_job_duration
+from app.core.metrics import record_job_duration, record_territorial_point_resolution
 from app.core.rate_limit import RateLimitPolicy
 from app.dependencies import (
     build_rate_limit_dependency,
@@ -19,10 +19,14 @@ from app.dependencies import (
     get_job_store,
     get_settings,
     get_territorial_analytics_service,
+    get_territorial_export_artifact_repository,
+    get_territorial_export_service,
     get_territorial_repository,
     require_api_key,
 )
+from app.repositories.territorial_export_artifacts import TerritorialExportArtifactRepository
 from app.repositories.territorial import (
+    TERRITORIAL_UNIT_LEVEL_COUNTRY,
     TERRITORIAL_UNIT_LEVEL_AUTONOMOUS_COMMUNITY,
     TERRITORIAL_UNIT_LEVEL_MUNICIPALITY,
     TERRITORIAL_UNIT_LEVEL_PROVINCE,
@@ -31,11 +35,18 @@ from app.repositories.territorial import (
 from app.schemas import (
     BackgroundJobStatusResponse,
     GeocodeResponse,
+    GeocodingCoordinatesResponse,
     ReverseGeocodeResponse,
     TerritorialCatalogLevelCoverageResponse,
     TerritorialCatalogResourceResponse,
     TerritorialCatalogResponse,
     TerritorialCatalogSummaryResponse,
+    TerritorialExportJobAcceptedResponse,
+    TerritorialExportJobStatusResponse,
+    TerritorialExportRequest,
+    TerritorialPointResolutionCoverageResponse,
+    TerritorialPointResolutionResponse,
+    TerritorialPointResolutionResultResponse,
     TerritorialReportJobAcceptedResponse,
     TerritorialMunicipalitySummaryResponse,
     TerritorialUnitDetailResponse,
@@ -52,6 +63,7 @@ from app.services.territorial_analytics import (
     MUNICIPALITY_REPORT_TYPE,
     TerritorialAnalyticsService,
 )
+from app.services.territorial_exports import TERRITORIAL_EXPORT_JOB_TYPE, TerritorialExportService
 from app.settings import Settings
 
 
@@ -59,6 +71,7 @@ router = APIRouter(tags=["territorial"], dependencies=[Depends(require_api_key)]
 logger = get_logger("app.api.routes_territorial")
 MUNICIPALITY_REPORT_JOB_TYPE = "territorial_municipality_report"
 TERRITORIAL_CATALOG_SOURCE = "internal.catalog.territorial"
+TERRITORIAL_EXPORT_CONTENT_TYPE = "application/zip"
 GEOCODE_RATE_LIMIT = build_rate_limit_dependency(
     RateLimitPolicy(
         name="geocode",
@@ -70,6 +83,20 @@ REVERSE_GEOCODE_RATE_LIMIT = build_rate_limit_dependency(
     RateLimitPolicy(
         name="reverse_geocode",
         public_requests_per_minute=100,
+        authenticated_requests_per_minute=1000,
+    )
+)
+POINT_RESOLUTION_RATE_LIMIT = build_rate_limit_dependency(
+    RateLimitPolicy(
+        name="territorial_resolve_point",
+        public_requests_per_minute=100,
+        authenticated_requests_per_minute=1000,
+    )
+)
+TERRITORIAL_EXPORT_RATE_LIMIT = build_rate_limit_dependency(
+    RateLimitPolicy(
+        name="territorial_export",
+        public_requests_per_minute=10,
         authenticated_requests_per_minute=1000,
     )
 )
@@ -163,6 +190,25 @@ def _build_territorial_catalog_resources() -> list[TerritorialCatalogResourceRes
             response_contract="ReverseGeocodeResponse",
         ),
         TerritorialCatalogResourceResponse(
+            resource_key="territorial.resolve_point.query",
+            title="Territorial point resolution",
+            category="territorial_read",
+            method="GET",
+            path="/territorios/resolve-point",
+            summary=(
+                "Resolve a coordinate pair against internal administrative boundary coverage "
+                "without exposing raw geometry."
+            ),
+            unit_levels=[
+                TERRITORIAL_UNIT_LEVEL_COUNTRY,
+                TERRITORIAL_UNIT_LEVEL_AUTONOMOUS_COMMUNITY,
+                TERRITORIAL_UNIT_LEVEL_PROVINCE,
+                TERRITORIAL_UNIT_LEVEL_MUNICIPALITY,
+            ],
+            query_params=["lat", "lon"],
+            response_contract="TerritorialPointResolutionResponse",
+        ),
+        TerritorialCatalogResourceResponse(
             resource_key=IGN_ADMIN_CATALOG_RESOURCE_KEY,
             title="IGN administrative boundary coverage",
             category="territorial_read",
@@ -230,6 +276,40 @@ def _build_territorial_catalog_resources() -> list[TerritorialCatalogResourceRes
             path_params=["job_id"],
             response_contract="BackgroundJobStatusResponse",
         ),
+        TerritorialCatalogResourceResponse(
+            resource_key="territorial.export.job",
+            title="Territorial export job",
+            category="territorial_jobs",
+            method="POST",
+            path="/territorios/export",
+            summary="Queue a multi-source territorial export bundle for a canonical territorial entity.",
+            unit_levels=[
+                TERRITORIAL_UNIT_LEVEL_AUTONOMOUS_COMMUNITY,
+                TERRITORIAL_UNIT_LEVEL_MUNICIPALITY,
+            ],
+            response_contract="TerritorialExportJobAcceptedResponse",
+            supports_background_job=True,
+        ),
+        TerritorialCatalogResourceResponse(
+            resource_key="territorial.export.status",
+            title="Territorial export status",
+            category="territorial_jobs",
+            method="GET",
+            path="/territorios/exports/{job_id}",
+            summary="Read the status and result of a previously queued territorial export job.",
+            path_params=["job_id"],
+            response_contract="TerritorialExportJobStatusResponse",
+        ),
+        TerritorialCatalogResourceResponse(
+            resource_key="territorial.export.download",
+            title="Territorial export download",
+            category="territorial_jobs",
+            method="GET",
+            path="/territorios/exports/{job_id}/download",
+            summary="Download the ZIP bundle produced by a completed territorial export job.",
+            path_params=["job_id"],
+            response_contract="application/zip",
+        ),
     ]
 
 
@@ -272,6 +352,153 @@ async def get_territorial_job_status(
     return BackgroundJobStatusResponse(**job)
 
 
+@router.post(
+    "/territorios/export",
+    response_model=TerritorialExportJobAcceptedResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    tags=["territorial-jobs"],
+    summary="Queue a multi-source territorial export bundle",
+)
+async def create_territorial_export_job(
+    request: Request,
+    export_request: TerritorialExportRequest,
+    _: None = Depends(TERRITORIAL_EXPORT_RATE_LIMIT),
+    job_store: BaseJobStore = Depends(get_job_store),
+    export_service: TerritorialExportService = Depends(get_territorial_export_service),
+    arq_pool: ArqRedis | None = Depends(get_arq_pool),
+    settings: Settings = Depends(get_settings),
+) -> TerritorialExportJobAcceptedResponse:
+    job_params = export_request.model_dump(mode="json")
+    job = await job_store.create_job(job_type=TERRITORIAL_EXPORT_JOB_TYPE, params=job_params)
+    job_id = job["job_id"]
+
+    try:
+        if arq_pool is not None:
+            await arq_pool.enqueue_job(
+                "run_territorial_export_job",
+                job_id,
+                job_params,
+                _job_id=job_id,
+                _queue_name=settings.job_queue_name,
+            )
+        else:
+            task = asyncio.create_task(
+                _run_territorial_export_job_inline(
+                    job_store=job_store,
+                    export_service=export_service,
+                    job_id=job_id,
+                    export_request=export_request,
+                )
+            )
+            request.app.state.inline_job_tasks = getattr(
+                request.app.state, "inline_job_tasks", set()
+            )
+            request.app.state.inline_job_tasks.add(task)
+            task.add_done_callback(
+                lambda completed: request.app.state.inline_job_tasks.discard(completed)
+            )
+    except Exception as exc:
+        await job_store.fail_job(
+            job_id,
+            {
+                "message": "Could not enqueue the territorial export job.",
+                "unit_level": export_request.unit_level,
+                "code_value": export_request.code_value,
+                "error": str(exc),
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"message": "Background queue unavailable.", "job_id": job_id},
+        )
+
+    logger.info(
+        "territorial_export_job_queued",
+        extra={
+            "job_id": job_id,
+            "unit_level": export_request.unit_level,
+            "code_value": export_request.code_value,
+            "providers": export_request.include_providers,
+        },
+    )
+    return TerritorialExportJobAcceptedResponse(
+        job_id=job_id,
+        status=job["status"],
+        status_path=f"/territorios/exports/{job_id}",
+        params=export_request,
+    )
+
+
+@router.get(
+    "/territorios/exports/{job_id}",
+    response_model=TerritorialExportJobStatusResponse,
+    tags=["territorial-jobs"],
+    summary="Get the status of a territorial export job",
+)
+async def get_territorial_export_status(
+    job_id: str,
+    job_store: BaseJobStore = Depends(get_job_store),
+) -> TerritorialExportJobStatusResponse:
+    job = await job_store.get_job(job_id)
+    if job is None or job.get("job_type") != TERRITORIAL_EXPORT_JOB_TYPE:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"message": "Territorial export job not found.", "job_id": job_id},
+        )
+    return TerritorialExportJobStatusResponse(**job)
+
+
+@router.get(
+    "/territorios/exports/{job_id}/download",
+    tags=["territorial-jobs"],
+    summary="Download a completed territorial export bundle",
+)
+async def download_territorial_export(
+    job_id: str,
+    job_store: BaseJobStore = Depends(get_job_store),
+    artifact_repo: TerritorialExportArtifactRepository = Depends(
+        get_territorial_export_artifact_repository
+    ),
+) -> Response:
+    job = await job_store.get_job(job_id)
+    if job is None or job.get("job_type") != TERRITORIAL_EXPORT_JOB_TYPE:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"message": "Territorial export job not found.", "job_id": job_id},
+        )
+    if job.get("status") != "completed":
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "message": "Territorial export artifact is not available yet.",
+                "job_id": job_id,
+            },
+        )
+
+    result = job.get("result") or {}
+    export_id = result.get("export_id")
+    if not isinstance(export_id, int):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"message": "Territorial export artifact was not found.", "job_id": job_id},
+        )
+
+    artifact = await artifact_repo.get_by_export_id(export_id)
+    if artifact is None or artifact["expires_at"] <= datetime.now(timezone.utc):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"message": "Territorial export artifact was not found.", "job_id": job_id},
+        )
+
+    return Response(
+        content=artifact["payload_bytes"],
+        media_type=artifact.get("content_type") or TERRITORIAL_EXPORT_CONTENT_TYPE,
+        headers={
+            "Content-Disposition": f'attachment; filename="{artifact["filename"]}"',
+        },
+    )
+
+
 @router.get(
     "/geocode",
     response_model=GeocodeResponse,
@@ -307,6 +534,99 @@ async def reverse_geocode(
     geocoding_service: CartoCiudadGeocodingService = Depends(get_cartociudad_geocoding_service),
 ) -> ReverseGeocodeResponse:
     return await geocoding_service.reverse_geocode(lat, lon)
+
+
+@router.get(
+    "/territorios/resolve-point",
+    response_model=TerritorialPointResolutionResponse,
+    tags=["territorial-semantic"],
+    summary="Resolve a point against internal territorial boundary coverage",
+    description=(
+        "Semantic territorial resolution over internal administrative boundaries. "
+        "This endpoint returns the best internal territorial match and hierarchy "
+        "without exposing public geometry contracts."
+    ),
+)
+async def resolve_territorial_point(
+    lat: float = Query(..., ge=-90, le=90),
+    lon: float = Query(..., ge=-180, le=180),
+    _: None = Depends(POINT_RESOLUTION_RATE_LIMIT),
+    territorial_repo: TerritorialRepository = Depends(get_territorial_repository),
+) -> TerritorialPointResolutionResponse:
+    started_at = perf_counter()
+    resolution = await territorial_repo.resolve_point(lat=lat, lon=lon)
+
+    if resolution is None:
+        duration_seconds = perf_counter() - started_at
+        record_territorial_point_resolution("no_coverage", duration_seconds)
+        logger.info(
+            "territorial_point_resolution_unavailable",
+            extra={
+                "lat_hint": round(lat, 2),
+                "lon_hint": round(lon, 2),
+                "duration_ms": round(duration_seconds * 1000, 2),
+            },
+        )
+        return TerritorialPointResolutionResponse(
+            query_coordinates=GeocodingCoordinatesResponse(lat=lat, lon=lon),
+            result=None,
+            metadata={"reason": "no_boundary_coverage_loaded"},
+        )
+
+    coverage = resolution["coverage"]
+    duration_seconds = perf_counter() - started_at
+    if resolution["best_match"] is None:
+        outcome = "no_coverage" if coverage["boundary_source"] is None else "no_match"
+        reason = (
+            "no_boundary_coverage_loaded"
+            if coverage["boundary_source"] is None
+            else "outside_loaded_coverage"
+        )
+        record_territorial_point_resolution(outcome, duration_seconds)
+        logger.info(
+            "territorial_point_resolution_no_match",
+            extra={
+                "lat_hint": round(lat, 2),
+                "lon_hint": round(lon, 2),
+                "levels_considered": coverage["levels_considered"],
+                "duration_ms": round(duration_seconds * 1000, 2),
+            },
+        )
+        return TerritorialPointResolutionResponse(
+            query_coordinates=GeocodingCoordinatesResponse(lat=lat, lon=lon),
+            result=None,
+            metadata={"reason": reason},
+        )
+
+    ambiguity_detected = bool(resolution.get("ambiguity_detected"))
+    record_territorial_point_resolution(
+        "ambiguous_match" if ambiguity_detected else "matched",
+        duration_seconds,
+    )
+    logger.info(
+        "territorial_point_resolution_response_ready",
+        extra={
+            "lat_hint": round(lat, 2),
+            "lon_hint": round(lon, 2),
+            "best_match_unit_level": resolution["best_match"]["unit_level"],
+            "levels_matched": coverage["levels_matched"],
+            "ambiguity_detected": ambiguity_detected,
+            "duration_ms": round(duration_seconds * 1000, 2),
+        },
+    )
+    return TerritorialPointResolutionResponse(
+        query_coordinates=GeocodingCoordinatesResponse(lat=lat, lon=lon),
+        result=TerritorialPointResolutionResultResponse(
+            matched_by="geometry_cover",
+            best_match=TerritorialUnitSummaryResponse(**resolution["best_match"]),
+            hierarchy=[TerritorialUnitSummaryResponse(**item) for item in resolution["hierarchy"]],
+            coverage=TerritorialPointResolutionCoverageResponse(**coverage),
+        ),
+        metadata={
+            "ambiguity_detected": ambiguity_detected,
+            "ambiguity_by_level": resolution.get("ambiguity_by_level", {}),
+        },
+    )
 
 
 @router.get(
@@ -482,7 +802,7 @@ async def get_municipality_summary(
 ) -> TerritorialMunicipalitySummaryResponse:
     if period_from and period_to and period_from > period_to:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail={
                 "message": "period_from cannot be greater than period_to.",
             },
@@ -532,7 +852,7 @@ async def create_municipality_report_job(
 ) -> TerritorialReportJobAcceptedResponse:
     if period_from and period_to and period_from > period_to:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail={
                 "message": "period_from cannot be greater than period_to.",
             },
@@ -704,6 +1024,103 @@ async def _run_municipality_report_job_inline(
         )
         record_job_duration(
             MUNICIPALITY_REPORT_JOB_TYPE,
+            "failed",
+            perf_counter() - started_at,
+        )
+
+
+async def _run_territorial_export_job_inline(
+    *,
+    job_store: BaseJobStore,
+    export_service: TerritorialExportService,
+    job_id: str,
+    export_request: TerritorialExportRequest,
+) -> None:
+    started_at = perf_counter()
+
+    async def report_progress(progress: dict[str, object]) -> None:
+        await job_store.update_progress(job_id, **progress)
+
+    try:
+        await job_store.mark_running(job_id)
+        await report_progress(
+            {
+                "stage": "starting_export",
+                "unit_level": export_request.unit_level,
+                "code_value": export_request.code_value,
+                "format": export_request.format,
+            }
+        )
+        result = await export_service.build_export(
+            job_id=job_id,
+            unit_level=export_request.unit_level,
+            code_value=export_request.code_value,
+            artifact_format=export_request.format,
+            include_providers=export_request.include_providers,
+            progress_reporter=report_progress,
+        )
+        if result is None:
+            await job_store.fail_job(
+                job_id,
+                {
+                    "message": "Territorial unit code was not found.",
+                    "unit_level": export_request.unit_level,
+                    "code_value": export_request.code_value,
+                },
+            )
+            logger.warning(
+                "territorial_export_inline_job_not_found",
+                extra={
+                    "job_id": job_id,
+                    "unit_level": export_request.unit_level,
+                    "code_value": export_request.code_value,
+                },
+            )
+            record_job_duration(
+                TERRITORIAL_EXPORT_JOB_TYPE,
+                "failed",
+                perf_counter() - started_at,
+            )
+            return
+
+        payload_result = result.model_dump(mode="json")
+        await job_store.complete_job(job_id, payload_result)
+        record_job_duration(
+            TERRITORIAL_EXPORT_JOB_TYPE,
+            "completed",
+            perf_counter() - started_at,
+        )
+        logger.info(
+            "territorial_export_inline_job_completed",
+            extra={
+                "job_id": job_id,
+                "unit_level": export_request.unit_level,
+                "code_value": export_request.code_value,
+                "export_id": result.export_id,
+                "artifact_reused": result.summary.get("artifact_reused"),
+                "byte_size": result.summary.get("byte_size"),
+            },
+        )
+    except Exception as exc:
+        logger.exception(
+            "territorial_export_inline_job_unexpected_error",
+            extra={
+                "job_id": job_id,
+                "unit_level": export_request.unit_level,
+                "code_value": export_request.code_value,
+            },
+        )
+        await job_store.fail_job(
+            job_id,
+            {
+                "message": "Unexpected error while generating the territorial export.",
+                "unit_level": export_request.unit_level,
+                "code_value": export_request.code_value,
+                "error": str(exc),
+            },
+        )
+        record_job_duration(
+            TERRITORIAL_EXPORT_JOB_TYPE,
             "failed",
             perf_counter() - started_at,
         )
