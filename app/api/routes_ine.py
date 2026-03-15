@@ -83,7 +83,9 @@ async def get_table_data(
     date: str | None = Query(default=None),
     ine_client: INEClientService = Depends(get_ine_client_service),
     ingestion_repo: IngestionRepository = Depends(get_ingestion_repository),
-    ingestion_service: INEOperationIngestionService = Depends(get_operation_ingestion_service),
+    ingestion_service: INEOperationIngestionService = Depends(
+        get_operation_ingestion_service
+    ),
 ) -> JSONPayload:
     params = _build_query_params(nult=nult, det=det, tip=tip, date=date)
     payload = await ine_client.get_table(table_id, params)
@@ -95,7 +97,9 @@ async def get_table_data(
         request_params=params,
         payload=payload,
     )
-    await ingestion_service.normalize_and_store_table(payload=payload, table_id=table_id)
+    await ingestion_service.normalize_and_store_table(
+        payload=payload, table_id=table_id
+    )
     return JSONPayload(root=payload)
 
 
@@ -200,7 +204,8 @@ async def get_job_status(
     summary="List normalized INE series",
     description=(
         "Semantic query endpoint over normalized INE observations. "
-        "It uses INE geography codes as the current canonical external territorial code system."
+        "It uses INE geography codes as the current canonical external territorial "
+        "code system."
     ),
 )
 async def list_normalized_ine_series(
@@ -250,7 +255,9 @@ async def list_normalized_ine_series(
             and territorial_lookup["canonical_code"].get("source_system")
             == INE_TERRITORIAL_SOURCE_SYSTEM
         ):
-            effective_geography_code = territorial_lookup["canonical_code"]["code_value"]
+            effective_geography_code = territorial_lookup["canonical_code"][
+                "code_value"
+            ]
             effective_geography_name = None
             territorial_resolution = INESeriesTerritorialResolutionResponse(
                 input_name=geography_name,
@@ -308,7 +315,9 @@ async def get_asturias_operation_data(
     settings: Settings = Depends(get_settings),
     ine_client: INEClientService = Depends(get_ine_client_service),
     resolver: AsturiasResolver = Depends(get_asturias_resolver),
-    operation_service: INEOperationIngestionService = Depends(get_operation_ingestion_service),
+    operation_service: INEOperationIngestionService = Depends(
+        get_operation_ingestion_service
+    ),
     job_store: BaseJobStore = Depends(get_job_store),
     arq_pool: ArqRedis | None = Depends(get_arq_pool),
 ) -> JSONPayload | JSONResponse:
@@ -339,7 +348,9 @@ async def get_asturias_operation_data(
     )
 
     if background_mode:
-        job = await job_store.create_job(job_type=BACKGROUND_JOB_TYPE, params=job_params)
+        job = await job_store.create_job(
+            job_type=BACKGROUND_JOB_TYPE, params=job_params
+        )
         job_id = job["job_id"]
         try:
             if arq_pool is not None:
@@ -374,7 +385,9 @@ async def get_asturias_operation_data(
                 )
                 request.app.state.inline_job_tasks.add(task)
                 task.add_done_callback(
-                    lambda completed: request.app.state.inline_job_tasks.discard(completed)
+                    lambda completed: request.app.state.inline_job_tasks.discard(
+                        completed
+                    )
                 )
         except Exception as exc:
             await job_store.fail_job(
@@ -400,9 +413,16 @@ async def get_asturias_operation_data(
         )
         logger.info(
             "asturias_background_job_queued",
-            extra={"operation_code": op_code, "job_id": job_id, "max_tables": effective_max_tables},
+            extra={
+                "operation_code": op_code,
+                "job_id": job_id,
+                "max_tables": effective_max_tables,
+            },
         )
-        return JSONResponse(status_code=status.HTTP_202_ACCEPTED, content=accepted.model_dump())
+        return JSONResponse(
+            status_code=status.HTTP_202_ACCEPTED,
+            content=accepted.model_dump(),
+        )
 
     resolution = await resolver.resolve(
         op_code=op_code,
@@ -450,12 +470,15 @@ async def _run_asturias_operation_job_inline(
     job_id: str,
 ) -> None:
     started_at = time.perf_counter()
+
     async def report_progress(progress: dict[str, Any]) -> None:
         await job_store.update_progress(job_id, **progress)
 
     try:
         await job_store.mark_running(job_id)
-        await report_progress({"stage": "resolving_asturias", "operation_code": op_code})
+        await report_progress(
+            {"stage": "resolving_asturias", "operation_code": op_code}
+        )
         resolution = await resolver.resolve(
             op_code=op_code,
             geo_variable_id=geo_variable_id,
@@ -482,10 +505,14 @@ async def _run_asturias_operation_job_inline(
             progress_reporter=report_progress,
         )
         await job_store.complete_job(job_id, payload)
-        record_job_duration(BACKGROUND_JOB_TYPE, "completed", time.perf_counter() - started_at)
+        record_job_duration(
+            BACKGROUND_JOB_TYPE, "completed", time.perf_counter() - started_at
+        )
     except (AsturiasResolutionError, INEClientError) as exc:
         await job_store.fail_job(job_id, exc.detail)
-        record_job_duration(BACKGROUND_JOB_TYPE, "failed", time.perf_counter() - started_at)
+        record_job_duration(
+            BACKGROUND_JOB_TYPE, "failed", time.perf_counter() - started_at
+        )
     except Exception as exc:
         detail = (
             exc.args[0]
@@ -497,7 +524,9 @@ async def _run_asturias_operation_job_inline(
             }
         )
         await job_store.fail_job(job_id, detail)
-        record_job_duration(BACKGROUND_JOB_TYPE, "failed", time.perf_counter() - started_at)
+        record_job_duration(
+            BACKGROUND_JOB_TYPE, "failed", time.perf_counter() - started_at
+        )
 
 
 def _resolve_max_tables(max_tables: int | None, settings: Settings) -> int | None:
