@@ -1,6 +1,6 @@
 """add territorial export artifacts table
 
-Revision ID: 0007_territorial_export_artifacts
+Revision ID: 0007_territorial_exports
 Revises: 0006_analytical_snapshots
 Create Date: 2026-03-15 14:15:00
 """
@@ -12,7 +12,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 
-revision: str = "0007_territorial_export_artifacts"
+revision: str = "0007_territorial_exports"
 down_revision: str | None = "0006_analytical_snapshots"
 branch_labels: Sequence[str] | None = None
 depends_on: Sequence[str] | None = None

@@ -920,7 +920,7 @@ docker compose run --rm migrate
 curl http://127.0.0.1:8001/health
 curl http://127.0.0.1:8001/health/ready
 docker compose run --rm api python scripts/smoke_stack.py
-docker compose run --rm api python scripts/verify_restore.py --base-url http://api:8000 --min-ingestion-rows 1 --min-normalized-rows 1 --min-catalog-rows 1 --expected-alembic-version 0006_analytical_snapshots --functional-operation-code 22
+docker compose run --rm api python scripts/verify_restore.py --base-url http://api:8000 --min-ingestion-rows 1 --min-normalized-rows 1 --min-catalog-rows 1 --expected-alembic-version 0007_territorial_exports --functional-operation-code 22
 ```
 
 ### Regla operativa
@@ -1124,7 +1124,7 @@ Despues de restaurar la base en un entorno controlado:
 
 ```bash
 docker compose run --rm migrate
-docker compose run --rm api python scripts/verify_restore.py --base-url http://api:8000 --min-ingestion-rows 1 --min-catalog-rows 1 --expected-alembic-version 0006_analytical_snapshots --functional-operation-code 22
+docker compose run --rm api python scripts/verify_restore.py --base-url http://api:8000 --min-ingestion-rows 1 --min-catalog-rows 1 --expected-alembic-version 0007_territorial_exports --functional-operation-code 22
 ```
 
 La verificacion reutiliza `API_KEY` del entorno si existe o acepta `--api-key` para entornos protegidos como staging.
