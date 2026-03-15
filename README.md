@@ -1,6 +1,6 @@
 ﻿# ine_asturias_api
 
-`ine_asturias_api` es un backend FastAPI para ingesta, normalizacion y publicacion de datos del INE con foco inicial en Asturias. La base actual ya incorpora PostgreSQL, PostGIS, Alembic, Redis, jobs desacoplados, worker dedicado, catalogo persistente de tablas, observabilidad minima y una base territorial preparada para crecer hacia nuevas fuentes oficiales.
+`ine_asturias_api` es un backend FastAPI para ingesta, normalizacion y publicacion de datos del INE con foco inicial en Asturias. La base actual ya incorpora PostgreSQL, PostGIS, Alembic, Redis, jobs desacoplados, worker dedicado, catalogo persistente de tablas, observabilidad minima, CartoCiudad bajo demanda y una carga administrativa IGN/CNIG versionable para enriquecer el modelo territorial interno.
 
 ## Documentacion
 
@@ -10,6 +10,7 @@ Documentacion disponible en la raiz del proyecto:
 - `DOCUMENTACION_EVOLUCION_PROYECTO.txt`: registro historico y memoria tecnica del proyecto.
 - `PLAN_TECNICO_PLATAFORMA_DATOS_TERRITORIALES.md`: roadmap de evolucion hacia plataforma territorial multi-fuente.
 - `PLAN_FASE_CARTOCIUDAD_IGN_ON_DEMAND.md`: plan ejecutado para consolidar CartoCiudad como segunda fuente oficial bajo demanda.
+- `PLAN_FASE_IGN_ADMINISTRATIVO_DIRECTO.md`: plan ejecutado para incorporar IGN/CNIG administrativo directo mediante snapshots versionables.
 - `MONITORING_SLOS.md`: objetivos operativos, SLIs y reglas base de alertado para produccion.
 - `FASE2_STAGING_OPERATIVO_BACKLOG.md`: contexto de trabajo y backlog ejecutable para la fase de staging operativo real.
 - `FASE3_MODELO_TERRITORIAL_BACKLOG.md`: backlog ejecutable para la fase de modelo territorial operativo y base geoespacial interna.
@@ -25,7 +26,7 @@ Documentacion disponible en la raiz del proyecto:
 ## Arquitectura actual
 
 - `app/api`: routers FastAPI.
-- `app/services`: cliente INE, resolucion de Asturias, normalizacion y orquestacion de ingesta.
+- `app/services`: cliente INE, CartoCiudad, adapter IGN administrativo, resolucion de Asturias, normalizacion y orquestacion de ingesta.
 - `app/repositories`: persistencia raw, normalizada, catalogo, base territorial y cache geoespacial persistente.
 - `app/core`: logging JSON, cache TTL, jobs, metricas y utilidades de Redis.
 - `app/models.py`: modelos SQLAlchemy, incluyendo el nucleo territorial preparado para PostGIS.
@@ -52,6 +53,8 @@ Documentacion disponible en la raiz del proyecto:
 | `APP_VERSION` | Version operativa actual de la aplicacion | `0.1.0-rc1` |
 | `APP_ENV` | Entorno de ejecucion | `local` |
 | `INE_BASE_URL` | Base URL del INE | `https://servicios.ine.es/wstempus/js/ES` |
+| `CARTOCIUDAD_BASE_URL` | Base URL del provider geografico CartoCiudad | `https://www.cartociudad.es/geocoder/api/geocoder` |
+| `IGN_ADMIN_SNAPSHOT_URL` | Snapshot versionable IGN/CNIG para carga administrativa directa | `https://.../recintos_municipales.zip` |
 | `HTTP_TIMEOUT_SECONDS` | Timeout HTTP hacia el proveedor | `15` |
 | `PROVIDER_TOTAL_TIMEOUT_SECONDS` | Presupuesto total por llamada upstream incluyendo reintentos | `30` |
 | `HTTP_RETRY_MAX_ATTEMPTS` | Numero maximo de intentos HTTP por llamada upstream | `3` |
@@ -330,6 +333,7 @@ Capacidades actuales del repositorio territorial:
 - listado estable de codigos asociados a una unidad mediante `list_codes(...)`
 - listado paginado por nivel territorial mediante `list_units(...)`
 - detalle territorial por codigo canonico mediante `get_unit_detail_by_canonical_code(...)`
+- upsert idempotente de limites administrativos y centroides mediante `upsert_boundary_unit(...)`
 
 Endpoints territoriales publicos actuales:
 
@@ -338,6 +342,7 @@ Endpoints territoriales publicos actuales:
 - `GET /territorios/provincias` devuelve provincias y admite filtro por `autonomous_community_code`.
 - `GET /municipio/{codigo_ine}` devuelve detalle de municipio por codigo canonico INE, incluyendo codigos, aliases y atributos.
 - `GET /territorios/catalogo` publica tambien `GET /geocode` y `GET /reverse_geocode` como recursos oficiales de descubrimiento.
+- `GET /territorios/catalogo` anuncia tambien la cobertura administrativa cargada desde IGN/CNIG y el conteo de unidades con geometria/centroide por nivel.
 
 ## Catalogo territorial minimo
 
@@ -346,7 +351,7 @@ La Fase 5 incorpora `GET /territorios/catalogo` como punto de descubrimiento lig
 El endpoint devuelve:
 
 - `resources`: recursos publicados realmente consumibles por contrato semantico interno.
-- `territorial_levels`: niveles territoriales disponibles con cobertura basica (`units_total`, `active_units`) y rutas asociadas.
+- `territorial_levels`: niveles territoriales disponibles con cobertura basica (`units_total`, `active_units`, `geometry_units`, `centroid_units`) y rutas asociadas.
 - `summary`: conteo agregado de recursos de lectura, analitica y jobs.
 - `metadata`: contexto operativo minimo para consumo automatizado.
 
@@ -356,7 +361,14 @@ Con la consolidacion de CartoCiudad bajo demanda, el catalogo publicado ya inclu
 
 - `GET /geocode`
 - `GET /reverse_geocode`
+- `territorial.ign_administrative_boundaries.catalog`
 - recursos territoriales y analiticos internos relacionados
+
+La carga administrativa directa de IGN/CNIG NO abre aun endpoints publicos de geometria. En esta fase sirve para:
+
+- enriquecer `territorial_units` con `geometry` y `centroid` en SRID `4326`
+- dejar trazabilidad raw versionable en `ingestion_raw`
+- publicar cobertura interna reutilizable desde `/territorios/catalogo`
 
 ## Contrato base de salidas analiticas
 
@@ -583,6 +595,34 @@ Regla semantica clave:
 - `request_params` saneados para evitar exponer direcciones completas o coordenadas exactas en auditoria operacional reutilizable
 
 Guarda payloads completos del proveedor con contexto de llamada para auditoria y depuracion.
+
+La integracion administrativa directa con IGN/CNIG tambien persiste snapshots versionables y grupos por nivel con:
+
+- `source_type=ign_admin_boundaries_snapshot`
+- `source_type=ign_admin_boundaries_country`
+- `source_type=ign_admin_boundaries_autonomous_community`
+- `source_type=ign_admin_boundaries_province`
+- `source_type=ign_admin_boundaries_municipality`
+
+El payload raw almacenado conserva cobertura, version y fuente de carga, pero NO se expone como contrato publico.
+
+## Carga administrativa IGN/CNIG
+
+La nueva fuente oficial directa de limites administrativos se carga mediante script interno y snapshots versionables. El contrato publico sigue siendo el modelo territorial interno; no existe aun un endpoint publico de geometria cruda.
+
+Modos de carga soportados:
+
+- desde fichero local o ZIP descargado: `python scripts/load_ign_admin_boundaries.py --input-path data/ign_asturias_boundaries.zip --pretty`
+- desde URL configurada: `python scripts/load_ign_admin_boundaries.py --snapshot-url https://example.invalid/ign-asturias.zip --pretty`
+- usando `IGN_ADMIN_SNAPSHOT_URL` desde entorno: `python scripts/load_ign_admin_boundaries.py --pretty`
+
+Comportamiento actual de la fase:
+
+- scope por defecto: Asturias (`autonomous_community_code=03`) mas unidades padre necesarias
+- normalizacion a `FeatureCollection` en `4326`
+- validacion de limites `MULTIPOLYGON` y centroides `POINT`
+- matching por codigo canonico y parent linkage antes del upsert final
+- trazabilidad raw en `ingestion_raw` y publicacion agregada en `/territorios/catalogo`
 
 ### `ine_series_normalized`
 
@@ -1150,10 +1190,10 @@ Cobertura relevante actual:
 
 - La cache general sigue siendo local al proceso; Redis se usa ya para jobs, no aun para cache general.
 - El worker en Redis + `arq` esta preparado para operacion, pero la politica completa de reintentos y observabilidad avanzada puede crecer en siguientes sprints.
-- El modelo territorial base ya expone una primera capa publica de lectura territorial y sigue preparado para la entrada futura de IGN y CartoCiudad.
+- El modelo territorial base ya expone una primera capa publica de lectura territorial y ya incorpora CartoCiudad bajo demanda e IGN/CNIG administrativo por carga interna, pero aun no publica endpoints espaciales semanticos propios.
 - La agregacion de `/metrics` mezcla metricas de aplicacion del API y del worker, pero las metricas genericas de proceso siguen siendo per-proceso por diseno.
 - El contenedor Postgres actual puede mostrar `collation version mismatch`; ya esta tratado operativamente, pero conviene resolverlo antes de un entorno persistente serio.
-- No se han anadido todavia nuevas integraciones externas: este bloque endurece la base tecnica del sistema antes de ampliar fuentes.
+- La carga IGN/CNIG actual esta pensada para snapshots versionables Asturias-first; la ampliacion nacional completa y los endpoints espaciales quedan para la siguiente fase.
 
 
 

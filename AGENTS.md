@@ -53,10 +53,12 @@ Los routers NO DEBEN:
 
 #### Services
 
-Los services DEBEN encapsular logica de dominio y adaptacion externa. En el estado actual existen tres piezas principales:
+Los services DEBEN encapsular logica de dominio y adaptacion externa. En el estado actual existen varias piezas principales:
 
 - `INEClientService`: provider adapter actual del INE
 - `CartoCiudadClientService`: provider adapter geografico actual
+- `IGNAdministrativeSnapshotClient`: adapter actual para snapshots administrativos versionables IGN/CNIG
+- `IGNAdministrativeBoundariesLoaderService`: orquestacion interna de `fetch -> raw -> validacion -> matching -> upsert` sobre el modelo territorial
 - `AsturiasResolver`: logica de resolucion geografica para operaciones del INE
 - `normalizers.py`: capa de normalizacion y flatten de payloads INE
 - `cartociudad_normalizers.py`: traduccion inicial de payloads geograficos al contrato semantico interno
@@ -70,7 +72,7 @@ Los services DEBEN:
 
 #### Providers
 
-El proyecto DEBE tratar a cada proveedor externo como una capa explicita de adaptacion. En el codigo actual esta materializada dentro de `app/services/ine_client.py`. En futuras integraciones, IGN y CartoCiudad DEBEN introducir su propio adapter siguiendo el mismo patron.
+El proyecto DEBE tratar a cada proveedor externo como una capa explicita de adaptacion. En el codigo actual esto ya existe para INE, CartoCiudad e IGN administrativo en `app/services`. Toda nueva fuente futura DEBE seguir el mismo patron.
 
 Un provider adapter DEBE:
 
@@ -601,12 +603,14 @@ La hoja de ruta tecnica del proyecto DEBE alinearse con estas lineas:
 
 ### 12.1 IGN y CartoCiudad
 
-- DEBE incorporarse un provider adapter dedicado para IGN / CartoCiudad
+- YA existen un provider adapter dedicado para CartoCiudad y un adapter/versioned loader para IGN administrativo
 - DEBEN existir contratos normalizados para geocodificacion y reverse geocoding
 - DEBE persistirse cache para consultas repetidas de alto valor
 - NO DEBE exponerse el payload crudo del proveedor como contrato principal
 - el adapter DEBE vivir en `app/services` y limitarse a adaptacion HTTP, errores, timeouts y cache keys
 - la persistencia de cache o catalogos futuros DEBE resolverse en repositories, no dentro del adapter
+- la carga administrativa directa desde IGN/CNIG DEBE priorizar snapshots versionables o ficheros descargables frente a WFS live cuando se busque reproducibilidad operativa
+- la carga IGN administrativa DEBE persistir raw en `ingestion_raw`, validar `MULTIPOLYGON`/`POINT` en `4326` y hacer upsert territorial solo tras matching canonico fiable
 - cualquier contrato publico futuro DEBE apoyarse en el modelo territorial interno y no en ids opacos del proveedor
 - los contratos publicos futuros de `/geocode` y `/reverse_geocode` DEBEN compartir una semantica comun basada en `source`, `cached`, `coordinates`, `entity_type`, `territorial_context`, `territorial_resolution` y `metadata`
 - `query` y `query_coordinates` DEBEN diferenciar el caso directo y el inverso, pero el shape del `result` DEBE mantenerse consistente

@@ -1,16 +1,24 @@
 from __future__ import annotations
 
+import json
 import re
 import unicodedata
 from collections.abc import Sequence
 from typing import Any
 
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, func, select, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import get_logger
-from app.models import TerritorialUnit, TerritorialUnitAlias, TerritorialUnitCode
+from app.models import (
+    POSTGIS_DEFAULT_SRID,
+    TERRITORIAL_BOUNDARY_GEOMETRY_TYPE,
+    TERRITORIAL_CENTROID_GEOMETRY_TYPE,
+    TerritorialUnit,
+    TerritorialUnitAlias,
+    TerritorialUnitCode,
+)
 
 
 TERRITORIAL_UNIT_LEVEL_COUNTRY = "country"
@@ -58,6 +66,10 @@ CANONICAL_TERRITORIAL_CODE_BY_LEVEL = {
         "source_system": INE_TERRITORIAL_SOURCE_SYSTEM,
         "code_type": INE_MUNICIPALITY_CODE_TYPE,
     },
+}
+POSTGIS_GEOMETRY_TYPE_NAMES = {
+    TERRITORIAL_BOUNDARY_GEOMETRY_TYPE: "ST_MultiPolygon",
+    TERRITORIAL_CENTROID_GEOMETRY_TYPE: "ST_Point",
 }
 
 
@@ -318,6 +330,8 @@ class TerritorialRepository:
             if self.session is None:
                 total = 0
                 active_units = 0
+                geometry_units = 0
+                centroid_units = 0
             else:
                 total_statement = select(func.count(TerritorialUnit.id)).where(
                     TerritorialUnit.unit_level == unit_level,
@@ -334,12 +348,31 @@ class TerritorialRepository:
                 active_result = await self.session.execute(active_statement)
                 active_units = int(active_result.scalars().first() or 0)
 
+                geometry_statement = select(func.count(TerritorialUnit.id)).where(
+                    TerritorialUnit.unit_level == unit_level,
+                    TerritorialUnit.country_code == country_code,
+                    TerritorialUnit.geometry.is_not(None),
+                )
+                geometry_result = await self.session.execute(geometry_statement)
+                geometry_units = int(geometry_result.scalars().first() or 0)
+
+                centroid_statement = select(func.count(TerritorialUnit.id)).where(
+                    TerritorialUnit.unit_level == unit_level,
+                    TerritorialUnit.country_code == country_code,
+                    TerritorialUnit.centroid.is_not(None),
+                )
+                centroid_result = await self.session.execute(centroid_statement)
+                centroid_units = int(centroid_result.scalars().first() or 0)
+
             coverage_rows.append(
                 {
                     "unit_level": unit_level,
                     "country_code": country_code,
                     "units_total": total,
                     "active_units": active_units,
+                    "geometry_units": geometry_units,
+                    "centroid_units": centroid_units,
+                    "boundary_source": "ign_administrative_boundaries" if geometry_units else None,
                     "canonical_code_strategy": get_canonical_code_strategy(unit_level),
                 }
             )
@@ -362,6 +395,119 @@ class TerritorialRepository:
             return None
 
         return await self._serialize_unit_detail(unit)
+
+    async def upsert_boundary_unit(
+        self,
+        *,
+        unit_level: str,
+        canonical_code: str,
+        canonical_name: str,
+        display_name: str,
+        country_code: str,
+        parent_id: int | None,
+        geometry_geojson: dict[str, Any],
+        centroid_geojson: dict[str, Any] | None,
+        provider_source: str,
+        provider_alias: str | None = None,
+        provider_alias_type: str = TERRITORIAL_ALIAS_TYPE_PROVIDER_NAME,
+        boundary_metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if self.session is None:
+            raise RuntimeError("TerritorialRepository requires a database session.")
+
+        strategy = get_canonical_code_strategy(unit_level)
+        if strategy is None:
+            raise ValueError(f"Unsupported territorial unit level: {unit_level}.")
+
+        unit = await self._get_unit_model_by_canonical_code(
+            unit_level=unit_level,
+            code_value=canonical_code,
+        )
+        if unit is None:
+            unit = await self._get_unit_model_by_name_and_parent(
+                unit_level=unit_level,
+                canonical_name=canonical_name,
+                parent_id=parent_id,
+            )
+
+        created = unit is None
+        if unit is None:
+            unit = TerritorialUnit(
+                parent_id=parent_id,
+                unit_level=unit_level,
+                canonical_name=canonical_name,
+                normalized_name=normalize_territorial_name(canonical_name),
+                display_name=display_name or canonical_name,
+                country_code=country_code,
+                is_active=True,
+                attributes_json={},
+            )
+            self.session.add(unit)
+            await self.session.flush()
+        else:
+            unit.parent_id = parent_id
+            unit.canonical_name = canonical_name
+            unit.normalized_name = normalize_territorial_name(canonical_name)
+            unit.display_name = display_name or canonical_name
+            unit.country_code = country_code
+            unit.is_active = True
+
+        await self._ensure_primary_code(
+            territorial_unit_id=unit.id,
+            source_system=strategy["source_system"],
+            code_type=strategy["code_type"],
+            code_value=canonical_code,
+        )
+        if provider_alias:
+            await self._ensure_alias(
+                territorial_unit_id=unit.id,
+                source_system=provider_source,
+                alias=provider_alias,
+                alias_type=provider_alias_type,
+            )
+
+        existing_attributes = dict(getattr(unit, "attributes_json", {}) or {})
+        existing_boundary_metadata = dict(existing_attributes.get("boundary_source", {}) or {})
+        unit.attributes_json = {
+            **existing_attributes,
+            "boundary_source": {
+                **existing_boundary_metadata,
+                **dict(boundary_metadata or {}),
+                "provider_source": provider_source,
+            },
+        }
+        await self.session.flush()
+
+        geometry_expr, centroid_expr = await self._build_validated_boundary_expressions(
+            geometry_geojson=geometry_geojson,
+            centroid_geojson=centroid_geojson,
+        )
+        await self.session.execute(
+            update(TerritorialUnit)
+            .where(TerritorialUnit.id == unit.id)
+            .values(
+                geometry=geometry_expr,
+                centroid=centroid_expr,
+                updated_at=func.now(),
+            )
+        )
+        await self.session.flush()
+
+        self.logger.info(
+            "territorial_boundary_unit_upserted",
+            extra={
+                "territorial_unit_id": unit.id,
+                "unit_level": unit_level,
+                "canonical_code": canonical_code,
+                "created": created,
+            },
+        )
+        return {
+            "territorial_unit_id": unit.id,
+            "unit_level": unit_level,
+            "canonical_code": canonical_code,
+            "created": created,
+        }
 
     async def ping(self) -> bool:
         if self.session is None:
@@ -463,6 +609,185 @@ class TerritorialRepository:
         )
         result = await self.session.execute(statement)
         return {code.territorial_unit_id: code for code in result.scalars().all()}
+
+    async def _get_unit_model_by_canonical_code(
+        self,
+        *,
+        unit_level: str,
+        code_value: str,
+    ) -> TerritorialUnit | None:
+        if self.session is None:
+            return None
+
+        strategy = get_canonical_code_strategy(unit_level)
+        if strategy is None:
+            return None
+
+        statement = (
+            select(TerritorialUnit)
+            .join(
+                TerritorialUnitCode, TerritorialUnitCode.territorial_unit_id == TerritorialUnit.id
+            )
+            .where(
+                TerritorialUnit.unit_level == unit_level,
+                TerritorialUnitCode.source_system == strategy["source_system"],
+                TerritorialUnitCode.code_type == strategy["code_type"],
+                TerritorialUnitCode.code_value == code_value,
+                TerritorialUnitCode.is_primary.is_(True),
+            )
+            .limit(1)
+        )
+        result = await self.session.execute(statement)
+        return result.scalars().first()
+
+    async def _get_unit_model_by_name_and_parent(
+        self,
+        *,
+        unit_level: str,
+        canonical_name: str,
+        parent_id: int | None,
+    ) -> TerritorialUnit | None:
+        if self.session is None:
+            return None
+
+        statement = (
+            select(TerritorialUnit)
+            .where(
+                TerritorialUnit.unit_level == unit_level,
+                TerritorialUnit.normalized_name == normalize_territorial_name(canonical_name),
+                TerritorialUnit.parent_id == parent_id,
+            )
+            .limit(1)
+        )
+        result = await self.session.execute(statement)
+        return result.scalars().first()
+
+    async def _ensure_primary_code(
+        self,
+        *,
+        territorial_unit_id: int,
+        source_system: str,
+        code_type: str,
+        code_value: str,
+    ) -> None:
+        if self.session is None:
+            return
+
+        statement = (
+            select(TerritorialUnitCode)
+            .where(
+                TerritorialUnitCode.territorial_unit_id == territorial_unit_id,
+                TerritorialUnitCode.source_system == source_system,
+                TerritorialUnitCode.code_type == code_type,
+            )
+            .limit(1)
+        )
+        result = await self.session.execute(statement)
+        existing = result.scalars().first()
+        if existing is None:
+            self.session.add(
+                TerritorialUnitCode(
+                    territorial_unit_id=territorial_unit_id,
+                    source_system=source_system,
+                    code_type=code_type,
+                    code_value=code_value,
+                    is_primary=True,
+                )
+            )
+            return
+
+        existing.code_value = code_value
+        existing.is_primary = True
+
+    async def _ensure_alias(
+        self,
+        *,
+        territorial_unit_id: int,
+        source_system: str,
+        alias: str,
+        alias_type: str,
+    ) -> None:
+        if self.session is None:
+            return
+
+        normalized_alias = normalize_territorial_name(alias)
+        statement = (
+            select(TerritorialUnitAlias)
+            .where(
+                TerritorialUnitAlias.territorial_unit_id == territorial_unit_id,
+                TerritorialUnitAlias.source_system == source_system,
+                TerritorialUnitAlias.normalized_alias == normalized_alias,
+                TerritorialUnitAlias.alias_type == alias_type,
+            )
+            .limit(1)
+        )
+        result = await self.session.execute(statement)
+        existing = result.scalars().first()
+        if existing is None:
+            self.session.add(
+                TerritorialUnitAlias(
+                    territorial_unit_id=territorial_unit_id,
+                    source_system=source_system,
+                    alias=alias,
+                    normalized_alias=normalized_alias,
+                    alias_type=alias_type,
+                )
+            )
+            return
+
+        existing.alias = alias
+
+    async def _build_validated_boundary_expressions(
+        self,
+        *,
+        geometry_geojson: dict[str, Any],
+        centroid_geojson: dict[str, Any] | None,
+    ) -> tuple[Any, Any]:
+        if self.session is None:
+            raise RuntimeError("TerritorialRepository requires a database session.")
+
+        geometry_expr = func.ST_Multi(
+            func.ST_SetSRID(
+                func.ST_GeomFromGeoJSON(json.dumps(geometry_geojson, sort_keys=True)),
+                POSTGIS_DEFAULT_SRID,
+            )
+        )
+        centroid_expr = (
+            func.ST_SetSRID(
+                func.ST_GeomFromGeoJSON(json.dumps(centroid_geojson, sort_keys=True)),
+                POSTGIS_DEFAULT_SRID,
+            )
+            if centroid_geojson is not None
+            else func.ST_Centroid(geometry_expr)
+        )
+        statement = select(
+            func.ST_IsValid(geometry_expr),
+            func.ST_GeometryType(geometry_expr),
+            func.ST_SRID(geometry_expr),
+            func.ST_GeometryType(centroid_expr),
+            func.ST_SRID(centroid_expr),
+        )
+        result = await self.session.execute(statement)
+        (
+            geometry_is_valid,
+            geometry_type,
+            geometry_srid,
+            centroid_type,
+            centroid_srid,
+        ) = result.first()
+
+        if not geometry_is_valid:
+            raise ValueError("Boundary geometry is not valid according to PostGIS.")
+        if geometry_type != POSTGIS_GEOMETRY_TYPE_NAMES[TERRITORIAL_BOUNDARY_GEOMETRY_TYPE]:
+            raise ValueError(f"Boundary geometry must be {TERRITORIAL_BOUNDARY_GEOMETRY_TYPE}.")
+        if int(geometry_srid or 0) != POSTGIS_DEFAULT_SRID:
+            raise ValueError(f"Boundary geometry SRID must be {POSTGIS_DEFAULT_SRID}.")
+        if centroid_type != POSTGIS_GEOMETRY_TYPE_NAMES[TERRITORIAL_CENTROID_GEOMETRY_TYPE]:
+            raise ValueError(f"Boundary centroid must be {TERRITORIAL_CENTROID_GEOMETRY_TYPE}.")
+        if int(centroid_srid or 0) != POSTGIS_DEFAULT_SRID:
+            raise ValueError(f"Boundary centroid SRID must be {POSTGIS_DEFAULT_SRID}.")
+
+        return geometry_expr, centroid_expr
 
     @staticmethod
     def _serialize_unit_summary_payload(

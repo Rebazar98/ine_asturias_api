@@ -126,6 +126,17 @@ WORKER_HEARTBEAT_TIMESTAMP = Gauge(
     "Latest worker heartbeat timestamp.",
     ["queue_name"],
 )
+TERRITORIAL_BOUNDARY_FEATURES_TOTAL = Counter(
+    "ine_asturias_territorial_boundary_features_total",
+    "Territorial administrative boundary feature events.",
+    ["source", "stage", "unit_level"],
+)
+TERRITORIAL_BOUNDARY_LOAD_DURATION_SECONDS = Histogram(
+    "ine_asturias_territorial_boundary_load_duration_seconds",
+    "Administrative boundary load duration.",
+    ["source", "outcome"],
+    buckets=(0.1, 0.25, 0.5, 1, 2, 5, 10, 30, 60, 120, 300),
+)
 
 
 def metrics_payload() -> bytes:
@@ -285,6 +296,32 @@ def record_job_duration(job_type: str, outcome: str, duration_seconds: float) ->
 
 def record_worker_heartbeat(queue_name: str) -> None:
     WORKER_HEARTBEAT_TIMESTAMP.labels(queue_name=queue_name).set(time())
+
+
+def record_territorial_boundary_feature(
+    source: str,
+    stage: str,
+    unit_level: str,
+    count: int = 1,
+) -> None:
+    if count > 0:
+        TERRITORIAL_BOUNDARY_FEATURES_TOTAL.labels(
+            source=source,
+            stage=stage,
+            unit_level=unit_level,
+        ).inc(count)
+
+
+def record_territorial_boundary_load(
+    source: str,
+    outcome: str,
+    duration_seconds: float,
+) -> None:
+    if duration_seconds >= 0:
+        TERRITORIAL_BOUNDARY_LOAD_DURATION_SECONDS.labels(
+            source=source,
+            outcome=outcome,
+        ).observe(duration_seconds)
 
 
 def _iter_prometheus_lines(payload: bytes) -> Iterable[str]:

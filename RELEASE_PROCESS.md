@@ -349,7 +349,29 @@ Si una de estas condiciones no se cumple, la siguiente fase debe permanecer cerr
 Estado actual de esa condicion:
 
 - CartoCiudad ya queda consolidada como segunda fuente oficial en modo bajo demanda;
-- la siguiente apertura recomendada ya no es otra fuente HTTP aislada, sino capa B2B (`API keys`, auditoria y cuotas) o materializacion selectiva de catalogos geograficos.
+- IGN/CNIG administrativo directo ya queda integrado como carga interna versionable para enriquecer `territorial_units`;
+- la siguiente apertura recomendada ya no es otra fuente HTTP aislada, sino capa B2B (`API keys`, auditoria y cuotas) o endpoints espaciales semanticos apoyados en el modelo territorial enriquecido.
+
+### Validacion manual opcional de IGN administrativo
+
+Cuando un RC quiera dejar evidencia de la carga administrativa directa, puede ejecutarse esta comprobacion manual fuera del gate obligatorio:
+
+```bash
+docker compose run --rm api python scripts/load_ign_admin_boundaries.py --pretty
+```
+
+Si se prefiere fijar un snapshot concreto sin depender de la variable de entorno:
+
+```bash
+docker compose run --rm api python scripts/load_ign_admin_boundaries.py --input-path /app/data/ign_asturias_boundaries.zip --pretty
+```
+
+Evidencia esperada:
+
+- `source=ign_administrative_boundaries`
+- `features_upserted > 0`
+- `raw_records_saved > 0`
+- `/territorios/catalogo` reflejando `boundary_source=ign_administrative_boundaries` y conteo de `geometry_units`
 
 ## Evidencia operativa reciente
 

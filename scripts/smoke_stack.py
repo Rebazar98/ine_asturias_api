@@ -167,6 +167,7 @@ def _validate_territorial_catalog(client: httpx.Client) -> dict[str, Any]:
         "territorial.provinces.list",
         "territorial.geocode.query",
         "territorial.reverse_geocode.query",
+        "territorial.ign_administrative_boundaries.catalog",
         "territorial.municipality.detail",
         "territorial.municipality.summary",
         "territorial.municipality.report_job",

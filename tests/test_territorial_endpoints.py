@@ -218,6 +218,8 @@ def test_get_territorial_catalog_exposes_resources_and_basic_coverage(
             "display_name": "Asturias",
             "country_code": "ES",
             "is_active": True,
+            "has_geometry": True,
+            "has_centroid": True,
         }
     ]
     dummy_territorial_repo.units_by_level[TERRITORIAL_UNIT_LEVEL_MUNICIPALITY] = [
@@ -229,6 +231,8 @@ def test_get_territorial_catalog_exposes_resources_and_basic_coverage(
             "display_name": "Oviedo",
             "country_code": "ES",
             "is_active": True,
+            "has_geometry": True,
+            "has_centroid": True,
         },
         {
             "id": 33024,
@@ -247,9 +251,9 @@ def test_get_territorial_catalog_exposes_resources_and_basic_coverage(
     payload = response.json()
     assert payload["source"] == "internal.catalog.territorial"
     assert payload["summary"] == {
-        "resources_total": 8,
+        "resources_total": 9,
         "territorial_levels_total": 3,
-        "read_resources_total": 5,
+        "read_resources_total": 6,
         "analytics_resources_total": 2,
         "job_resources_total": 1,
     }
@@ -258,6 +262,7 @@ def test_get_territorial_catalog_exposes_resources_and_basic_coverage(
         "intended_consumers": ["n8n", "agents", "programmatic_clients"],
         "raw_provider_contracts_exposed": False,
         "discovery_scope": "published_territorial_resources",
+        "official_sources": ["ine", "cartociudad", "ign_administrative_boundaries"],
     }
     assert [level["unit_level"] for level in payload["territorial_levels"]] == [
         "autonomous_community",
@@ -269,6 +274,9 @@ def test_get_territorial_catalog_exposes_resources_and_basic_coverage(
     )
     assert municipality_level["units_total"] == 2
     assert municipality_level["active_units"] == 1
+    assert municipality_level["geometry_units"] == 1
+    assert municipality_level["centroid_units"] == 1
+    assert municipality_level["boundary_source"] == "ign_administrative_boundaries"
     assert municipality_level["detail_path"] == "/municipio/{codigo_ine}"
     assert municipality_level["summary_path"] == "/territorios/municipio/{codigo_ine}/resumen"
     assert municipality_level["report_job_path"] == "/territorios/municipio/{codigo_ine}/informe"
@@ -282,6 +290,7 @@ def test_get_territorial_catalog_exposes_resources_and_basic_coverage(
         "territorial.provinces.list",
         "territorial.geocode.query",
         "territorial.reverse_geocode.query",
+        "territorial.ign_administrative_boundaries.catalog",
         "territorial.municipality.detail",
         "territorial.municipality.summary",
         "territorial.municipality.report_job",

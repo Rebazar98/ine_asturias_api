@@ -109,6 +109,9 @@ def test_get_catalog_coverage_returns_zero_rows_per_supported_level_without_data
             "country_code": "ES",
             "units_total": 0,
             "active_units": 0,
+            "geometry_units": 0,
+            "centroid_units": 0,
+            "boundary_source": None,
             "canonical_code_strategy": {
                 "source_system": INE_TERRITORIAL_SOURCE_SYSTEM,
                 "code_type": INE_AUTONOMOUS_COMMUNITY_CODE_TYPE,
@@ -119,6 +122,9 @@ def test_get_catalog_coverage_returns_zero_rows_per_supported_level_without_data
             "country_code": "ES",
             "units_total": 0,
             "active_units": 0,
+            "geometry_units": 0,
+            "centroid_units": 0,
+            "boundary_source": None,
             "canonical_code_strategy": {
                 "source_system": INE_TERRITORIAL_SOURCE_SYSTEM,
                 "code_type": INE_PROVINCE_CODE_TYPE,
@@ -129,6 +135,9 @@ def test_get_catalog_coverage_returns_zero_rows_per_supported_level_without_data
             "country_code": "ES",
             "units_total": 0,
             "active_units": 0,
+            "geometry_units": 0,
+            "centroid_units": 0,
+            "boundary_source": None,
             "canonical_code_strategy": {
                 "source_system": INE_TERRITORIAL_SOURCE_SYSTEM,
                 "code_type": INE_MUNICIPALITY_CODE_TYPE,
@@ -143,7 +152,13 @@ def test_get_catalog_coverage_returns_counts_per_supported_level():
         FakeExecuteResult(scalar_values=[1]),
         FakeExecuteResult(scalar_values=[1]),
         FakeExecuteResult(scalar_values=[1]),
+        FakeExecuteResult(scalar_values=[1]),
+        FakeExecuteResult(scalar_values=[1]),
+        FakeExecuteResult(scalar_values=[1]),
+        FakeExecuteResult(scalar_values=[1]),
         FakeExecuteResult(scalar_values=[2]),
+        FakeExecuteResult(scalar_values=[1]),
+        FakeExecuteResult(scalar_values=[1]),
         FakeExecuteResult(scalar_values=[1]),
     )
     repository = TerritorialRepository(session=session)
@@ -156,6 +171,9 @@ def test_get_catalog_coverage_returns_counts_per_supported_level():
             "country_code": "ES",
             "units_total": 1,
             "active_units": 1,
+            "geometry_units": 1,
+            "centroid_units": 1,
+            "boundary_source": "ign_administrative_boundaries",
             "canonical_code_strategy": {
                 "source_system": INE_TERRITORIAL_SOURCE_SYSTEM,
                 "code_type": INE_AUTONOMOUS_COMMUNITY_CODE_TYPE,
@@ -166,6 +184,9 @@ def test_get_catalog_coverage_returns_counts_per_supported_level():
             "country_code": "ES",
             "units_total": 1,
             "active_units": 1,
+            "geometry_units": 1,
+            "centroid_units": 1,
+            "boundary_source": "ign_administrative_boundaries",
             "canonical_code_strategy": {
                 "source_system": INE_TERRITORIAL_SOURCE_SYSTEM,
                 "code_type": INE_PROVINCE_CODE_TYPE,
@@ -176,13 +197,16 @@ def test_get_catalog_coverage_returns_counts_per_supported_level():
             "country_code": "ES",
             "units_total": 2,
             "active_units": 1,
+            "geometry_units": 1,
+            "centroid_units": 1,
+            "boundary_source": "ign_administrative_boundaries",
             "canonical_code_strategy": {
                 "source_system": INE_TERRITORIAL_SOURCE_SYSTEM,
                 "code_type": INE_MUNICIPALITY_CODE_TYPE,
             },
         },
     ]
-    assert len(session.statements) == 6
+    assert len(session.statements) == 12
 
 
 def test_get_unit_by_canonical_code_serializes_lookup_with_primary_code():

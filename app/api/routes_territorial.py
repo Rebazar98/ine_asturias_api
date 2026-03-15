@@ -44,6 +44,10 @@ from app.schemas import (
     TerritorialUnitSummaryResponse,
 )
 from app.services.cartociudad_geocoding import CartoCiudadGeocodingService
+from app.services.ign_admin_boundaries import (
+    IGN_ADMIN_BOUNDARY_SOURCE,
+    IGN_ADMIN_CATALOG_RESOURCE_KEY,
+)
 from app.services.territorial_analytics import (
     MUNICIPALITY_REPORT_TYPE,
     TerritorialAnalyticsService,
@@ -159,6 +163,23 @@ def _build_territorial_catalog_resources() -> list[TerritorialCatalogResourceRes
             response_contract="ReverseGeocodeResponse",
         ),
         TerritorialCatalogResourceResponse(
+            resource_key=IGN_ADMIN_CATALOG_RESOURCE_KEY,
+            title="IGN administrative boundary coverage",
+            category="territorial_read",
+            method="GET",
+            path="/territorios/catalogo",
+            summary=(
+                "Discover internal administrative boundary coverage loaded from IGN/CNIG "
+                "without exposing raw provider payloads or geometry contracts."
+            ),
+            unit_levels=[
+                TERRITORIAL_UNIT_LEVEL_AUTONOMOUS_COMMUNITY,
+                TERRITORIAL_UNIT_LEVEL_PROVINCE,
+                TERRITORIAL_UNIT_LEVEL_MUNICIPALITY,
+            ],
+            response_contract="TerritorialCatalogResponse",
+        ),
+        TerritorialCatalogResourceResponse(
             resource_key="territorial.municipality.summary",
             title="Municipality summary",
             category="territorial_analytics",
@@ -221,6 +242,9 @@ def _build_territorial_catalog_level_coverage(
         country_code=row["country_code"],
         units_total=row["units_total"],
         active_units=row["active_units"],
+        geometry_units=row.get("geometry_units", 0),
+        centroid_units=row.get("centroid_units", 0),
+        boundary_source=row.get("boundary_source"),
         canonical_code_strategy=row.get("canonical_code_strategy"),
         list_path=paths.get("list_path"),
         detail_path=paths.get("detail_path"),
@@ -405,6 +429,7 @@ async def get_territorial_catalog(
             "intended_consumers": ["n8n", "agents", "programmatic_clients"],
             "raw_provider_contracts_exposed": False,
             "discovery_scope": "published_territorial_resources",
+            "official_sources": ["ine", "cartociudad", IGN_ADMIN_BOUNDARY_SOURCE],
         },
     )
 

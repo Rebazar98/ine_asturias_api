@@ -191,6 +191,35 @@ Regla operativa:
 - si esta validacion falla por disponibilidad del proveedor externo, NO debe tumbar por si sola la aceptacion del entorno;
 - si falla el contrato semantico, la cache persistente o la trazabilidad raw, entonces si debe abrirse incidencia de producto.
 
+### Validacion manual opcional de IGN administrativo
+
+Esta comprobacion tampoco forma parte del gate obligatorio. Sirve como evidencia manual de la carga administrativa directa cuando staging tenga disponible un snapshot versionable IGN/CNIG por fichero o por URL.
+
+Comandos sugeridos:
+
+```bash
+docker compose --env-file .env.staging.local -p ine_asturias_staging run --rm api python scripts/load_ign_admin_boundaries.py --pretty
+curl "http://127.0.0.1:8002/territorios/catalogo" -H "X-API-Key: change-me"
+```
+
+Si se quiere forzar un fichero local concreto montado en el contenedor:
+
+```bash
+docker compose --env-file .env.staging.local -p ine_asturias_staging run --rm api python scripts/load_ign_admin_boundaries.py --input-path /app/data/ign_asturias_boundaries.zip --pretty
+```
+
+Resultado esperado:
+
+- `source=ign_administrative_boundaries`
+- `features_upserted > 0`
+- `raw_records_saved > 0`
+- `/territorios/catalogo` refleja `boundary_source=ign_administrative_boundaries` y conteos `geometry_units` / `centroid_units` en el nivel cargado
+
+Regla operativa:
+
+- si falta snapshot o la URL no esta disponible, la validacion queda como pendiente manual y NO tumba por si sola staging;
+- si la carga completa pero no deja trazabilidad raw o no actualiza cobertura en catalogo, si debe abrirse incidencia.
+
 ## Evidencia minima
 
 Cada despliegue de staging que se use como ensayo DEBE dejar, como minimo:
@@ -208,6 +237,7 @@ Evidencia recomendada adicional:
 - logs de `api`
 - logs de `worker`
 - fecha y version (`APP_VERSION`) del ensayo
+- si se valida IGN administrativo, `dataset_version` usado y resumen del load (`features_selected`, `features_upserted`, `raw_records_saved`)
 
 ## Rollback de staging
 

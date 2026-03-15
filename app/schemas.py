@@ -358,6 +358,9 @@ class TerritorialCatalogLevelCoverageResponse(BaseModel):
     country_code: str
     units_total: int
     active_units: int
+    geometry_units: int = 0
+    centroid_units: int = 0
+    boundary_source: str | None = None
     canonical_code_strategy: TerritorialCanonicalCodeStrategyResponse | None = None
     list_path: str | None = None
     detail_path: str | None = None

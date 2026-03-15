@@ -25,6 +25,7 @@ class Settings(BaseSettings):
         default="https://www.cartociudad.es/geocoder/api/geocoder",
         alias="CARTOCIUDAD_BASE_URL",
     )
+    ign_admin_snapshot_url: str | None = Field(default=None, alias="IGN_ADMIN_SNAPSHOT_URL")
     http_timeout_seconds: float = Field(default=15.0, alias="HTTP_TIMEOUT_SECONDS")
     provider_total_timeout_seconds: float = Field(
         default=30.0, alias="PROVIDER_TOTAL_TIMEOUT_SECONDS", gt=0
@@ -70,7 +71,14 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    @field_validator("postgres_dsn", "api_key", "redis_url", "worker_metrics_url", mode="before")
+    @field_validator(
+        "postgres_dsn",
+        "api_key",
+        "redis_url",
+        "worker_metrics_url",
+        "ign_admin_snapshot_url",
+        mode="before",
+    )
     @classmethod
     def empty_strings_to_none(cls, value: str | None) -> str | None:
         if value is None:

@@ -314,6 +314,7 @@ class DummyTerritorialRepository:
         self.by_canonical_code: dict[tuple[str, str], dict] = {}
         self.detail_by_canonical_code: dict[tuple[str, str], dict] = {}
         self.units_by_level: dict[str, list[dict]] = {}
+        self.upsert_boundary_calls: list[dict[str, object]] = []
 
     async def get_unit_by_name(
         self, name: str, source_system=None, alias_type=None, unit_level=None
@@ -381,10 +382,85 @@ class DummyTerritorialRepository:
                     "country_code": country_code,
                     "units_total": len(rows),
                     "active_units": sum(1 for row in rows if row.get("is_active", True)),
+                    "geometry_units": sum(1 for row in rows if row.get("has_geometry", False)),
+                    "centroid_units": sum(1 for row in rows if row.get("has_centroid", False)),
+                    "boundary_source": (
+                        "ign_administrative_boundaries"
+                        if any(row.get("has_geometry", False) for row in rows)
+                        else None
+                    ),
                     "canonical_code_strategy": get_canonical_code_strategy(unit_level),
                 }
             )
         return coverage
+
+    async def upsert_boundary_unit(
+        self,
+        *,
+        unit_level: str,
+        canonical_code: str,
+        canonical_name: str,
+        display_name: str,
+        country_code: str,
+        parent_id: int | None,
+        geometry_geojson: dict,
+        centroid_geojson: dict | None,
+        provider_source: str,
+        provider_alias: str | None = None,
+        provider_alias_type: str = "provider_name",
+        boundary_metadata: dict | None = None,
+    ):
+        self.upsert_boundary_calls.append(
+            {
+                "unit_level": unit_level,
+                "canonical_code": canonical_code,
+                "canonical_name": canonical_name,
+                "display_name": display_name,
+                "country_code": country_code,
+                "parent_id": parent_id,
+                "geometry_geojson": geometry_geojson,
+                "centroid_geojson": centroid_geojson,
+                "provider_source": provider_source,
+                "provider_alias": provider_alias,
+                "provider_alias_type": provider_alias_type,
+                "boundary_metadata": deepcopy(boundary_metadata or {}),
+            }
+        )
+        unit_id = len(self.upsert_boundary_calls)
+        row = {
+            "id": unit_id,
+            "parent_id": parent_id,
+            "unit_level": unit_level,
+            "canonical_name": canonical_name,
+            "display_name": display_name,
+            "country_code": country_code,
+            "is_active": True,
+            "has_geometry": True,
+            "has_centroid": True,
+            "canonical_code": {
+                "source_system": get_canonical_code_strategy(unit_level)["source_system"],
+                "code_type": get_canonical_code_strategy(unit_level)["code_type"],
+                "code_value": canonical_code,
+                "is_primary": True,
+            },
+            "canonical_code_strategy": get_canonical_code_strategy(unit_level),
+        }
+        self.by_canonical_code[(unit_level, canonical_code)] = {
+            "id": unit_id,
+            "unit_level": unit_level,
+            "canonical_name": canonical_name,
+            "display_name": display_name,
+            "country_code": country_code,
+            "is_active": True,
+            "canonical_code": row["canonical_code"],
+        }
+        self.units_by_level.setdefault(unit_level, []).append(row)
+        return {
+            "territorial_unit_id": unit_id,
+            "unit_level": unit_level,
+            "canonical_code": canonical_code,
+            "created": True,
+        }
 
 
 class DummyAnalyticalSnapshotRepository:
