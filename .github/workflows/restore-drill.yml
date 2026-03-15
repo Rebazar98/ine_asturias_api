@@ -4,13 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       min_ingestion_rows:
-        description: "Minimo de filas esperadas en ingestion_raw"
+        description: "Minimo manual de filas esperadas en ingestion_raw (0 = usar baseline del seed)"
         required: false
-        default: "100000"
+        default: "0"
       min_normalized_rows:
-        description: "Minimo de filas esperadas en ine_series_normalized"
+        description: "Minimo manual de filas esperadas en ine_series_normalized (0 = usar baseline del seed)"
         required: false
-        default: "50000"
+        default: "0"
 
 permissions:
   contents: read
@@ -26,8 +26,9 @@ jobs:
       DB_PORT: 5432
       DB_NAME: ine_asturias
       DB_USER: postgres
-      DB_PASSWORD: postgres
+      DB_PASSWORD: local-dev-postgres-Y8mF3vQ2sL7nR5xC
       REDIS_HOST: redis
+      EXPECTED_ALEMBIC_VERSION: 0006_analytical_snapshots
 
     steps:
       # ============================================================================
@@ -44,8 +45,8 @@ jobs:
       - name: Prepare environment file
         run: |
           cp .env.example .env
-          if ! grep -q "DATABASE_URL" .env; then
-            echo "⚠️ Advertencia: DATABASE_URL no configurada en .env"
+          if ! grep -q "POSTGRES_DSN" .env; then
+            echo "⚠️ Advertencia: POSTGRES_DSN no configurada en .env"
           fi
           echo "✓ .env.example copiado a .env"
 
@@ -102,6 +103,48 @@ jobs:
           fi
           echo "✓ Seed completado (o continuamos a pesar del fallo)"
 
+      - name: Capture restore validation baselines
+        run: |
+          echo "📏 Capturando baseline para validacion post-restore..."
+
+          BASELINE_INGESTION_ROWS=$(docker compose exec -T db psql -U "$DB_USER" -d "$DB_NAME" -t -A -c "SELECT COUNT(*) FROM ingestion_raw;")
+          BASELINE_NORMALIZED_ROWS=$(docker compose exec -T db psql -U "$DB_USER" -d "$DB_NAME" -t -A -c "SELECT COUNT(*) FROM ine_series_normalized;")
+          BASELINE_CATALOG_ROWS=$(docker compose exec -T db psql -U "$DB_USER" -d "$DB_NAME" -t -A -c "SELECT COUNT(*) FROM ine_tables_catalog;")
+
+          REQUESTED_MIN_INGESTION=${{ github.event.inputs.min_ingestion_rows || '0' }}
+          REQUESTED_MIN_NORMALIZED=${{ github.event.inputs.min_normalized_rows || '0' }}
+
+          EFFECTIVE_MIN_INGESTION=$BASELINE_INGESTION_ROWS
+          if [ "$REQUESTED_MIN_INGESTION" -gt "$EFFECTIVE_MIN_INGESTION" ]; then
+            EFFECTIVE_MIN_INGESTION=$REQUESTED_MIN_INGESTION
+          fi
+
+          EFFECTIVE_MIN_NORMALIZED=$BASELINE_NORMALIZED_ROWS
+          if [ "$REQUESTED_MIN_NORMALIZED" -gt "$EFFECTIVE_MIN_NORMALIZED" ]; then
+            EFFECTIVE_MIN_NORMALIZED=$REQUESTED_MIN_NORMALIZED
+          fi
+
+          echo "RESTORE_BASELINE_INGESTION_ROWS=$BASELINE_INGESTION_ROWS" >> "$GITHUB_ENV"
+          echo "RESTORE_BASELINE_NORMALIZED_ROWS=$BASELINE_NORMALIZED_ROWS" >> "$GITHUB_ENV"
+          echo "RESTORE_BASELINE_CATALOG_ROWS=$BASELINE_CATALOG_ROWS" >> "$GITHUB_ENV"
+          echo "RESTORE_MIN_INGESTION_ROWS=$EFFECTIVE_MIN_INGESTION" >> "$GITHUB_ENV"
+          echo "RESTORE_MIN_NORMALIZED_ROWS=$EFFECTIVE_MIN_NORMALIZED" >> "$GITHUB_ENV"
+          echo "RESTORE_MIN_CATALOG_ROWS=$BASELINE_CATALOG_ROWS" >> "$GITHUB_ENV"
+
+          if [ "$BASELINE_NORMALIZED_ROWS" -gt 0 ]; then
+            echo "RESTORE_FUNCTIONAL_OPERATION_CODE=22" >> "$GITHUB_ENV"
+            echo "RESTORE_MIN_FUNCTIONAL_SERIES_TOTAL=1" >> "$GITHUB_ENV"
+          else
+            echo "RESTORE_FUNCTIONAL_OPERATION_CODE=" >> "$GITHUB_ENV"
+            echo "RESTORE_MIN_FUNCTIONAL_SERIES_TOTAL=0" >> "$GITHUB_ENV"
+          fi
+
+          echo "✓ Baseline ingestion_raw: $BASELINE_INGESTION_ROWS"
+          echo "✓ Baseline ine_series_normalized: $BASELINE_NORMALIZED_ROWS"
+          echo "✓ Baseline ine_tables_catalog: $BASELINE_CATALOG_ROWS"
+          echo "✓ Umbral efectivo ingestion_raw: $EFFECTIVE_MIN_INGESTION"
+          echo "✓ Umbral efectivo ine_series_normalized: $EFFECTIVE_MIN_NORMALIZED"
+
       # ============================================================================
       # BACKUP: Crear dump de PostgreSQL
       # ============================================================================
@@ -157,8 +200,12 @@ jobs:
           docker compose run --rm api python scripts/verify_restore.py \
             --base-url "http://api:$API_HOST_PORT" \
             --postgres-dsn "postgresql://$DB_USER:$DB_PASSWORD@$DB_HOST:$DB_PORT/$DB_NAME" \
-            --min-ingestion-rows "${{ github.event.inputs.min_ingestion_rows || '100000' }}" \
-            --min-normalized-rows "${{ github.event.inputs.min_normalized_rows || '50000' }}" | \
+            --min-ingestion-rows "$RESTORE_MIN_INGESTION_ROWS" \
+            --min-normalized-rows "$RESTORE_MIN_NORMALIZED_ROWS" \
+            --min-catalog-rows "$RESTORE_MIN_CATALOG_ROWS" \
+            --expected-alembic-version "$EXPECTED_ALEMBIC_VERSION" \
+            --functional-operation-code "$RESTORE_FUNCTIONAL_OPERATION_CODE" \
+            --min-functional-series-total "$RESTORE_MIN_FUNCTIONAL_SERIES_TOTAL" | \
             tee artifacts/verify-restore.txt
 
           if [ ${PIPESTATUS[0]} -ne 0 ]; then
@@ -240,4 +287,7 @@ jobs:
           echo "Timestamp: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
           echo "Artefactos disponibles en: artifacts/"
           echo "Retention: 7 días"
+          echo "Baseline ingestion_raw: ${RESTORE_BASELINE_INGESTION_ROWS:-n/a}"
+          echo "Baseline ine_series_normalized: ${RESTORE_BASELINE_NORMALIZED_ROWS:-n/a}"
+          echo "Baseline ine_tables_catalog: ${RESTORE_BASELINE_CATALOG_ROWS:-n/a}"
           echo "════════════════════════════════════════════════════════════"

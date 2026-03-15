@@ -4,6 +4,7 @@ import argparse
 import os
 import sys
 import time
+from pathlib import Path
 from typing import Any, Callable
 
 import httpx
@@ -21,7 +22,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--timeout-seconds", type=float, default=180.0)
     parser.add_argument("--poll-interval", type=float, default=2.0)
     parser.add_argument("--page-size", type=int, default=5)
-    parser.add_argument("--api-key", default=os.getenv("SMOKE_API_KEY") or os.getenv("API_KEY"))
+    parser.add_argument(
+        "--api-key",
+        default=os.getenv("SMOKE_API_KEY")
+        or os.getenv("API_KEY")
+        or _read_env_file_value("API_KEY"),
+    )
     return parser.parse_args()
 
 
@@ -318,6 +324,21 @@ def _request_with_retry(
             time.sleep(retry_interval)
 
     raise RuntimeError(f"Error de conexion para {path}: {last_error}") from last_error
+
+
+def _read_env_file_value(name: str) -> str | None:
+    for candidate in (Path(".env"), Path(".env.local"), Path(".env.example")):
+        if not candidate.exists():
+            continue
+        for raw_line in candidate.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            if key.strip() == name:
+                normalized = value.strip()
+                return normalized or None
+    return None
 
 
 if __name__ == "__main__":

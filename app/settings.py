@@ -1,7 +1,16 @@
+from enum import Enum
 from functools import lru_cache
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from app.core.security import ensure_secret_strength, extract_password_from_dsn
+
+
+class Environment(str, Enum):
+    LOCAL = "local"
+    STAGING = "staging"
+    PRODUCTION = "production"
 
 
 class Settings(BaseSettings):
@@ -17,6 +26,11 @@ class Settings(BaseSettings):
         alias="CARTOCIUDAD_BASE_URL",
     )
     http_timeout_seconds: float = Field(default=15.0, alias="HTTP_TIMEOUT_SECONDS")
+    provider_total_timeout_seconds: float = Field(
+        default=30.0, alias="PROVIDER_TOTAL_TIMEOUT_SECONDS", gt=0
+    )
+    http_retry_max_attempts: int = Field(default=3, alias="HTTP_RETRY_MAX_ATTEMPTS", ge=1, le=5)
+    http_retry_backoff_seconds: float = Field(default=1.0, alias="HTTP_RETRY_BACKOFF_SECONDS", gt=0)
     postgres_dsn: str | None = Field(default=None, alias="POSTGRES_DSN")
     enable_cache: bool = Field(default=True, alias="ENABLE_CACHE")
     cache_ttl_seconds: int = Field(default=300, alias="CACHE_TTL_SECONDS")
@@ -30,6 +44,19 @@ class Settings(BaseSettings):
     )
     max_concurrent_table_fetches: int = Field(
         default=3, alias="MAX_CONCURRENT_TABLE_FETCHES", ge=1, le=10
+    )
+    rate_limit_enabled: bool = Field(default=True, alias="RATE_LIMIT_ENABLED")
+    provider_circuit_breaker_failures: int = Field(
+        default=5, alias="PROVIDER_CIRCUIT_BREAKER_FAILURES", ge=1, le=20
+    )
+    provider_circuit_breaker_recovery_seconds: int = Field(
+        default=30, alias="PROVIDER_CIRCUIT_BREAKER_RECOVERY_SECONDS", ge=1
+    )
+    provider_circuit_breaker_half_open_sample_size: int = Field(
+        default=5, alias="PROVIDER_CIRCUIT_BREAKER_HALF_OPEN_SAMPLE_SIZE", ge=1, le=20
+    )
+    provider_circuit_breaker_success_threshold: float = Field(
+        default=0.8, alias="PROVIDER_CIRCUIT_BREAKER_SUCCESS_THRESHOLD", ge=0.5, le=1.0
     )
     worker_heartbeat_ttl_seconds: int = Field(default=60, alias="WORKER_HEARTBEAT_TTL_SECONDS")
     worker_metrics_port: int = Field(default=9001, alias="WORKER_METRICS_PORT")
@@ -54,6 +81,32 @@ class Settings(BaseSettings):
     @property
     def is_local_env(self) -> bool:
         return self.app_env.lower() in {"dev", "development", "local", "test"}
+
+    @property
+    def environment(self) -> Environment:
+        normalized = self.app_env.strip().lower()
+        if normalized == Environment.STAGING.value:
+            return Environment.STAGING
+        if normalized == Environment.PRODUCTION.value:
+            return Environment.PRODUCTION
+        return Environment.LOCAL
+
+    @property
+    def requires_api_key(self) -> bool:
+        return not self.is_local_env
+
+    @model_validator(mode="after")
+    def validate_runtime_security(self) -> "Settings":
+        if self.is_local_env:
+            return self
+
+        ensure_secret_strength(self.api_key, secret_name="API_KEY")
+        ensure_secret_strength(
+            extract_password_from_dsn(self.postgres_dsn),
+            secret_name="POSTGRES_DSN password",
+            min_length=16,
+        )
+        return self
 
 
 @lru_cache(maxsize=1)

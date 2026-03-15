@@ -109,7 +109,7 @@ Comprobaciones minimas desde host:
 ```bash
 curl http://127.0.0.1:8002/health
 curl http://127.0.0.1:8002/health/ready
-curl http://127.0.0.1:8002/metrics
+curl http://127.0.0.1:8002/metrics -H "X-API-Key: <API_KEY>"
 ```
 
 Resultado esperado:
@@ -281,7 +281,7 @@ Todo rollback o restore en staging DEBE terminar con esta verificacion minima:
 curl http://127.0.0.1:8002/health
 curl http://127.0.0.1:8002/health/ready
 docker compose --env-file .env.staging.local -p ine_asturias_staging run --rm api python scripts/smoke_stack.py --base-url http://api:8000
-docker compose --env-file .env.staging.local -p ine_asturias_staging run --rm api python scripts/verify_restore.py --base-url http://api:8000 --postgres-dsn postgresql://postgres:change-me@db:5432/ine_asturias --min-ingestion-rows 1 --min-normalized-rows 1
+docker compose --env-file .env.staging.local -p ine_asturias_staging run --rm api python scripts/verify_restore.py --base-url http://api:8000 --min-ingestion-rows 1 --min-normalized-rows 1 --min-catalog-rows 1 --expected-alembic-version 0006_analytical_snapshots --functional-operation-code 22
 ```
 
 Si `API_KEY` esta activa en staging, anade `--api-key` o deja el valor en el entorno del contenedor.
@@ -352,7 +352,7 @@ Resultado esperado:
 ```bash
 curl http://127.0.0.1:8002/health
 curl http://127.0.0.1:8002/health/ready
-curl http://127.0.0.1:8002/metrics
+curl http://127.0.0.1:8002/metrics -H "X-API-Key: <API_KEY>"
 ```
 
 Resultado esperado:
@@ -410,7 +410,7 @@ Para verificar que el mecanismo de recuperacion sigue siendo usable en staging, 
 Opcion A. Verificacion minima sobre el entorno ya levantado:
 
 ```bash
-docker compose --env-file .env.staging.local -p ine_asturias_staging run --rm api python scripts/verify_restore.py --base-url http://api:8000 --postgres-dsn postgresql://postgres:change-me@db:5432/ine_asturias --min-ingestion-rows 1 --min-normalized-rows 1
+docker compose --env-file .env.staging.local -p ine_asturias_staging run --rm api python scripts/verify_restore.py --base-url http://api:8000 --min-ingestion-rows 1 --min-normalized-rows 1 --min-catalog-rows 1 --expected-alembic-version 0006_analytical_snapshots --functional-operation-code 22
 ```
 
 Opcion B. Drill completo de restore sobre staging de ensayo:
@@ -514,7 +514,7 @@ Antes de considerar staging como "listo para ensayo real", revisa esta checklist
 - `docker compose --env-file .env.staging.local -p ine_asturias_staging run --rm migrate`
 - `curl http://127.0.0.1:8002/health`
 - `curl http://127.0.0.1:8002/health/ready`
-- `curl http://127.0.0.1:8002/metrics`
+- `curl http://127.0.0.1:8002/metrics -H "X-API-Key: <API_KEY>"`
 - `docker compose --env-file .env.staging.local -p ine_asturias_staging run --rm api python scripts/smoke_stack.py --base-url http://api:8000`
 - si el modelo territorial esta cargado: `docker compose --env-file .env.staging.local -p ine_asturias_staging run --rm api python scripts/smoke_stack.py --base-url http://api:8000 --municipality-code 33044`
 - rollback descrito y revisado

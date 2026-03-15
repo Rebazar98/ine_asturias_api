@@ -10,6 +10,7 @@ Documentacion disponible en la raiz del proyecto:
 - `DOCUMENTACION_EVOLUCION_PROYECTO.txt`: registro historico y memoria tecnica del proyecto.
 - `PLAN_TECNICO_PLATAFORMA_DATOS_TERRITORIALES.md`: roadmap de evolucion hacia plataforma territorial multi-fuente.
 - `PLAN_FASE_CARTOCIUDAD_IGN_ON_DEMAND.md`: plan ejecutado para consolidar CartoCiudad como segunda fuente oficial bajo demanda.
+- `MONITORING_SLOS.md`: objetivos operativos, SLIs y reglas base de alertado para produccion.
 - `FASE2_STAGING_OPERATIVO_BACKLOG.md`: contexto de trabajo y backlog ejecutable para la fase de staging operativo real.
 - `FASE3_MODELO_TERRITORIAL_BACKLOG.md`: backlog ejecutable para la fase de modelo territorial operativo y base geoespacial interna.
 - `FASE4_API_TERRITORIAL_BACKLOG.md`: backlog ejecutable para la fase de API territorial unificada y primera integracion geografica.
@@ -52,25 +53,40 @@ Documentacion disponible en la raiz del proyecto:
 | `APP_ENV` | Entorno de ejecucion | `local` |
 | `INE_BASE_URL` | Base URL del INE | `https://servicios.ine.es/wstempus/js/ES` |
 | `HTTP_TIMEOUT_SECONDS` | Timeout HTTP hacia el proveedor | `15` |
+| `PROVIDER_TOTAL_TIMEOUT_SECONDS` | Presupuesto total por llamada upstream incluyendo reintentos | `30` |
+| `HTTP_RETRY_MAX_ATTEMPTS` | Numero maximo de intentos HTTP por llamada upstream | `3` |
+| `HTTP_RETRY_BACKOFF_SECONDS` | Backoff exponencial inicial para reintentos upstream | `1` |
 | `POSTGRES_DB` | Nombre de la base Postgres usada por Compose | `ine_asturias` |
 | `POSTGRES_USER` | Usuario Postgres usado por Compose | `postgres` |
-| `POSTGRES_PASSWORD` | Password Postgres usada por Compose | `postgres` |
+| `POSTGRES_PASSWORD` | Password Postgres usada por Compose | `local-dev-postgres-Y8mF3vQ2sL7nR5xC` |
 | `POSTGRES_HOST_PORT` | Puerto del host para PostgreSQL | `5433` |
-| `POSTGRES_DSN` | DSN async para PostgreSQL dentro de la red Docker | `postgresql+asyncpg://postgres:postgres@db:5432/ine_asturias` |
+| `POSTGRES_DSN` | DSN async para PostgreSQL dentro de la red Docker | `postgresql+asyncpg://postgres:local-dev-postgres-Y8mF3vQ2sL7nR5xC@db:5432/ine_asturias` |
 | `ENABLE_CACHE` | Activa cache local en memoria | `true` |
 | `CACHE_TTL_SECONDS` | TTL de cache | `300` |
-| `API_KEY` | Proteccion opcional por cabecera `X-API-Key` | vacio |
+| `API_KEY` | Proteccion por cabecera `X-API-Key`; obligatoria fuera de `local/dev/test` | `local-dev-api-key-x4R7mN2cQ9wP6sT8vB3kJ5hL1zF` |
 | `LOG_LEVEL` | Nivel de log | `INFO` |
 | `REDIS_HOST_PORT` | Puerto del host para Redis | `6379` |
 | `REDIS_URL` | Backend Redis para jobs y coordinacion | `redis://redis:6379/0` |
 | `API_HOST_PORT` | Puerto del host para la API | `8001` |
 | `JOB_QUEUE_NAME` | Nombre de cola `arq` | `ine_jobs` |
 | `JOB_RESULT_TTL_SECONDS` | TTL de resultados de jobs en Redis | `86400` |
+| `RATE_LIMIT_ENABLED` | Activa rate limiting por IP y por `API_KEY` | `true` |
+| `PROVIDER_CIRCUIT_BREAKER_FAILURES` | Fallos consecutivos para abrir el circuit breaker | `5` |
+| `PROVIDER_CIRCUIT_BREAKER_RECOVERY_SECONDS` | Tiempo de enfriamiento antes de `HALF_OPEN` | `30` |
+| `PROVIDER_CIRCUIT_BREAKER_HALF_OPEN_SAMPLE_SIZE` | Muestra de llamadas para cerrar el breaker tras recuperacion | `5` |
+| `PROVIDER_CIRCUIT_BREAKER_SUCCESS_THRESHOLD` | Ratio minimo de exito para cerrar el breaker | `0.8` |
 | `WORKER_HEARTBEAT_TTL_SECONDS` | TTL del heartbeat del worker | `60` |
 | `WORKER_METRICS_PORT` | Puerto HTTP interno del worker para metricas | `9001` |
 | `WORKER_METRICS_URL` | URL interna que usa el API para agregar metricas del worker | `http://worker:9001/metrics` |
 
 Usa `.env.example` como plantilla local y `.env.staging.example` como base de una configuracion de staging ejecutable, siempre sin secretos reales en repositorio.
+
+Reglas operativas de seguridad:
+
+- en `staging` y `production`, la aplicacion falla si `API_KEY` o la password embebida en `POSTGRES_DSN` son debiles o placeholders;
+- `staging` y `production` exigen `X-API-Key` en `/ine/*`, `/territorios/*` y `/metrics`; en `local/dev/test` la proteccion queda desactivada por defecto para no romper el desarrollo;
+- para generar una clave nueva puedes usar `python -c "from app.core.security import generate_api_key; print(generate_api_key())"`;
+- los secretos reales deben inyectarse desde ficheros `*.local` no versionados o desde el gestor de secretos del entorno.
 
 ## Dependencias y release
 
@@ -163,6 +179,7 @@ GET /metrics
 - `/health` es liveness simple.
 - `/health/ready` comprueba PostgreSQL, Redis y heartbeat de worker cuando aplica.
 - `/metrics` expone metricas Prometheus del API y agrega tambien las metricas de aplicacion del worker cuando `WORKER_METRICS_URL` esta configurada y accesible.
+- `/metrics` exige `X-API-Key` fuera de `local/dev/test`; en local sigue siendo accesible sin cabecera para no bloquear desarrollo ni diagnostico.
 
 ### INE raw / ingesta
 
@@ -173,6 +190,13 @@ GET /ine/operation/{op_code}/variable/{variable_id}/values
 GET /ine/operation/{op_code}/asturias
 GET /ine/jobs/{job_id}
 ```
+
+Politicas de proteccion actuales:
+
+- `/geocode` y `/reverse_geocode`: `100 req/min` por IP en modo publico, `1000 req/min` si la request viene autenticada con `API_KEY`.
+- `/ine/series`: `50 req/min` por IP en modo publico, `1000 req/min` con `API_KEY`.
+- `/ine/operation/*`: `10 req/min` por IP en modo publico, `1000 req/min` con `API_KEY`.
+- en `staging` y `production`, `/ine/*`, `/territorios/*` y `/metrics` requieren cabecera `X-API-Key`; en `local/dev/test` la cabecera sigue siendo opcional.
 
 ### Dominio semantico
 
@@ -225,6 +249,7 @@ GET /reverse_geocode?lat=43.3614&lon=-5.8494
 Contrato actual de `/geocode`:
 
 - usa CartoCiudad como provider geografico inicial;
+- a fecha del 14 de marzo de 2026, la documentacion publica de CartoCiudad no exige API key oficial para `find` / `reverseGeocode`; por eso esta API endurece el consumo con su propio `API_KEY`, rate limiting, retries y circuit breaker;
 - consulta primero `geocode_cache` como cache persistente;
 - si no hay hit persistente, hace fallback al adapter del provider;
 - persiste el payload crudo del provider en `geocode_cache`;
@@ -242,6 +267,7 @@ La respuesta NO replica el shape crudo del provider. En esta fase:
 - si no existe match fiable, `territorial_resolution` queda `null`;
 - `cached=true` indica hit de cache persistente del endpoint.
 - los logs operativos y errores upstream ya no exponen la query completa; usan contexto saneado (`query_fingerprint`, longitud y numero de terminos).
+- el cliente aplica reintentos acotados (`3` intentos maximo, backoff `1s/2s/4s` dentro de un presupuesto total de `30s`) y circuit breaker por provider.
 
 Contrato actual de `/reverse_geocode`:
 
@@ -264,6 +290,7 @@ En esta fase:
 - `cached=true` indica hit de cache persistente del endpoint;
 - `lat` y `lon` se validan en rango geodesico antes de consultar provider o cache.
 - los logs operativos y errores upstream usan una huella de coordenadas saneada en vez del par completo.
+- el cliente aplica el mismo esquema de reintentos acotados y circuit breaker antes de devolver error controlado.
 
 Estrategia territorial actual:
 
@@ -643,8 +670,23 @@ La exportacion Prometheus se resuelve de forma pragmatica:
 - el worker expone metricas HTTP propias en `WORKER_METRICS_PORT`.
 - el API agrega las metricas de aplicacion del worker dentro de su propio `/metrics` usando `WORKER_METRICS_URL`.
 - las metricas genericas de proceso y runtime (`python_*`, `process_*`) siguen siendo locales a cada proceso y NO se mezclan para evitar series duplicadas o invalidas.
+- `/metrics` ya no debe exponerse sin control en entornos compartidos: en `staging` y `production` requiere `X-API-Key`, mientras que `local/dev/test` mantienen acceso abierto para desarrollo y troubleshooting.
 
 Si necesitas diagnostico fino por proceso, consulta el worker directamente desde la red interna de Docker o publica temporalmente su puerto de metricas en un entorno controlado.
+Los objetivos operativos y reglas base de alertado quedan definidos en [MONITORING_SLOS.md](C:/Users/user/OneDrive/Documents/Playground/MONITORING_SLOS.md) y [monitoring/prometheus-alerts.yml](C:/Users/user/OneDrive/Documents/Playground/monitoring/prometheus-alerts.yml).
+
+Metricas operativas nuevas relevantes:
+
+- `ine_asturias_provider_retries_total`
+  - cuenta reintentos reales hacia INE y CartoCiudad por familia de endpoint y motivo.
+- `ine_asturias_provider_circuit_breaker_transitions_total`
+  - registra aperturas, recuperaciones y transiciones `HALF_OPEN`.
+- `ine_asturias_auth_failures_total`
+  - cuenta rechazos por clave ausente o invalida.
+- `ine_asturias_rate_limit_rejections_total`
+  - cuenta rechazos `429` por politica y modo de autenticacion.
+- `ine_asturias_job_duration_seconds`
+  - mide duracion de jobs inline y worker para SLIs de latencia de background.
 
 Metricas analiticas nuevas en `/metrics`:
 
@@ -738,7 +780,7 @@ docker compose run --rm migrate
 curl http://127.0.0.1:8001/health
 curl http://127.0.0.1:8001/health/ready
 docker compose run --rm api python scripts/smoke_stack.py
-docker compose run --rm api python scripts/verify_restore.py --base-url http://api:8000 --postgres-dsn postgresql://postgres:postgres@db:5432/ine_asturias --min-ingestion-rows 1 --min-normalized-rows 1
+docker compose run --rm api python scripts/verify_restore.py --base-url http://api:8000 --min-ingestion-rows 1 --min-normalized-rows 1 --min-catalog-rows 1 --expected-alembic-version 0006_analytical_snapshots --functional-operation-code 22
 ```
 
 ### Regla operativa
@@ -760,7 +802,7 @@ docker compose up --build
 ```bash
 curl http://127.0.0.1:8001/health
 curl http://127.0.0.1:8001/health/ready
-curl http://127.0.0.1:8001/metrics
+curl http://127.0.0.1:8001/metrics -H "X-API-Key: <API_KEY>"
 ```
 
 3. Lanzar una ingesta real pequena:
@@ -853,7 +895,7 @@ docker compose run --rm migrate
 docker compose ps
 curl http://127.0.0.1:8001/health
 curl http://127.0.0.1:8001/health/ready
-curl http://127.0.0.1:8001/metrics
+curl http://127.0.0.1:8001/metrics -H "X-API-Key: <API_KEY>"
 ```
 
 ### Confirmar API, Redis y worker operativos
@@ -942,7 +984,7 @@ Despues de restaurar la base en un entorno controlado:
 
 ```bash
 docker compose run --rm migrate
-docker compose run --rm api python scripts/verify_restore.py --base-url http://api:8000 --postgres-dsn postgresql://postgres:postgres@db:5432/ine_asturias --min-ingestion-rows 1
+docker compose run --rm api python scripts/verify_restore.py --base-url http://api:8000 --min-ingestion-rows 1 --min-catalog-rows 1 --expected-alembic-version 0006_analytical_snapshots --functional-operation-code 22
 ```
 
 La verificacion reutiliza `API_KEY` del entorno si existe o acepta `--api-key` para entornos protegidos como staging.

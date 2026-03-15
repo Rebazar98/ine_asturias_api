@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Request, Response, status
+from fastapi import APIRouter, Depends, Request, Response, status
 
 from app.core.jobs import InMemoryJobStore
 from app.core.logging import get_logger
 from app.core.metrics import merge_metrics_payloads, metrics_content_type, metrics_payload
 from app.db import ping_database
+from app.dependencies import require_api_key
 from app.schemas import HealthResponse, ReadinessComponentResponse, ReadinessResponse
 
 
@@ -83,7 +84,10 @@ async def readiness_check(request: Request) -> Response | ReadinessResponse:
 
 
 @router.get("/metrics")
-async def get_metrics(request: Request) -> Response:
+async def get_metrics(
+    request: Request,
+    _: None = Depends(require_api_key),
+) -> Response:
     settings = request.app.state.settings
     api_payload = metrics_payload()
     worker_payloads: list[bytes] = []

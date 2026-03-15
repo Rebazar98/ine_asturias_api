@@ -4,6 +4,7 @@ import httpx
 import pytest
 
 from app.core.cache import InMemoryTTLCache
+from app.core.resilience import AsyncCircuitBreaker
 from app.services.cartociudad_client import (
     CartoCiudadClientService,
     CartoCiudadInvalidPayloadError,
@@ -12,16 +13,34 @@ from app.services.cartociudad_client import (
 from app.settings import Settings
 
 
-def build_service(handler, enable_cache: bool = True) -> CartoCiudadClientService:
+def build_service(
+    handler,
+    enable_cache: bool = True,
+    *,
+    circuit_breaker: AsyncCircuitBreaker | None = None,
+    **settings_overrides,
+) -> CartoCiudadClientService:
     transport = httpx.MockTransport(handler)
     http_client = httpx.AsyncClient(transport=transport)
+    defaults = {
+        "http_retry_max_attempts": 3,
+        "http_retry_backoff_seconds": 0.001,
+        "provider_total_timeout_seconds": 1.0,
+    }
+    defaults.update(settings_overrides)
     settings = Settings(
         cartociudad_base_url="https://mocked.cartociudad/geocoder/api/geocoder",
         enable_cache=enable_cache,
         cache_ttl_seconds=60,
+        **defaults,
     )
     cache = InMemoryTTLCache(enabled=enable_cache, default_ttl_seconds=60)
-    return CartoCiudadClientService(http_client=http_client, settings=settings, cache=cache)
+    return CartoCiudadClientService(
+        http_client=http_client,
+        settings=settings,
+        cache=cache,
+        circuit_breaker=circuit_breaker,
+    )
 
 
 @pytest.mark.anyio
@@ -110,3 +129,52 @@ async def test_unexpected_json_type_raises_cartociudad_invalid_payload_error() -
 
     assert exc_info.value.status_code == 502
     assert exc_info.value.detail["request_context"]["query_fingerprint"]
+
+
+@pytest.mark.anyio
+async def test_request_error_retries_before_succeeding() -> None:
+    calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            raise httpx.ReadTimeout("provider timeout", request=request)
+        return httpx.Response(200, json=[{"id": "oviedo"}], request=request)
+
+    service = build_service(handler)
+
+    payload = await service.geocode("Oviedo")
+
+    assert payload == [{"id": "oviedo"}]
+    assert calls == 3
+
+
+@pytest.mark.anyio
+async def test_circuit_breaker_opens_after_repeated_failures() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, json={"detail": "service unavailable"}, request=request)
+
+    breaker = AsyncCircuitBreaker(
+        provider="cartociudad",
+        fail_max=1,
+        reset_timeout_seconds=30,
+        half_open_sample_size=5,
+        success_threshold=0.8,
+    )
+    service = build_service(
+        handler,
+        circuit_breaker=breaker,
+        http_retry_max_attempts=1,
+    )
+
+    with pytest.raises(CartoCiudadUpstreamError) as first_error:
+        await service.geocode("Oviedo")
+
+    with pytest.raises(CartoCiudadUpstreamError) as second_error:
+        await service.geocode("Oviedo")
+
+    assert first_error.value.status_code == 503
+    assert second_error.value.status_code == 503
+    assert second_error.value.detail["message"] == "The CartoCiudad service is temporarily unavailable."
+    assert second_error.value.detail["retryable"] is True

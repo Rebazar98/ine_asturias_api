@@ -28,14 +28,17 @@ function Invoke-Compose {
 }
 
 function Wait-Http {
-    param([string]$Url)
+    param(
+        [string]$Url,
+        [hashtable]$Headers = @{}
+    )
 
     $deadline = (Get-Date).AddMinutes(2)
     $lastError = $null
 
     while ((Get-Date) -lt $deadline) {
         try {
-            $response = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 5
+            $response = Invoke-WebRequest -Uri $Url -Headers $Headers -UseBasicParsing -TimeoutSec 5
             if ($response.StatusCode -eq 200) {
                 Write-Host "[release-candidate] $Url OK"
                 return
@@ -52,12 +55,49 @@ function Wait-Http {
     throw "Timeout waiting for $Url. Last error: $lastError"
 }
 
+function Resolve-ComposeEnvValue {
+    param([string]$Name)
+
+    $current = [Environment]::GetEnvironmentVariable($Name)
+    if ($current) {
+        return $current
+    }
+
+    $candidateFiles = @()
+    if ($EnvFile) {
+        $candidateFiles += $EnvFile
+    }
+    $candidateFiles += '.env'
+
+    foreach ($candidate in $candidateFiles) {
+        if (-not $candidate -or -not (Test-Path $candidate)) {
+            continue
+        }
+        foreach ($line in Get-Content $candidate) {
+            if ($line -match '^\s*#' -or $line -notmatch '=') {
+                continue
+            }
+            $parts = $line -split '=', 2
+            if ($parts[0].Trim() -eq $Name) {
+                return $parts[1].Trim()
+            }
+        }
+    }
+
+    return ''
+}
+
 $base = $BaseUrl.TrimEnd('/')
+$apiKey = Resolve-ComposeEnvValue -Name 'API_KEY'
+$metricsHeaders = @{}
+if ($apiKey) {
+    $metricsHeaders['X-API-Key'] = $apiKey
+}
 
 Invoke-Compose -Subcommand @('up', '--build', '-d', 'db', 'redis', 'api', 'worker')
 Wait-Http -Url "$base/health"
 Wait-Http -Url "$base/health/ready"
-Wait-Http -Url "$base/metrics"
+Wait-Http -Url "$base/metrics" -Headers $metricsHeaders
 
 Invoke-Compose -Subcommand @('run', '--rm', 'api', 'python', '-m', 'pip', 'check')
 Invoke-Compose -Subcommand @('run', '--rm', 'api', 'ruff', 'check', '.')
@@ -74,7 +114,7 @@ if ($MunicipalityCode) {
     $smokeCommand += @('--municipality-code', $MunicipalityCode)
 }
 Invoke-Compose -Subcommand $smokeCommand
-Invoke-Compose -Subcommand @('run', '--rm', 'api', 'python', 'scripts/verify_restore.py', '--base-url', 'http://api:8000', '--postgres-dsn', 'postgresql://postgres:postgres@db:5432/ine_asturias', '--min-ingestion-rows', '1', '--min-normalized-rows', '1')
+Invoke-Compose -Subcommand @('run', '--rm', 'api', 'python', 'scripts/verify_restore.py', '--base-url', 'http://api:8000', '--min-ingestion-rows', '1', '--min-normalized-rows', '1')
 
 if ($RunRestoreDrill) {
     & $PSScriptRoot\restore_drill.ps1 -BackupPath $BackupPath -EnvFile $EnvFile -ProjectName $ProjectName -BaseUrl $BaseUrl -MunicipalityCode $MunicipalityCode

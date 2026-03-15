@@ -13,6 +13,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 import asyncpg
 
+from app.core.security import ensure_secret_strength, extract_password_from_dsn
 from app.settings import get_settings
 
 
@@ -301,6 +302,12 @@ async def async_main() -> int:
     settings = get_settings()
     if not settings.postgres_dsn:
         raise RuntimeError("POSTGRES_DSN must be configured to bootstrap Alembic.")
+    if not settings.is_local_env:
+        ensure_secret_strength(
+            extract_password_from_dsn(settings.postgres_dsn),
+            secret_name="POSTGRES_DSN password",
+            min_length=16,
+        )
 
     state = await inspect_database(normalize_asyncpg_dsn(settings.postgres_dsn))
     revision = determine_stamp_revision(state)

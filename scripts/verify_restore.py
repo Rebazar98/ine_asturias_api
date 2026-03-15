@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import os
 import sys
+from pathlib import Path
 from typing import Any
 
 import asyncpg
@@ -14,12 +15,26 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Verificacion minima de un restore PostgreSQL.")
     parser.add_argument("--base-url", default="http://127.0.0.1:8001")
     parser.add_argument(
-        "--postgres-dsn", default=os.getenv("VERIFY_POSTGRES_DSN") or os.getenv("POSTGRES_DSN")
+        "--postgres-dsn",
+        default=(
+            os.getenv("VERIFY_POSTGRES_DSN")
+            or os.getenv("POSTGRES_DSN")
+            or _read_env_file_value("POSTGRES_DSN")
+        ),
     )
     parser.add_argument("--min-ingestion-rows", type=int, default=1)
     parser.add_argument("--min-normalized-rows", type=int, default=0)
+    parser.add_argument("--min-catalog-rows", type=int, default=1)
+    parser.add_argument("--expected-alembic-version", default=None)
+    parser.add_argument("--functional-operation-code", default=None)
+    parser.add_argument("--min-functional-series-total", type=int, default=1)
     parser.add_argument("--page-size", type=int, default=1)
-    parser.add_argument("--api-key", default=os.getenv("VERIFY_API_KEY") or os.getenv("API_KEY"))
+    parser.add_argument(
+        "--api-key",
+        default=os.getenv("VERIFY_API_KEY")
+        or os.getenv("API_KEY")
+        or _read_env_file_value("API_KEY"),
+    )
     return parser.parse_args()
 
 
@@ -31,15 +46,31 @@ def main() -> int:
         )
 
     asyncio.run(
-        _verify_database(args.postgres_dsn, args.min_ingestion_rows, args.min_normalized_rows)
+        _verify_database(
+            args.postgres_dsn,
+            args.min_ingestion_rows,
+            args.min_normalized_rows,
+            args.min_catalog_rows,
+            args.expected_alembic_version,
+        )
     )
-    _verify_http(args.base_url.rstrip("/"), args.page_size, args.api_key)
+    _verify_http(
+        args.base_url.rstrip("/"),
+        args.page_size,
+        args.api_key,
+        args.functional_operation_code,
+        args.min_functional_series_total,
+    )
     print("[restore-verify] verificacion completada")
     return 0
 
 
 async def _verify_database(
-    postgres_dsn: str, min_ingestion_rows: int, min_normalized_rows: int
+    postgres_dsn: str,
+    min_ingestion_rows: int,
+    min_normalized_rows: int,
+    min_catalog_rows: int,
+    expected_alembic_version: str | None,
 ) -> None:
     normalized_dsn = _normalize_asyncpg_dsn(postgres_dsn)
     connection = await asyncpg.connect(normalized_dsn)
@@ -51,11 +82,17 @@ async def _verify_database(
         normalized_count = int(
             await connection.fetchval("SELECT COUNT(*) FROM ine_series_normalized")
         )
+        catalog_count = int(await connection.fetchval("SELECT COUNT(*) FROM ine_tables_catalog"))
     finally:
         await connection.close()
 
     if not alembic_version:
         raise RuntimeError("No se pudo leer alembic_version tras el restore.")
+    if expected_alembic_version and alembic_version != expected_alembic_version:
+        raise RuntimeError(
+            "alembic_version no coincide tras el restore: "
+            f"esperada={expected_alembic_version}, actual={alembic_version}."
+        )
     if ingestion_count < min_ingestion_rows:
         raise RuntimeError(
             f"ingestion_raw tiene {ingestion_count} filas y se esperaban al menos {min_ingestion_rows}."
@@ -64,20 +101,34 @@ async def _verify_database(
         raise RuntimeError(
             f"ine_series_normalized tiene {normalized_count} filas y se esperaban al menos {min_normalized_rows}."
         )
+    if catalog_count < min_catalog_rows:
+        raise RuntimeError(
+            f"ine_tables_catalog tiene {catalog_count} filas y se esperaban al menos {min_catalog_rows}."
+        )
 
     print(f"[restore-verify] alembic_version={alembic_version}")
     print(f"[restore-verify] ingestion_raw={ingestion_count}")
     print(f"[restore-verify] ine_series_normalized={normalized_count}")
+    print(f"[restore-verify] ine_tables_catalog={catalog_count}")
 
 
-def _verify_http(base_url: str, page_size: int, api_key: str | None) -> None:
+def _verify_http(
+    base_url: str,
+    page_size: int,
+    api_key: str | None,
+    functional_operation_code: str | None,
+    min_functional_series_total: int,
+) -> None:
     timeout = httpx.Timeout(10.0, connect=5.0)
     headers = {"X-API-Key": api_key} if api_key else None
 
     with httpx.Client(base_url=base_url, timeout=timeout, headers=headers) as client:
         health = _get_json(client, "/health")
         ready = _get_json(client, "/health/ready")
-        series = _get_json(client, f"/ine/series?page=1&page_size={page_size}")
+        series_path = f"/ine/series?page=1&page_size={page_size}"
+        if functional_operation_code:
+            series_path += f"&operation_code={functional_operation_code}"
+        series = _get_json(client, series_path)
 
     if health.get("status") != "ok":
         raise RuntimeError(f"/health no es valido tras el restore: {health}")
@@ -85,6 +136,11 @@ def _verify_http(base_url: str, page_size: int, api_key: str | None) -> None:
         raise RuntimeError(f"/health/ready no es valido tras el restore: {ready}")
     if "items" not in series or "total" not in series:
         raise RuntimeError(f"/ine/series no devolvio el contrato esperado: {series}")
+    if int(series.get("total") or 0) < min_functional_series_total:
+        raise RuntimeError(
+            f"/ine/series devolvio total={series.get('total')} y se esperaban al menos "
+            f"{min_functional_series_total}."
+        )
 
     print("[restore-verify] /health OK")
     print("[restore-verify] /health/ready OK")
@@ -104,6 +160,21 @@ def _normalize_asyncpg_dsn(dsn: str) -> str:
     if dsn.startswith("postgresql+asyncpg://"):
         return "postgresql://" + dsn.split("://", 1)[1]
     return dsn
+
+
+def _read_env_file_value(name: str) -> str | None:
+    for candidate in (Path(".env"), Path(".env.local"), Path(".env.example")):
+        if not candidate.exists():
+            continue
+        for raw_line in candidate.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            if key.strip() == name:
+                normalized = value.strip()
+                return normalized or None
+    return None
 
 
 if __name__ == "__main__":

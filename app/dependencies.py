@@ -8,6 +8,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.cache import BaseAsyncCache
 from app.core.jobs import BaseJobStore
+from app.core.metrics import record_auth_failure, record_rate_limit_rejection
+from app.core.rate_limit import BaseRateLimiter, RateLimitPolicy
+from app.core.resilience import AsyncCircuitBreaker
+from app.core.security import compare_api_keys, hash_sensitive_data
 from app.db import get_session
 from app.repositories.analytics_snapshots import AnalyticalSnapshotRepository
 from app.repositories.catalog import TableCatalogRepository
@@ -37,6 +41,10 @@ async def get_job_store(request: Request) -> BaseJobStore:
     return request.app.state.job_store
 
 
+async def get_rate_limiter(request: Request) -> BaseRateLimiter:
+    return request.app.state.rate_limiter
+
+
 async def get_arq_pool(request: Request) -> ArqRedis | None:
     return getattr(request.app.state, "arq_redis", None)
 
@@ -46,7 +54,8 @@ def get_ine_client_service(
     settings: Settings = Depends(get_settings),
     cache: BaseAsyncCache = Depends(get_cache),
 ) -> INEClientService:
-    return INEClientService(request.app.state.http_client, settings, cache)
+    circuit_breaker: AsyncCircuitBreaker = request.app.state.ine_circuit_breaker
+    return INEClientService(request.app.state.http_client, settings, cache, circuit_breaker)
 
 
 def get_cartociudad_client_service(
@@ -54,7 +63,8 @@ def get_cartociudad_client_service(
     settings: Settings = Depends(get_settings),
     cache: BaseAsyncCache = Depends(get_cache),
 ) -> CartoCiudadClientService:
-    return CartoCiudadClientService(request.app.state.http_client, settings, cache)
+    circuit_breaker: AsyncCircuitBreaker = request.app.state.cartociudad_circuit_breaker
+    return CartoCiudadClientService(request.app.state.http_client, settings, cache, circuit_breaker)
 
 
 def get_asturias_resolver(
@@ -145,13 +155,88 @@ def get_cartociudad_geocoding_service(
 
 
 async def require_api_key(
+    request: Request,
     settings: Settings = Depends(get_settings),
     x_api_key: str | None = Header(default=None, alias="X-API-Key"),
 ) -> None:
-    if not settings.api_key:
+    request.state.api_key_authenticated = False
+    if not settings.requires_api_key:
+        if settings.api_key and compare_api_keys(x_api_key, settings.api_key):
+            request.state.api_key_authenticated = True
         return
-    if x_api_key != settings.api_key:
+
+    if not settings.api_key:
+        record_auth_failure("server_api_key_not_configured")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Server API key is not configured.",
+        )
+
+    if x_api_key is None:
+        record_auth_failure("missing_api_key")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or missing API key.",
+            detail="Missing API key.",
+            headers={"WWW-Authenticate": "X-API-Key"},
         )
+
+    if not compare_api_keys(x_api_key, settings.api_key):
+        record_auth_failure("invalid_api_key")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API key.",
+            headers={"WWW-Authenticate": "X-API-Key"},
+        )
+    request.state.api_key_authenticated = True
+
+
+def build_rate_limit_dependency(policy: RateLimitPolicy):
+    async def enforce_rate_limit(
+        request: Request,
+        settings: Settings = Depends(get_settings),
+        rate_limiter: BaseRateLimiter = Depends(get_rate_limiter),
+        x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+    ) -> None:
+        if not settings.rate_limit_enabled:
+            return
+
+        api_key_authenticated = getattr(request.state, "api_key_authenticated", False)
+        if not api_key_authenticated and settings.api_key and x_api_key:
+            api_key_authenticated = compare_api_keys(x_api_key, settings.api_key)
+
+        auth_mode = "api_key" if api_key_authenticated else "anonymous"
+        limit = (
+            policy.authenticated_requests_per_minute
+            if api_key_authenticated
+            else policy.public_requests_per_minute
+        )
+        client_ip = _resolve_client_ip(request)
+        bucket_key = f"{policy.name}:{auth_mode}:{hash_sensitive_data(client_ip)}"
+        snapshot = await rate_limiter.increment(bucket_key, window_seconds=policy.window_seconds)
+        if snapshot.count <= limit:
+            return
+
+        record_rate_limit_rejection(policy.name, auth_mode)
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail={
+                "message": "Rate limit exceeded.",
+                "policy": policy.name,
+                "limit": limit,
+                "window_seconds": policy.window_seconds,
+                "auth_mode": auth_mode,
+            },
+            headers={"Retry-After": str(snapshot.retry_after_seconds)},
+        )
+
+    return enforce_rate_limit
+
+
+def _resolve_client_ip(request: Request) -> str:
+    forwarded_for = request.headers.get("x-forwarded-for")
+    if forwarded_for:
+        return forwarded_for.split(",", 1)[0].strip()
+    client = request.client
+    if client and client.host:
+        return client.host
+    return "unknown"
