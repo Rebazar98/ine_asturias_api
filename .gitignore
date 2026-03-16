@@ -1,5 +1,6 @@
 .env
 .env.local
+.claude/settings.local.json
 .env.staging.local
 .env.rc.local
 .env.*.local
