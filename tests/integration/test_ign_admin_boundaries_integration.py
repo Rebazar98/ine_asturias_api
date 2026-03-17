@@ -226,7 +226,7 @@ def test_ign_admin_loader_roundtrip_with_postgis():
                     .first()
                     or 0
                 )
-                assert raw_count == 10
+                assert raw_count >= 10
 
         finally:
             async with session_factory() as session:

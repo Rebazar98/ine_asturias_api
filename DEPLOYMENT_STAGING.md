@@ -604,3 +604,63 @@ Regla operativa:
 
 - esta capacidad todavia NO esta abierta en el producto;
 - este bloque solo fija como debera verificarse en staging cuando la siguiente fase habilite una carga geoespacial real.
+
+## Evidencia operativa A6 — Carga IGN/CNIG INSPIRE real (2026-03-17)
+
+Validacion completa ejecutada en entorno local con datos reales IGN/CNIG NATCODE INSPIRE y municipio canonico 33044 (Oviedo).
+
+Ficheros de entrada:
+
+- `ign_parents.geojson` — 3 features: pais (`NATCODE=34`), CCAA Principado de Asturias (`NATCODE=3403`), provincia Asturias (`NATCODE=340333`)
+- `ign_municipios.geojson` — 8132 features totales, 78 seleccionados con `autonomous_community_code=03`
+
+Secuencia ejecutada:
+
+1. Stack arrancado: `db`, `redis`, `migrate`, `api`, `worker`
+2. Migraciones en head: `0012_cartographic_qa_incidents`
+3. Carga de padres (`ign_parents.geojson`): 3/3 upsertados
+4. Carga de municipios (`ign_municipios.geojson`, `--autonomous-community-code 03`): 78/78 upsertados
+
+Comprobaciones SQL:
+
+```
+unit_level             | count
+-----------------------+-------
+autonomous_community   |     1
+country                |     1
+municipality           |    78
+province               |     1
+
+invalid_geoms          = 0
+wrong_srid             = 0
+orphan_municipalities  = 0
+orphan_provinces       = 0
+```
+
+Cadena jerarquica recursiva para 33044:
+
+```
+depth | unit_level           | canonical_name         | code
+------+----------------------+------------------------+-------
+    0 | municipality         | Oviedo                 | 33044
+    1 | province             | Asturias               | 33
+    2 | autonomous_community | Principado de Asturias | 03
+    3 | country              | Espana                 | ES
+```
+
+Smoke test (`scripts/smoke_stack.py --municipality-code 33044`):
+
+```
+[smoke] /health OK
+[smoke] /health/ready OK
+[smoke] /metrics OK
+[smoke] /territorios/comunidades-autonomas OK
+[smoke] /territorios/catalogo OK
+[smoke] job encolado y completado
+[smoke] /ine/series OK
+[smoke] /territorios/municipio/33044/resumen OK
+[smoke] informe municipal encolado y completado
+[smoke] validacion completada
+```
+
+Veredicto A6: PASS

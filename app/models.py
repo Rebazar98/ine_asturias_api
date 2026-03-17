@@ -45,6 +45,9 @@ class IngestionRaw(Base):
         server_default=func.now(),
         index=True,
     )
+    org_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, server_default="geonalon", index=True
+    )
 
 
 class INESeriesNormalized(Base):
@@ -91,6 +94,9 @@ class INESeriesNormalized(Base):
         DateTime(timezone=True),
         server_default=func.now(),
         index=True,
+    )
+    org_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, server_default="geonalon", index=True
     )
 
 
@@ -383,6 +389,9 @@ class TerritorialUnit(Base):
         nullable=True,
     )
     attributes_json: Mapped[dict[str, Any]] = mapped_column("attributes", JSONB, default=dict)
+    org_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, server_default="geonalon", index=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -487,3 +496,21 @@ class IDEASFeature(Base):
         DateTime(timezone=True), server_default=func.now(), index=True
     )
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class SyncSchedule(Base):
+    __tablename__ = "sync_schedule"
+    __table_args__ = (
+        UniqueConstraint("org_id", "source", name="uq_sync_schedule_org_source"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    org_id: Mapped[str] = mapped_column(String(64), index=True)
+    source: Mapped[str] = mapped_column(String(64))
+    cron_expression: Mapped[str] = mapped_column(String(128))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
