@@ -467,6 +467,7 @@ def _normalize_ign_admin_feature(
     canonical_name = _first_non_empty_string(
         properties,
         "canonical_name",
+        "NAMEUNIT",  # INSPIRE / CNIG field
         "name",
         "nombre",
         "label",
@@ -498,6 +499,18 @@ def _normalize_ign_admin_feature(
         "cod_ccaa",
         "ccaa_code",
     )
+    if not autonomous_community:
+        # Derive CCAA from INSPIRE NATCODE: bytes 2-3 (0-indexed) hold the INE CCAA code
+        natcode_raw = _first_non_empty_string(properties, "NATCODE", "natcode")
+        if natcode_raw:
+            natcode_len = len(natcode_raw)
+            if natcode_len == 4:
+                # This feature IS the CCAA level; its own code is the CCAA code
+                autonomous_community = canonical_code
+            elif natcode_len in (6, 11):
+                ccaa_candidate = natcode_raw[2:4]
+                if ccaa_candidate.isdigit():
+                    autonomous_community = ccaa_candidate
     province_code = _first_non_empty_string(
         properties,
         "province_code",
@@ -551,6 +564,20 @@ def _resolve_unit_level(properties: dict[str, Any]) -> str:
     normalized_level = _normalize_level(raw_level)
     if normalized_level:
         return normalized_level
+
+    # INSPIRE / CNIG NATCODE heuristic — level inferred from code length:
+    #   2  → country  |  4 → autonomous_community  |  6 → province  |  11 → municipality
+    natcode = _first_non_empty_string(properties, "NATCODE", "natcode")
+    if natcode:
+        natcode_len = len(natcode)
+        if natcode_len == 2:
+            return TERRITORIAL_UNIT_LEVEL_COUNTRY
+        if natcode_len == 4:
+            return TERRITORIAL_UNIT_LEVEL_AUTONOMOUS_COMMUNITY
+        if natcode_len == 6:
+            return TERRITORIAL_UNIT_LEVEL_PROVINCE
+        if natcode_len == 11:
+            return TERRITORIAL_UNIT_LEVEL_MUNICIPALITY
 
     if _first_non_empty_string(
         properties,
@@ -621,6 +648,10 @@ def _resolve_canonical_code(
         )
         if code:
             return code
+        # INSPIRE NATCODE length-4: last 2 digits are the INE CCAA code
+        natcode = _first_non_empty_string(properties, "NATCODE", "natcode")
+        if natcode and len(natcode) == 4 and natcode[-2:].isdigit():
+            return natcode[-2:]
     if unit_level == TERRITORIAL_UNIT_LEVEL_PROVINCE:
         code = _first_non_empty_string(
             properties,
@@ -631,6 +662,10 @@ def _resolve_canonical_code(
         )
         if code:
             return code
+        # INSPIRE NATCODE length-6: last 2 digits are the INE province code
+        natcode = _first_non_empty_string(properties, "NATCODE", "natcode")
+        if natcode and len(natcode) == 6 and natcode[-2:].isdigit():
+            return natcode[-2:]
     if unit_level == TERRITORIAL_UNIT_LEVEL_MUNICIPALITY:
         code = _first_non_empty_string(
             properties,
@@ -641,6 +676,10 @@ def _resolve_canonical_code(
         )
         if code:
             return code
+        # INSPIRE NATCODE length-11: last 5 digits are the INE municipality code
+        ine_code = extract_ine_code(_first_non_empty_string(properties, "NATCODE", "natcode"))
+        if ine_code:
+            return ine_code
     generic_code = _first_non_empty_string(properties, "canonical_code", "code", "codigo")
     if generic_code:
         return generic_code
@@ -670,6 +709,13 @@ def _resolve_parent_reference(
             "cod_ccaa",
             "ccaa_code",
         )
+        if not parent_code:
+            # INSPIRE NATCODE length-6: bytes 2-3 hold the INE CCAA code
+            natcode = _first_non_empty_string(properties, "NATCODE", "natcode")
+            if natcode and len(natcode) == 6:
+                ccaa_candidate = natcode[2:4]
+                if ccaa_candidate.isdigit():
+                    parent_code = ccaa_candidate
         return TERRITORIAL_UNIT_LEVEL_AUTONOMOUS_COMMUNITY, parent_code
     if unit_level == TERRITORIAL_UNIT_LEVEL_MUNICIPALITY:
         parent_code = (
@@ -705,6 +751,27 @@ def _is_feature_in_scope(
             return True
         return bool(feature.province_code and feature.province_code in in_scope_provinces)
     return False
+
+
+def extract_ine_code(natcode: str | None) -> str | None:
+    """Extract the 5-digit INE municipality code from an IGN/CNIG INSPIRE NATCODE.
+
+    CNIG NATCODE format for Spanish municipalities (11 digits):
+        <country(2)><ccaa(2)><province(2)><municipality(5)>
+        e.g. "34033333044"  →  "33044"  (Oviedo, Asturias)
+
+    Returns None when *natcode* is absent, shorter than 5 chars, or the last
+    5 characters are not all digits.
+    """
+    if not natcode:
+        return None
+    cleaned = str(natcode).strip()
+    if len(cleaned) < 5:
+        return None
+    candidate = cleaned[-5:]
+    if not candidate.isdigit():
+        return None
+    return candidate
 
 
 def _first_non_empty_string(properties: dict[str, Any], *keys: str) -> str | None:
