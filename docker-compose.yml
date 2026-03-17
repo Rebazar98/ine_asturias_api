@@ -4,7 +4,7 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-ine_asturias}
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local-dev-postgres-Y8mF3vQ2sL7nR5xC}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     ports:
       - "${POSTGRES_HOST_PORT:-5433}:5432"
     volumes:
@@ -39,10 +39,10 @@ services:
       PROVIDER_TOTAL_TIMEOUT_SECONDS: ${PROVIDER_TOTAL_TIMEOUT_SECONDS:-30}
       HTTP_RETRY_MAX_ATTEMPTS: ${HTTP_RETRY_MAX_ATTEMPTS:-3}
       HTTP_RETRY_BACKOFF_SECONDS: ${HTTP_RETRY_BACKOFF_SECONDS:-1}
-      POSTGRES_DSN: ${POSTGRES_DSN:-postgresql+asyncpg://postgres:local-dev-postgres-Y8mF3vQ2sL7nR5xC@db:5432/ine_asturias}
+      POSTGRES_DSN: ${POSTGRES_DSN}
       ENABLE_CACHE: ${ENABLE_CACHE:-true}
       CACHE_TTL_SECONDS: ${CACHE_TTL_SECONDS:-300}
-      API_KEY: ${API_KEY:-local-dev-api-key-x4R7mN2cQ9wP6sT8vB3kJ5hL1zF}
+      API_KEY: ${API_KEY}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       JOB_QUEUE_NAME: ${JOB_QUEUE_NAME:-ine_jobs}
