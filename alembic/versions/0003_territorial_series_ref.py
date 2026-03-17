@@ -38,7 +38,9 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index("ix_ine_series_normalized_territorial_unit_id", table_name="ine_series_normalized")
+    op.drop_index(
+        "ix_ine_series_normalized_territorial_unit_id", table_name="ine_series_normalized"
+    )
     op.drop_constraint(
         "fk_ine_series_normalized_territorial_unit",
         "ine_series_normalized",

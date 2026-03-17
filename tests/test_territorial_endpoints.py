@@ -1288,6 +1288,7 @@ def test_create_territorial_export_job_completes_with_catastro_bundle(
     dummy_series_repo,
     dummy_ingestion_repo,
     dummy_catastro_cache_repo,
+    dummy_catastro_aggregate_cache_repo,
     dummy_catastro_client_service,
     dummy_territorial_export_artifact_repo,
 ):
@@ -1337,6 +1338,7 @@ def test_create_territorial_export_job_fails_when_catastro_provider_fails(
     client,
     dummy_territorial_repo,
     dummy_series_repo,
+    dummy_catastro_aggregate_cache_repo,
     dummy_catastro_client_service,
 ):
     from app.services.catastro_client import CatastroUpstreamError

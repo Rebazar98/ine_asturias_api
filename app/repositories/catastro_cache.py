@@ -10,10 +10,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import get_logger
 from app.core.metrics import record_persistence_batch
-from app.models import CatastroMunicipalityAggregateCache
+from app.models import CatastroMunicipalityAggregateCache, CatastroTerritorialAggregateCache
 
 
 CATASTRO_PROVIDER_FAMILY_URBANO = "catastro_urbano_municipality_aggregates"
+CATASTRO_PROVIDER_FAMILY_URBANO_TERRITORIAL = "catastro_urbano_territorial_aggregates"
 
 
 class CatastroMunicipalityAggregateCacheRepository:
@@ -157,6 +158,166 @@ class CatastroMunicipalityAggregateCacheRepository:
             "id": row.id,
             "provider_family": row.provider_family,
             "municipality_code": row.municipality_code,
+            "reference_year": row.reference_year,
+            "payload": row.payload,
+            "metadata": row.metadata_json,
+            "cached_at": row.cached_at,
+            "expires_at": row.expires_at,
+        }
+
+
+class CatastroTerritorialAggregateCacheRepository:
+    def __init__(self, session: AsyncSession | None) -> None:
+        self.session = session
+        self.logger = get_logger("app.repositories.catastro_territorial_cache")
+
+    async def get_fresh_payload(
+        self,
+        *,
+        provider_family: str,
+        unit_level: str,
+        code_value: str,
+        reference_year: str,
+        now: datetime | None = None,
+    ) -> dict[str, Any] | None:
+        if self.session is None:
+            return None
+
+        lookup_time = now or datetime.now(timezone.utc)
+        statement = (
+            select(CatastroTerritorialAggregateCache)
+            .where(
+                CatastroTerritorialAggregateCache.provider_family == provider_family,
+                CatastroTerritorialAggregateCache.unit_level == unit_level,
+                CatastroTerritorialAggregateCache.code_value == code_value,
+                CatastroTerritorialAggregateCache.reference_year == reference_year,
+                CatastroTerritorialAggregateCache.expires_at > lookup_time,
+            )
+            .limit(1)
+        )
+        result = await self.session.execute(statement)
+        row = result.scalars().first()
+        if row is None:
+            return None
+
+        self.logger.info(
+            "catastro_territorial_cache_hit_db",
+            extra={
+                "provider_family": provider_family,
+                "unit_level": unit_level,
+                "code_value": code_value,
+                "reference_year": reference_year,
+            },
+        )
+        return self._serialize_row(row)
+
+    async def upsert_payload(
+        self,
+        *,
+        provider_family: str,
+        unit_level: str,
+        code_value: str,
+        reference_year: str,
+        payload: dict[str, Any] | list[Any],
+        ttl_seconds: int,
+        metadata: dict[str, Any] | None = None,
+        now: datetime | None = None,
+    ) -> dict[str, Any] | None:
+        if self.session is None or ttl_seconds <= 0:
+            return None
+
+        cached_at = now or datetime.now(timezone.utc)
+        expires_at = cached_at + timedelta(seconds=ttl_seconds)
+        statement = insert(CatastroTerritorialAggregateCache.__table__).values(
+            {
+                "provider_family": provider_family,
+                "unit_level": unit_level,
+                "code_value": code_value,
+                "reference_year": reference_year,
+                "payload": payload,
+                "metadata": dict(metadata or {}),
+                "cached_at": cached_at,
+                "expires_at": expires_at,
+            }
+        )
+        statement = statement.on_conflict_do_update(
+            index_elements=["provider_family", "unit_level", "code_value", "reference_year"],
+            set_={
+                "payload": statement.excluded.payload,
+                "metadata": statement.excluded["metadata"],
+                "cached_at": statement.excluded.cached_at,
+                "expires_at": statement.excluded.expires_at,
+            },
+        )
+
+        try:
+            await self.session.execute(statement)
+            await self.session.commit()
+        except SQLAlchemyError:
+            await self.session.rollback()
+            self.logger.exception(
+                "catastro_territorial_cache_upsert_failed",
+                extra={
+                    "provider_family": provider_family,
+                    "unit_level": unit_level,
+                    "code_value": code_value,
+                    "reference_year": reference_year,
+                },
+            )
+            return None
+
+        record_persistence_batch("catastro_territorial_cache", batch_size=1, rows_inserted=1)
+        self.logger.info(
+            "catastro_territorial_cache_upserted",
+            extra={
+                "provider_family": provider_family,
+                "unit_level": unit_level,
+                "code_value": code_value,
+                "reference_year": reference_year,
+                "ttl_seconds": ttl_seconds,
+            },
+        )
+        return await self._get_row(
+            provider_family=provider_family,
+            unit_level=unit_level,
+            code_value=code_value,
+            reference_year=reference_year,
+        )
+
+    async def _get_row(
+        self,
+        *,
+        provider_family: str,
+        unit_level: str,
+        code_value: str,
+        reference_year: str,
+    ) -> dict[str, Any] | None:
+        if self.session is None:
+            return None
+
+        statement = (
+            select(CatastroTerritorialAggregateCache)
+            .where(
+                CatastroTerritorialAggregateCache.provider_family == provider_family,
+                CatastroTerritorialAggregateCache.unit_level == unit_level,
+                CatastroTerritorialAggregateCache.code_value == code_value,
+                CatastroTerritorialAggregateCache.reference_year == reference_year,
+            )
+            .limit(1)
+        )
+        result = await self.session.execute(statement)
+        row = result.scalars().first()
+        if row is None:
+            return None
+        return self._serialize_row(row)
+
+    @staticmethod
+    def _serialize_row(row: CatastroTerritorialAggregateCache) -> dict[str, Any]:
+        return {
+            "id": row.id,
+            "provider_family": row.provider_family,
+            "unit_level": row.unit_level,
+            "code_value": row.code_value,
             "reference_year": row.reference_year,
             "payload": row.payload,
             "metadata": row.metadata_json,

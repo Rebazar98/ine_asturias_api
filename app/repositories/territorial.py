@@ -10,6 +10,7 @@ from typing import Any
 from sqlalchemy import Select, func, select, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.core.logging import get_logger
 from app.models import (
@@ -428,6 +429,103 @@ class TerritorialRepository:
 
         hierarchy_units.reverse()
         return [await self._serialize_unit_summary(unit) for unit in hierarchy_units]
+
+    async def list_descendant_municipalities(
+        self,
+        *,
+        unit_level: str,
+        territorial_unit_id: int,
+    ) -> list[dict[str, Any]]:
+        if self.session is None:
+            return []
+        if unit_level not in {
+            TERRITORIAL_UNIT_LEVEL_PROVINCE,
+            TERRITORIAL_UNIT_LEVEL_AUTONOMOUS_COMMUNITY,
+        }:
+            return []
+
+        municipality = aliased(TerritorialUnit, name="municipality")
+        province = aliased(TerritorialUnit, name="province")
+        community = aliased(TerritorialUnit, name="autonomous_community")
+        municipality_code = aliased(TerritorialUnitCode, name="municipality_code")
+        province_code = aliased(TerritorialUnitCode, name="province_code")
+        community_code = aliased(TerritorialUnitCode, name="community_code")
+
+        municipality_strategy = get_canonical_code_strategy(TERRITORIAL_UNIT_LEVEL_MUNICIPALITY)
+        province_strategy = get_canonical_code_strategy(TERRITORIAL_UNIT_LEVEL_PROVINCE)
+        community_strategy = get_canonical_code_strategy(
+            TERRITORIAL_UNIT_LEVEL_AUTONOMOUS_COMMUNITY
+        )
+
+        statement = (
+            select(
+                municipality,
+                municipality_code,
+                province,
+                province_code,
+                community,
+                community_code,
+            )
+            .select_from(municipality)
+            .join(province, municipality.parent_id == province.id)
+            .outerjoin(community, province.parent_id == community.id)
+            .outerjoin(
+                municipality_code,
+                (
+                    (municipality_code.territorial_unit_id == municipality.id)
+                    & (municipality_code.source_system == municipality_strategy["source_system"])
+                    & (municipality_code.code_type == municipality_strategy["code_type"])
+                    & municipality_code.is_primary.is_(True)
+                ),
+            )
+            .outerjoin(
+                province_code,
+                (
+                    (province_code.territorial_unit_id == province.id)
+                    & (province_code.source_system == province_strategy["source_system"])
+                    & (province_code.code_type == province_strategy["code_type"])
+                    & province_code.is_primary.is_(True)
+                ),
+            )
+            .outerjoin(
+                community_code,
+                (
+                    (community_code.territorial_unit_id == community.id)
+                    & (community_code.source_system == community_strategy["source_system"])
+                    & (community_code.code_type == community_strategy["code_type"])
+                    & community_code.is_primary.is_(True)
+                ),
+            )
+            .where(
+                municipality.unit_level == TERRITORIAL_UNIT_LEVEL_MUNICIPALITY,
+                municipality.is_active.is_(True),
+            )
+            .order_by(municipality.canonical_name.asc(), municipality.id.asc())
+        )
+        if unit_level == TERRITORIAL_UNIT_LEVEL_PROVINCE:
+            statement = statement.where(province.id == territorial_unit_id)
+        else:
+            statement = statement.where(community.id == territorial_unit_id)
+
+        result = await self.session.execute(statement)
+        return [
+            self._serialize_descendant_municipality_payload(
+                municipality=municipality_row,
+                municipality_code=municipality_code_row,
+                province=province_row,
+                province_code=province_code_row,
+                community=community_row,
+                community_code=community_code_row,
+            )
+            for (
+                municipality_row,
+                municipality_code_row,
+                province_row,
+                province_code_row,
+                community_row,
+                community_code_row,
+            ) in result.all()
+        ]
 
     async def resolve_point(self, *, lat: float, lon: float) -> dict[str, Any] | None:
         if self.session is None:
@@ -1010,3 +1108,30 @@ class TerritorialRepository:
         if include_id:
             payload["id"] = alias.id
         return payload
+
+    @staticmethod
+    def _serialize_descendant_municipality_payload(
+        *,
+        municipality: TerritorialUnit,
+        municipality_code: TerritorialUnitCode | None,
+        province: TerritorialUnit,
+        province_code: TerritorialUnitCode | None,
+        community: TerritorialUnit | None,
+        community_code: TerritorialUnitCode | None,
+    ) -> dict[str, Any]:
+        return {
+            "territorial_unit_id": municipality.id,
+            "municipality_code": municipality_code.code_value if municipality_code else None,
+            "canonical_name": municipality.canonical_name,
+            "display_name": municipality.display_name,
+            "province_territorial_unit_id": province.id,
+            "province_code": province_code.code_value if province_code else None,
+            "province_canonical_name": province.canonical_name,
+            "province_display_name": province.display_name,
+            "autonomous_community_territorial_unit_id": community.id if community else None,
+            "autonomous_community_code": community_code.code_value if community_code else None,
+            "autonomous_community_canonical_name": (
+                community.canonical_name if community else None
+            ),
+            "autonomous_community_display_name": community.display_name if community else None,
+        }

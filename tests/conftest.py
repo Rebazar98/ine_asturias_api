@@ -12,6 +12,7 @@ from app.dependencies import (
     get_analytical_snapshot_repository,
     get_catastro_client_service,
     get_catastro_municipality_cache_repository,
+    get_catastro_territorial_aggregate_cache_repository,
     get_ingestion_repository,
     get_ine_client_service,
     get_series_repository,
@@ -89,6 +90,65 @@ class DummyCatastroMunicipalityAggregateCacheRepository:
             "id": existing["id"] if existing is not None else self._next_id,
             "provider_family": provider_family,
             "municipality_code": municipality_code,
+            "reference_year": reference_year,
+            "payload": deepcopy(payload),
+            "metadata": deepcopy(metadata or {}),
+            "cached_at": write_time,
+            "expires_at": write_time + timedelta(seconds=ttl_seconds),
+        }
+        self.rows[key] = deepcopy(row)
+        if existing is None:
+            self._next_id += 1
+        return deepcopy(row)
+
+
+class DummyCatastroTerritorialAggregateCacheRepository:
+    def __init__(self) -> None:
+        self.rows: dict[tuple[str, str, str, str], dict] = {}
+        self.get_calls = 0
+        self.upsert_calls = 0
+        self._next_id = 1
+
+    async def get_fresh_payload(
+        self,
+        *,
+        provider_family: str,
+        unit_level: str,
+        code_value: str,
+        reference_year: str,
+        now: datetime | None = None,
+    ):
+        self.get_calls += 1
+        key = (provider_family, unit_level, code_value, reference_year)
+        row = self.rows.get(key)
+        if row is None:
+            return None
+        lookup_time = now or datetime.now(timezone.utc)
+        if row["expires_at"] <= lookup_time:
+            return None
+        return deepcopy(row)
+
+    async def upsert_payload(
+        self,
+        *,
+        provider_family: str,
+        unit_level: str,
+        code_value: str,
+        reference_year: str,
+        payload: dict | list,
+        ttl_seconds: int,
+        metadata: dict | None = None,
+        now: datetime | None = None,
+    ):
+        self.upsert_calls += 1
+        write_time = now or datetime.now(timezone.utc)
+        key = (provider_family, unit_level, code_value, reference_year)
+        existing = self.rows.get(key)
+        row = {
+            "id": existing["id"] if existing is not None else self._next_id,
+            "provider_family": provider_family,
+            "unit_level": unit_level,
+            "code_value": code_value,
             "reference_year": reference_year,
             "payload": deepcopy(payload),
             "metadata": deepcopy(metadata or {}),
@@ -191,6 +251,7 @@ class DummyCatastroClientService:
         *,
         province_candidates,
         municipality_candidates,
+        reference_year: str | None = None,
     ):
         self.calls.append(
             {
@@ -480,6 +541,7 @@ class DummyTerritorialRepository:
         self.units_by_level: dict[str, list[dict]] = {}
         self.upsert_boundary_calls: list[dict[str, object]] = []
         self.point_resolution_payload: dict | None = None
+        self.descendants_by_unit_id: dict[int, list[dict]] = {}
 
     async def get_unit_by_name(
         self, name: str, source_system=None, alias_type=None, unit_level=None
@@ -632,6 +694,14 @@ class DummyTerritorialRepository:
             "canonical_code": canonical_code,
             "created": True,
         }
+
+    async def list_descendant_municipalities(
+        self,
+        *,
+        unit_level: str,
+        territorial_unit_id: int,
+    ) -> list[dict]:
+        return deepcopy(self.descendants_by_unit_id.get(territorial_unit_id, []))
 
     async def resolve_point(self, *, lat: float, lon: float):
         if self.point_resolution_payload is None:
@@ -887,6 +957,7 @@ def client(monkeypatch):
     monkeypatch.setenv("POSTGRES_DSN", "")
     monkeypatch.setenv("REDIS_URL", "")
     monkeypatch.setenv("API_KEY", "")
+    monkeypatch.setenv("JOB_STORE_BACKEND", "memory")
     get_settings.cache_clear()
     with TestClient(app) as test_client:
         yield test_client
@@ -905,6 +976,13 @@ def dummy_ingestion_repo() -> DummyIngestionRepository:
 def dummy_catastro_cache_repo() -> DummyCatastroMunicipalityAggregateCacheRepository:
     repo = DummyCatastroMunicipalityAggregateCacheRepository()
     app.dependency_overrides[get_catastro_municipality_cache_repository] = lambda: repo
+    return repo
+
+
+@pytest.fixture
+def dummy_catastro_aggregate_cache_repo() -> DummyCatastroTerritorialAggregateCacheRepository:
+    repo = DummyCatastroTerritorialAggregateCacheRepository()
+    app.dependency_overrides[get_catastro_territorial_aggregate_cache_repository] = lambda: repo
     return repo
 
 

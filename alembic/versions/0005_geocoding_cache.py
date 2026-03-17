@@ -27,7 +27,9 @@ def upgrade() -> None:
         sa.Column("normalized_query", sa.String(length=512), nullable=False),
         sa.Column("payload", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
         sa.Column("metadata", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
-        sa.Column("cached_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "cached_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False
+        ),
         sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("provider", "normalized_query", name="uq_geocode_cache_provider_query"),
@@ -57,7 +59,9 @@ def upgrade() -> None:
         sa.Column("precision_digits", sa.Integer(), server_default="6", nullable=False),
         sa.Column("payload", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
         sa.Column("metadata", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
-        sa.Column("cached_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "cached_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False
+        ),
         sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint(

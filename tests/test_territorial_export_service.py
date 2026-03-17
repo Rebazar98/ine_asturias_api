@@ -15,6 +15,7 @@ from tests.conftest import (
     DummyAnalyticalSnapshotRepository,
     DummyCatastroClientService,
     DummyCatastroMunicipalityAggregateCacheRepository,
+    DummyCatastroTerritorialAggregateCacheRepository,
     DummyIngestionRepository,
     DummySeriesRepository,
     DummyTerritorialExportArtifactRepository,
@@ -257,6 +258,7 @@ def _build_service(
     snapshot_repo: DummyAnalyticalSnapshotRepository,
     catastro_client: DummyCatastroClientService | None = None,
     catastro_cache_repo: DummyCatastroMunicipalityAggregateCacheRepository | None = None,
+    catastro_aggregate_cache_repo: DummyCatastroTerritorialAggregateCacheRepository | None = None,
     ingestion_repo: DummyIngestionRepository | None = None,
 ) -> TerritorialExportService:
     analytics_service = TerritorialAnalyticsService(
@@ -273,10 +275,14 @@ def _build_service(
         catastro_client=catastro_client or DummyCatastroClientService(),
         catastro_cache_repo=catastro_cache_repo
         or DummyCatastroMunicipalityAggregateCacheRepository(),
+        catastro_aggregate_cache_repo=catastro_aggregate_cache_repo
+        or DummyCatastroTerritorialAggregateCacheRepository(),
         ingestion_repo=ingestion_repo or DummyIngestionRepository(),
         artifact_repo=artifact_repo,
         export_ttl_seconds=86400,
         catastro_cache_ttl_seconds=604800,
+        catastro_aggregate_cache_ttl_seconds=86400,
+        catastro_aggregate_max_concurrency=4,
         now_factory=lambda: datetime(2026, 3, 15, 13, 0, tzinfo=timezone.utc),
     )
 
@@ -412,22 +418,65 @@ def test_build_export_adds_catastro_dataset_for_municipality():
         assert all("result_html" not in json.dumps(item) for item in catastro_payload["series"])
 
 
-def test_build_export_marks_catastro_as_not_applicable_for_autonomous_community():
+def test_build_export_adds_catastro_territorial_aggregate_for_autonomous_community():
     territorial_repo, series_repo, artifact_repo, snapshot_repo = (
         _build_autonomous_community_export_repositories()
     )
     catastro_client = DummyCatastroClientService()
+    catastro_cache_repo = DummyCatastroMunicipalityAggregateCacheRepository()
+    catastro_aggregate_cache_repo = DummyCatastroTerritorialAggregateCacheRepository()
+    ingestion_repo = DummyIngestionRepository()
+
+    # seed one descendant municipality with a fresh cache entry so no upstream call is needed
+    seeded_at = datetime(2026, 3, 15, 12, 0, tzinfo=timezone.utc)
+    asyncio.run(
+        catastro_cache_repo.upsert_payload(
+            provider_family="catastro_urbano_municipality_aggregates",
+            municipality_code="33044",
+            reference_year="2025",
+            payload={
+                "reference_year": "2025",
+                "province_file_code": "04133",
+                "province_label": "Asturias",
+                "municipality_option_value": "0043",
+                "municipality_label": "Oviedo",
+                "indicators": catastro_client.payload["indicators"],
+            },
+            ttl_seconds=7200,
+            metadata=catastro_client.payload["metadata"],
+            now=seeded_at,
+        )
+    )
+    territorial_repo.descendants_by_unit_id[2] = [
+        {
+            "territorial_unit_id": 33044,
+            "municipality_code": "33044",
+            "canonical_name": "Oviedo",
+            "display_name": "Oviedo",
+            "province_territorial_unit_id": 33,
+            "province_code": "33",
+            "province_canonical_name": "Asturias",
+            "province_display_name": "Asturias",
+            "autonomous_community_territorial_unit_id": 2,
+            "autonomous_community_code": "03",
+            "autonomous_community_canonical_name": "Asturias",
+        }
+    ]
+
     service = _build_service(
         territorial_repo,
         series_repo,
         artifact_repo,
         snapshot_repo,
         catastro_client=catastro_client,
+        catastro_cache_repo=catastro_cache_repo,
+        catastro_aggregate_cache_repo=catastro_aggregate_cache_repo,
+        ingestion_repo=ingestion_repo,
     )
 
     result = asyncio.run(
         service.build_export(
-            job_id="job-export-catastro-2",
+            job_id="job-export-catastro-territorial-1",
             unit_level="autonomous_community",
             code_value="03",
             include_providers=["territorial", "ine", "catastro"],
@@ -437,12 +486,237 @@ def test_build_export_marks_catastro_as_not_applicable_for_autonomous_community(
     assert result is not None
     artifact = asyncio.run(artifact_repo.get_by_export_id(result.export_id))
     assert artifact is not None
+    # no upstream calls needed because municipality was already cached
     assert catastro_client.calls == []
+    assert catastro_aggregate_cache_repo.upsert_calls == 1
+
     with ZipFile(io.BytesIO(artifact["payload_bytes"])) as archive:
+        names = sorted(archive.namelist())
+        assert "datasets/catastro_autonomous_community_aggregates.json" in names
         manifest = json.loads(archive.read("manifest.json"))
         datasets_by_key = {item["dataset_key"]: item for item in manifest["datasets"]}
-        assert datasets_by_key["catastro_municipality_aggregates"]["applicable"] is False
-        assert datasets_by_key["catastro_municipality_aggregates"]["relative_path"] is None
+        assert datasets_by_key["catastro_autonomous_community_aggregates"]["applicable"] is True
+        catastro_payload = json.loads(
+            archive.read("datasets/catastro_autonomous_community_aggregates.json").decode("utf-8")
+        )
+        assert catastro_payload["source"] == "catastro.autonomous_community.aggregates"
+        assert catastro_payload["filters"]["unit_level"] == "autonomous_community"
+        assert catastro_payload["summary"]["municipalities_expected"] == 1
+        assert catastro_payload["summary"]["municipalities_included"] == 1
+        assert catastro_payload["metadata"]["cache_status"] == "miss"
+
+
+def test_build_export_adds_catastro_territorial_aggregate_for_province():
+    territorial_repo, series_repo, artifact_repo, snapshot_repo = (
+        _build_autonomous_community_export_repositories()
+    )
+    # swap to province-level unit
+    province_detail = _territorial_detail(
+        unit_id=33,
+        parent_id=2,
+        unit_level="province",
+        canonical_name="Asturias",
+        display_name="Asturias",
+        code_type="province",
+        code_value="33",
+    )
+    territorial_repo.detail_by_canonical_code[("province", "33")] = province_detail
+    territorial_repo.detail_by_id[33] = province_detail
+    territorial_repo.hierarchy_by_unit_id[33] = [
+        _territorial_summary(
+            unit_id=1,
+            parent_id=None,
+            unit_level="country",
+            canonical_name="Espana",
+            display_name="Espana",
+            code_type="alpha2",
+            code_value="ES",
+            source_system="iso3166",
+        ),
+        _territorial_summary(
+            unit_id=2,
+            parent_id=1,
+            unit_level="autonomous_community",
+            canonical_name="Asturias",
+            display_name="Principado de Asturias",
+            code_type="autonomous_community",
+            code_value="03",
+        ),
+        _territorial_summary(
+            unit_id=33,
+            parent_id=2,
+            unit_level="province",
+            canonical_name="Asturias",
+            display_name="Asturias",
+            code_type="province",
+            code_value="33",
+        ),
+    ]
+
+    catastro_client = DummyCatastroClientService()
+    catastro_cache_repo = DummyCatastroMunicipalityAggregateCacheRepository()
+    catastro_aggregate_cache_repo = DummyCatastroTerritorialAggregateCacheRepository()
+    ingestion_repo = DummyIngestionRepository()
+
+    seeded_at = datetime(2026, 3, 15, 12, 0, tzinfo=timezone.utc)
+    asyncio.run(
+        catastro_cache_repo.upsert_payload(
+            provider_family="catastro_urbano_municipality_aggregates",
+            municipality_code="33044",
+            reference_year="2025",
+            payload={
+                "reference_year": "2025",
+                "province_file_code": "04133",
+                "province_label": "Asturias",
+                "municipality_option_value": "0043",
+                "municipality_label": "Oviedo",
+                "indicators": catastro_client.payload["indicators"],
+            },
+            ttl_seconds=7200,
+            metadata=catastro_client.payload["metadata"],
+            now=seeded_at,
+        )
+    )
+    territorial_repo.descendants_by_unit_id[33] = [
+        {
+            "territorial_unit_id": 33044,
+            "municipality_code": "33044",
+            "canonical_name": "Oviedo",
+            "display_name": "Oviedo",
+            "province_territorial_unit_id": 33,
+            "province_code": "33",
+            "province_canonical_name": "Asturias",
+            "province_display_name": "Asturias",
+            "autonomous_community_territorial_unit_id": 2,
+            "autonomous_community_code": "03",
+            "autonomous_community_canonical_name": "Asturias",
+        }
+    ]
+
+    service = _build_service(
+        territorial_repo,
+        series_repo,
+        artifact_repo,
+        snapshot_repo,
+        catastro_client=catastro_client,
+        catastro_cache_repo=catastro_cache_repo,
+        catastro_aggregate_cache_repo=catastro_aggregate_cache_repo,
+        ingestion_repo=ingestion_repo,
+    )
+
+    result = asyncio.run(
+        service.build_export(
+            job_id="job-export-catastro-province-1",
+            unit_level="province",
+            code_value="33",
+            include_providers=["territorial", "catastro"],
+        )
+    )
+
+    assert result is not None
+    artifact = asyncio.run(artifact_repo.get_by_export_id(result.export_id))
+    assert artifact is not None
+    assert catastro_client.calls == []
+    assert catastro_aggregate_cache_repo.upsert_calls == 1
+
+    with ZipFile(io.BytesIO(artifact["payload_bytes"])) as archive:
+        names = sorted(archive.namelist())
+        assert "datasets/catastro_province_aggregates.json" in names
+        catastro_payload = json.loads(
+            archive.read("datasets/catastro_province_aggregates.json").decode("utf-8")
+        )
+        assert catastro_payload["source"] == "catastro.province.aggregates"
+        assert catastro_payload["filters"]["unit_level"] == "province"
+        assert catastro_payload["summary"]["municipalities_included"] == 1
+
+
+def test_build_export_reuses_catastro_territorial_aggregate_cache():
+    territorial_repo, series_repo, artifact_repo, snapshot_repo = (
+        _build_autonomous_community_export_repositories()
+    )
+    catastro_client = DummyCatastroClientService()
+    catastro_aggregate_cache_repo = DummyCatastroTerritorialAggregateCacheRepository()
+    ingestion_repo = DummyIngestionRepository()
+
+    # pre-seed the territorial aggregate cache so no aggregation is needed
+    seeded_at = datetime(2026, 3, 15, 12, 0, tzinfo=timezone.utc)
+    cached_payload = {
+        "source": "catastro.autonomous_community.aggregates",
+        "generated_at": seeded_at.isoformat(),
+        "territorial_context": {},
+        "filters": {
+            "reference_year": "2025",
+            "unit_level": "autonomous_community",
+            "code_value": "03",
+        },
+        "summary": {
+            "municipalities_expected": 1,
+            "municipalities_included": 1,
+            "municipalities_missing": 0,
+            "coverage_ratio": 1.0,
+            "reference_year": "2025",
+            "parcelas_urbanas": 23783,
+            "bienes_inmuebles": 243583,
+            "valor_catastral_total_miles_euros": 14550865.45,
+        },
+        "series": catastro_client.payload["indicators"],
+        "metadata": {
+            "provider": "catastro",
+            "provider_family": "catastro_urbano",
+            "coverage": "autonomous_community",
+            "coverage_status": "complete",
+            "cache_status": "miss",
+            "cache_hits": 1,
+            "live_fetches": 0,
+            "missing_municipality_codes": [],
+            "missing_municipality_names": [],
+            "reference_year": "2025",
+        },
+    }
+    asyncio.run(
+        catastro_aggregate_cache_repo.upsert_payload(
+            provider_family="catastro_urbano_territorial_aggregates",
+            unit_level="autonomous_community",
+            code_value="03",
+            reference_year="2025",
+            payload=cached_payload,
+            ttl_seconds=7200,
+            metadata={"provider": "catastro", "coverage_status": "complete"},
+            now=seeded_at,
+        )
+    )
+    upsert_calls_after_seed = catastro_aggregate_cache_repo.upsert_calls
+
+    service = _build_service(
+        territorial_repo,
+        series_repo,
+        artifact_repo,
+        snapshot_repo,
+        catastro_client=catastro_client,
+        catastro_aggregate_cache_repo=catastro_aggregate_cache_repo,
+        ingestion_repo=ingestion_repo,
+    )
+
+    result = asyncio.run(
+        service.build_export(
+            job_id="job-export-catastro-territorial-cache",
+            unit_level="autonomous_community",
+            code_value="03",
+            include_providers=["territorial", "catastro"],
+        )
+    )
+
+    assert result is not None
+    assert catastro_client.calls == []
+    assert catastro_aggregate_cache_repo.upsert_calls == upsert_calls_after_seed
+
+    artifact = asyncio.run(artifact_repo.get_by_export_id(result.export_id))
+    assert artifact is not None
+    with ZipFile(io.BytesIO(artifact["payload_bytes"])) as archive:
+        catastro_payload = json.loads(
+            archive.read("datasets/catastro_autonomous_community_aggregates.json").decode("utf-8")
+        )
+        assert catastro_payload["metadata"]["cache_status"] == "hit"
 
 
 def test_build_export_reuses_catastro_cache_without_upstream_call():
