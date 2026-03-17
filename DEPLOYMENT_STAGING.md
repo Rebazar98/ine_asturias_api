@@ -346,7 +346,7 @@ Todo rollback o restore en staging DEBE terminar con esta verificacion minima:
 curl http://127.0.0.1:8002/health
 curl http://127.0.0.1:8002/health/ready
 docker compose --env-file .env.staging.local -p ine_asturias_staging run --rm api python scripts/smoke_stack.py --base-url http://api:8000
-docker compose --env-file .env.staging.local -p ine_asturias_staging run --rm api python scripts/verify_restore.py --base-url http://api:8000 --min-ingestion-rows 1 --min-normalized-rows 1 --min-catalog-rows 1 --expected-alembic-version 0008_catastro_cache --functional-operation-code 22
+docker compose --env-file .env.staging.local -p ine_asturias_staging run --rm api python scripts/verify_restore.py --base-url http://api:8000 --min-ingestion-rows 1 --min-normalized-rows 1 --min-catalog-rows 1 --expected-alembic-version 0012_cartographic_qa_incidents --functional-operation-code 22
 ```
 
 Si `API_KEY` esta activa en staging, anade `--api-key` o deja el valor en el entorno del contenedor.
@@ -475,7 +475,7 @@ Para verificar que el mecanismo de recuperacion sigue siendo usable en staging, 
 Opcion A. Verificacion minima sobre el entorno ya levantado:
 
 ```bash
-docker compose --env-file .env.staging.local -p ine_asturias_staging run --rm api python scripts/verify_restore.py --base-url http://api:8000 --min-ingestion-rows 1 --min-normalized-rows 1 --min-catalog-rows 1 --expected-alembic-version 0008_catastro_cache --functional-operation-code 22
+docker compose --env-file .env.staging.local -p ine_asturias_staging run --rm api python scripts/verify_restore.py --base-url http://api:8000 --min-ingestion-rows 1 --min-normalized-rows 1 --min-catalog-rows 1 --expected-alembic-version 0012_cartographic_qa_incidents --functional-operation-code 22
 ```
 
 Opcion B. Drill completo de restore sobre staging de ensayo:
