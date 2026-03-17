@@ -29,10 +29,25 @@ class AsturiasResolutionError(Exception):
         self.detail = detail
 
 
+_DEFAULT_GEOGRAPHY_NAME = "Principado de Asturias"
+_DEFAULT_GEOGRAPHY_CODE = "33"
+
+
 class AsturiasResolver:
-    def __init__(self, ine_client: INEClientService, cache: BaseAsyncCache) -> None:
+    def __init__(
+        self,
+        ine_client: INEClientService,
+        cache: BaseAsyncCache,
+        geography_code: str = _DEFAULT_GEOGRAPHY_CODE,
+        geography_name: str = _DEFAULT_GEOGRAPHY_NAME,
+    ) -> None:
         self.ine_client = ine_client
         self.cache = cache
+        self.geography_code = geography_code
+        self.geography_name = geography_name
+        self._geography_name_normalized = self._normalize_text(geography_name)
+        # key term: last word of normalized name, e.g. "principado de asturias" → "asturias"
+        self._geography_key_term = self._geography_name_normalized.split()[-1]
         self.logger = get_logger("app.services.asturias_resolver")
 
     async def resolve(
@@ -133,9 +148,9 @@ class AsturiasResolver:
                 record, ("Nombre", "name", "Descripcion", "description", "Valor")
             )
             normalized_name = self._normalize_text(name)
-            if "asturias" not in normalized_name:
+            if self._geography_key_term not in normalized_name:
                 continue
-            score = 20 if normalized_name == "principado de asturias" else 10
+            score = 20 if normalized_name == self._geography_name_normalized else 10
             candidates.append((score, {"id": str(record_id), "name": name}))
 
         if not candidates:
@@ -164,8 +179,8 @@ class AsturiasResolver:
         normalized = unicodedata.normalize("NFKD", value or "")
         return normalized.encode("ascii", "ignore").decode("ascii").lower().strip()
 
-    @staticmethod
     def _cache_key(
+        self,
         op_code: str,
         geo_variable_id: str | None,
         asturias_value_id: str | None,
@@ -174,5 +189,10 @@ class AsturiasResolver:
             "op_code": op_code,
             "geo_variable_id": geo_variable_id,
             "asturias_value_id": asturias_value_id,
+            "geography": self.geography_code,
         }
-        return f"asturias_resolution:{json.dumps(payload, sort_keys=True)}"
+        return f"territory_resolution:{json.dumps(payload, sort_keys=True)}"
+
+
+# Backward-compatible alias — callers using AsturiasResolver continue to work unchanged.
+TerritoryResolver = AsturiasResolver

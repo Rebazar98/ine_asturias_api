@@ -100,6 +100,10 @@ class Settings(BaseSettings):
         default=["limites_parroquiales"], alias="IDEAS_SYNC_LAYERS"
     )
     cartographic_qa_enabled: bool = Field(default=True, alias="CARTOGRAPHIC_QA_ENABLED")
+    default_geography_code: str = Field(default="33", alias="DEFAULT_GEOGRAPHY_CODE")
+    default_geography_name: str = Field(
+        default="Principado de Asturias", alias="DEFAULT_GEOGRAPHY_NAME"
+    )
 
     model_config = SettingsConfigDict(
         env_file=".env",

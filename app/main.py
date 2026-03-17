@@ -96,15 +96,14 @@ async def lifespan(app: FastAPI):
             logger.info("redis_ready", extra={"queue_name": settings.job_queue_name})
         except Exception:
             if settings.is_local_env:
-                logger.exception("redis_initialization_failed_fallback_in_memory")
+                logger.exception("redis_initialization_failed_degraded")
                 if app.state.arq_redis is not None:
                     await app.state.arq_redis.aclose()
                     app.state.arq_redis = None
                 if app.state.redis is not None:
                     await app.state.redis.aclose()
                     app.state.redis = None
-                if settings.job_store_backend != "memory":
-                    app.state.job_store = InMemoryJobStore()
+                # job_store stays None → /health/ready reports worker as degraded
             else:
                 logger.exception("redis_initialization_failed")
                 await app.state.http_client.aclose()

@@ -85,10 +85,17 @@ def get_catastro_client_service(
 
 
 def get_asturias_resolver(
+    request: Request,
     ine_client: INEClientService = Depends(get_ine_client_service),
     cache: BaseAsyncCache = Depends(get_cache),
 ) -> AsturiasResolver:
-    return AsturiasResolver(ine_client=ine_client, cache=cache)
+    settings = request.app.state.settings
+    return AsturiasResolver(
+        ine_client=ine_client,
+        cache=cache,
+        geography_code=settings.default_geography_code,
+        geography_name=settings.default_geography_name,
+    )
 
 
 def get_ingestion_repository(
