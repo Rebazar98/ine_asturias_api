@@ -36,6 +36,7 @@ def test_prepare_upsert_rows_returns_plain_insertable_dicts():
         "unit": "indice",
         "metadata": {"source": "test"},
         "raw_payload": {"nested": {"value": 1}},
+        "source_provider": "ine",
     }
 
 
@@ -73,6 +74,7 @@ def test_prepare_upsert_rows_filters_non_serializable_or_extra_values():
         "unit",
         "metadata",
         "raw_payload",
+        "source_provider",
     }
     assert rows[0]["operation_code"] == "22"
     assert rows[0]["table_id"] == "2852"

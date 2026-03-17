@@ -10,6 +10,7 @@ from app.core.metrics import (
     record_territorial_boundary_feature,
     record_territorial_boundary_load,
 )
+from app.repositories.cartographic_qa import CartographicQARepository
 from app.repositories.ingestion import IngestionRepository
 from app.repositories.territorial import (
     TERRITORIAL_ALIAS_TYPE_PROVIDER_NAME,
@@ -66,9 +67,13 @@ class IGNAdministrativeBoundariesLoaderService:
         *,
         ingestion_repo: IngestionRepository,
         territorial_repo: TerritorialRepository,
+        qa_repo: CartographicQARepository | None = None,
+        cartographic_qa_enabled: bool = True,
     ) -> None:
         self.ingestion_repo = ingestion_repo
         self.territorial_repo = territorial_repo
+        self.qa_repo = qa_repo
+        self.cartographic_qa_enabled = cartographic_qa_enabled
         self.logger = get_logger("app.services.ign_admin_boundaries")
 
     async def load_snapshot(
@@ -254,6 +259,28 @@ class IGNAdministrativeBoundariesLoaderService:
 
             if session is not None:
                 await session.commit()
+
+            # PostGIS QA validation on the upserted units
+            qa_incident_count = 0
+            if (
+                self.cartographic_qa_enabled
+                and self.qa_repo is not None
+                and session is not None
+                and persisted_units
+            ):
+                from app.services.cartographic_qa import CartographicQAService
+
+                qa_service = CartographicQAService(session=session)
+                qa_incidents = await qa_service.validate_territorial_units(
+                    list(persisted_units.values())
+                )
+                if qa_incidents:
+                    qa_incident_count = await self.qa_repo.save_incidents(qa_incidents)
+                    self.logger.info(
+                        "qa_validation_completed",
+                        extra={"incidents": qa_incident_count},
+                    )
+
         except Exception:
             if session is not None:
                 await session.rollback()
@@ -286,6 +313,7 @@ class IGNAdministrativeBoundariesLoaderService:
             "levels": levels,
             "incidents": incidents,
             "duration_ms": round(duration_seconds * 1000, 2),
+            "qa_incidents_detected": qa_incident_count,
         }
         self.logger.info("ign_admin_snapshot_loaded", extra=summary)
         return summary

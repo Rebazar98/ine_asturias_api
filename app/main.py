@@ -10,6 +10,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from redis.asyncio import Redis
 
+from app.api.qa import router as qa_router
 from app.api.routes_health import router as health_router
 from app.api.routes_ine import router as ine_router
 from app.api.routes_territorial import router as territorial_router
@@ -49,7 +50,7 @@ async def lifespan(app: FastAPI):
     )
     app.state.redis = None
     app.state.arq_redis = None
-    app.state.job_store = InMemoryJobStore()
+    app.state.job_store = InMemoryJobStore() if settings.job_store_backend == "memory" else None
     app.state.inline_job_tasks = set()
     app.state.rate_limiter = InMemoryRateLimiter()
     app.state.ine_circuit_breaker = AsyncCircuitBreaker(
@@ -102,7 +103,8 @@ async def lifespan(app: FastAPI):
                 if app.state.redis is not None:
                     await app.state.redis.aclose()
                     app.state.redis = None
-                app.state.job_store = InMemoryJobStore()
+                if settings.job_store_backend != "memory":
+                    app.state.job_store = InMemoryJobStore()
             else:
                 logger.exception("redis_initialization_failed")
                 await app.state.http_client.aclose()
@@ -164,6 +166,7 @@ def create_app() -> FastAPI:
     app.include_router(health_router)
     app.include_router(ine_router)
     app.include_router(territorial_router)
+    app.include_router(qa_router)
 
     @app.middleware("http")
     async def request_timing_middleware(request: Request, call_next):

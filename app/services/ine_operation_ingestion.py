@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
 import unicodedata
@@ -218,7 +218,10 @@ class INEOperationIngestionService:
 
         if not discovered_table_candidates:
             raise AsturiasResolutionError(
-                detail={"message": "No valid tables were found for this operation.", "operation_code": op_code},
+                detail={
+                    "message": "No valid tables were found for this operation.",
+                    "operation_code": op_code,
+                },
                 status_code=404,
             )
 
@@ -238,10 +241,14 @@ class INEOperationIngestionService:
         table_candidates = list(discovered_table_candidates)
         skipped_catalog_table_ids: list[str] = []
         if skip_known_no_data:
-            skipped_catalog_table_ids = sorted(await self.catalog_repo.get_known_no_data_table_ids(op_code))
+            skipped_catalog_table_ids = sorted(
+                await self.catalog_repo.get_known_no_data_table_ids(op_code)
+            )
             if skipped_catalog_table_ids:
                 skipped_lookup = set(skipped_catalog_table_ids)
-                table_candidates = [table for table in table_candidates if table["table_id"] not in skipped_lookup]
+                table_candidates = [
+                    table for table in table_candidates if table["table_id"] not in skipped_lookup
+                ]
                 self.logger.info(
                     "catalog_skipped_known_no_data_tables",
                     extra={
@@ -390,7 +397,9 @@ class INEOperationIngestionService:
                     )
                 continue
 
-            table_normalized_rows = await self.series_repo.upsert_many(prepared.normalized_items or [])
+            table_normalized_rows = await self.series_repo.upsert_many(
+                prepared.normalized_items or []
+            )
             normalized_rows += table_normalized_rows
 
             await self.catalog_repo.update_table_status(
@@ -687,9 +696,13 @@ class INEOperationIngestionService:
         kept_records = [
             record
             for record in records
-            if INEOperationIngestionService._series_matches_asturias(record, asturias_value_id, asturias_label)
+            if INEOperationIngestionService._series_matches_asturias(
+                record, asturias_value_id, asturias_label
+            )
         ]
-        filtered_payload = kept_records if isinstance(payload, list) else {**payload, "Data": kept_records}
+        filtered_payload = (
+            kept_records if isinstance(payload, list) else {**payload, "Data": kept_records}
+        )
         return filtered_payload, {
             "series_kept": len(kept_records),
             "series_discarded": max(len(records) - len(kept_records), 0),
@@ -709,7 +722,9 @@ class INEOperationIngestionService:
             "principado de asturias",
         }
 
-        for item in INEOperationIngestionService._ensure_list(series.get("MetaData") or series.get("metadata")):
+        for item in INEOperationIngestionService._ensure_list(
+            series.get("MetaData") or series.get("metadata")
+        ):
             if not isinstance(item, dict):
                 continue
 
@@ -737,7 +752,16 @@ class INEOperationIngestionService:
         if not isinstance(payload, dict):
             return []
 
-        for key in ("Data", "data", "Tables", "tables", "Tablas", "tablas", "Resultados", "results"):
+        for key in (
+            "Data",
+            "data",
+            "Tables",
+            "tables",
+            "Tablas",
+            "tablas",
+            "Resultados",
+            "results",
+        ):
             value = payload.get(key)
             if isinstance(value, list):
                 return [item for item in value if isinstance(item, dict)]
@@ -774,7 +798,9 @@ class INEOperationIngestionService:
     @staticmethod
     def _normalize_text(value: str) -> str:
         normalized = unicodedata.normalize("NFKD", value or "")
-        return normalized.encode("ascii", "ignore").decode("ascii").lower().replace(",", " ").strip()
+        return (
+            normalized.encode("ascii", "ignore").decode("ascii").lower().replace(",", " ").strip()
+        )
 
     @staticmethod
     def _build_query_params(**kwargs: Any) -> dict[str, Any]:

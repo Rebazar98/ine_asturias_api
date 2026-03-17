@@ -149,8 +149,9 @@ class CatastroClientService:
         *,
         province_candidates: Sequence[str],
         municipality_candidates: Sequence[str],
+        reference_year: str | None = None,
     ) -> dict[str, Any]:
-        reference_year = await self.get_reference_year()
+        reference_year = reference_year or await self.get_reference_year()
         stats_page_html = await self._fetch_stats_page_html()
         province_option = _match_option(
             _extract_select_options(stats_page_html, CATASTRO_URBANO_PROVINCE_SELECT_ID),

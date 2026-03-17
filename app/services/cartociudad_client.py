@@ -98,7 +98,9 @@ class CartoCiudadClientService:
             payload = response.json()
         except ValueError as exc:
             duration_seconds = time.perf_counter() - started_at
-            record_provider_request("cartociudad", endpoint_family, "invalid_json", duration_seconds)
+            record_provider_request(
+                "cartociudad", endpoint_family, "invalid_json", duration_seconds
+            )
             if self.circuit_breaker is not None:
                 await self.circuit_breaker.record_failure(reason="invalid_json")
             self.logger.error(
@@ -213,7 +215,9 @@ class CartoCiudadClientService:
                     continue
 
                 duration_seconds = time.perf_counter() - started_at
-                record_provider_request("cartociudad", endpoint_family, "http_error", duration_seconds)
+                record_provider_request(
+                    "cartociudad", endpoint_family, "http_error", duration_seconds
+                )
                 if self.circuit_breaker is not None:
                     await self.circuit_breaker.record_failure(
                         reason=f"http_{exc.response.status_code}"

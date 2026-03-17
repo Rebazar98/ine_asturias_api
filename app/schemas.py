@@ -42,6 +42,7 @@ class NormalizedSeriesItem(BaseModel):
     unit: str = ""
     metadata: dict[str, Any] = Field(default_factory=dict)
     raw_payload: dict[str, Any] = Field(default_factory=dict)
+    source_provider: str = "ine"
 
 
 class AsturiasResolutionResult(BaseModel):
@@ -333,7 +334,7 @@ class TerritorialReportJobAcceptedResponse(BaseModel):
 
 
 class TerritorialExportRequest(BaseModel):
-    unit_level: Literal["municipality", "autonomous_community"]
+    unit_level: Literal["municipality", "province", "autonomous_community"]
     code_value: str = Field(min_length=1, max_length=128)
     format: Literal["zip"] = "zip"
     include_providers: list[Literal["territorial", "ine", "analytics", "catastro"]] = Field(
@@ -542,3 +543,28 @@ class ReverseGeocodeResponse(BaseModel):
     cached: bool = False
     result: ReverseGeocodeResultResponse | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class QAIncidentItem(BaseModel):
+    id: int
+    layer: str
+    entity_id: str
+    error_type: str
+    severity: str
+    description: str
+    source_provider: str
+    detected_at: datetime
+    resolved: bool
+    resolved_at: datetime | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class QAIncidentsResponse(BaseModel):
+    items: list[QAIncidentItem]
+    total: int
+    page: int
+    page_size: int
+    pages: int
+    has_next: bool
+    has_previous: bool
+    filters: dict[str, Any] = Field(default_factory=dict)

@@ -13,5 +13,7 @@ arq==0.27.0
 prometheus-client==0.24.1
 PyJWT==2.12.0
 geoalchemy2==0.18.4
+openpyxl==3.1.5
+OWSLib==0.31.0
 pytest==8.4.2
 ruff==0.15.5

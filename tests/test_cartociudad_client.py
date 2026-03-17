@@ -176,5 +176,8 @@ async def test_circuit_breaker_opens_after_repeated_failures() -> None:
 
     assert first_error.value.status_code == 503
     assert second_error.value.status_code == 503
-    assert second_error.value.detail["message"] == "The CartoCiudad service is temporarily unavailable."
+    assert (
+        second_error.value.detail["message"]
+        == "The CartoCiudad service is temporarily unavailable."
+    )
     assert second_error.value.detail["retryable"] is True

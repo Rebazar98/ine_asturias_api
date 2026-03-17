@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -61,4 +61,3 @@ async def session_scope() -> AsyncIterator[AsyncSession | None]:
 async def get_session() -> AsyncIterator[AsyncSession | None]:
     async with session_scope() as session:
         yield session
-

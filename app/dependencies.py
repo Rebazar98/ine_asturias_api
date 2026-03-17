@@ -14,7 +14,11 @@ from app.core.resilience import AsyncCircuitBreaker
 from app.core.security import compare_api_keys, hash_sensitive_data
 from app.db import get_session
 from app.repositories.analytics_snapshots import AnalyticalSnapshotRepository
-from app.repositories.catastro_cache import CatastroMunicipalityAggregateCacheRepository
+from app.repositories.cartographic_qa import CartographicQARepository
+from app.repositories.catastro_cache import (
+    CatastroMunicipalityAggregateCacheRepository,
+    CatastroTerritorialAggregateCacheRepository,
+)
 from app.repositories.catalog import TableCatalogRepository
 from app.repositories.geocoding import GeocodingCacheRepository
 from app.repositories.ingestion import IngestionRepository
@@ -117,6 +121,12 @@ def get_catastro_municipality_cache_repository(
     return CatastroMunicipalityAggregateCacheRepository(session=session)
 
 
+def get_catastro_territorial_aggregate_cache_repository(
+    session: AsyncSession | None = Depends(get_db_session),
+) -> CatastroTerritorialAggregateCacheRepository:
+    return CatastroTerritorialAggregateCacheRepository(session=session)
+
+
 def get_analytical_snapshot_repository(
     session: AsyncSession | None = Depends(get_db_session),
 ) -> AnalyticalSnapshotRepository:
@@ -133,6 +143,12 @@ def get_territorial_export_artifact_repository(
     session: AsyncSession | None = Depends(get_db_session),
 ) -> TerritorialExportArtifactRepository:
     return TerritorialExportArtifactRepository(session=session)
+
+
+def get_qa_repository(
+    session: AsyncSession | None = Depends(get_db_session),
+) -> CartographicQARepository:
+    return CartographicQARepository(session=session)
 
 
 def get_operation_ingestion_service(
@@ -171,6 +187,9 @@ def get_territorial_export_service(
     catastro_cache_repo: CatastroMunicipalityAggregateCacheRepository = Depends(
         get_catastro_municipality_cache_repository
     ),
+    catastro_aggregate_cache_repo: CatastroTerritorialAggregateCacheRepository = Depends(
+        get_catastro_territorial_aggregate_cache_repository
+    ),
     ingestion_repo: IngestionRepository = Depends(get_ingestion_repository),
     artifact_repo: TerritorialExportArtifactRepository = Depends(
         get_territorial_export_artifact_repository
@@ -183,10 +202,13 @@ def get_territorial_export_service(
         analytics_service=analytics_service,
         catastro_client=catastro_client,
         catastro_cache_repo=catastro_cache_repo,
+        catastro_aggregate_cache_repo=catastro_aggregate_cache_repo,
         ingestion_repo=ingestion_repo,
         artifact_repo=artifact_repo,
         export_ttl_seconds=settings.territorial_export_ttl_seconds,
         catastro_cache_ttl_seconds=settings.catastro_cache_ttl_seconds,
+        catastro_aggregate_cache_ttl_seconds=settings.catastro_aggregate_cache_ttl_seconds,
+        catastro_aggregate_max_concurrency=settings.catastro_aggregate_max_concurrency,
     )
 
 

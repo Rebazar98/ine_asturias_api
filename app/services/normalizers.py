@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import re
 import unicodedata
@@ -16,8 +16,29 @@ _ID_KEYS = ("Id", "id", "Codigo", "codigo", "Code", "code")
 _VARIABLE_KEYS = ("IdVariable", "Variable", "variable", "COD", "Cod", "CodigoSerie", "codigoSerie")
 _GEO_HINTS = ("geo", "geogr", "territ", "provincia", "municip", "autonom", "ccaa", "comunidad")
 _SERIES_COLLECTION_KEYS = ("Resultados", "results", "Series", "series", "Data", "data")
-_SERIES_HINT_KEYS = ("COD", "Cod", "Codigo", "Nombre", "name", "MetaData", "metadata", "FK_Unidad", "FK_Escala")
-_OBSERVATION_HINT_KEYS = ("Valor", "value", "Value", "Dato", "data", "Fecha", "Date", "Anyo", "Ano", "FK_Periodo")
+_SERIES_HINT_KEYS = (
+    "COD",
+    "Cod",
+    "Codigo",
+    "Nombre",
+    "name",
+    "MetaData",
+    "metadata",
+    "FK_Unidad",
+    "FK_Escala",
+)
+_OBSERVATION_HINT_KEYS = (
+    "Valor",
+    "value",
+    "Value",
+    "Dato",
+    "data",
+    "Fecha",
+    "Date",
+    "Anyo",
+    "Ano",
+    "FK_Periodo",
+)
 
 
 @dataclass(slots=True)
@@ -29,7 +50,9 @@ class NormalizationOutcome:
     observations_total: int = 0
 
 
-def normalize_table_payload(payload: dict[str, Any] | list[Any], table_id: str) -> list[NormalizedSeriesItem]:
+def normalize_table_payload(
+    payload: dict[str, Any] | list[Any], table_id: str
+) -> list[NormalizedSeriesItem]:
     return normalize_table_payload_with_stats(payload, table_id).items
 
 
@@ -162,7 +185,9 @@ def _normalize_payload(
                 if row is not None:
                     outcome.items.append(row)
                 elif discard_reason is not None:
-                    outcome.discarded_counts[discard_reason] = outcome.discarded_counts.get(discard_reason, 0) + 1
+                    outcome.discarded_counts[discard_reason] = (
+                        outcome.discarded_counts.get(discard_reason, 0) + 1
+                    )
             continue
 
         row, discard_reason = _build_row(
@@ -180,7 +205,9 @@ def _normalize_payload(
         if row is not None:
             outcome.items.append(row)
         elif discard_reason is not None:
-            outcome.discarded_counts[discard_reason] = outcome.discarded_counts.get(discard_reason, 0) + 1
+            outcome.discarded_counts[discard_reason] = (
+                outcome.discarded_counts.get(discard_reason, 0) + 1
+            )
 
     return outcome
 
@@ -245,7 +272,8 @@ def _build_row(
         "point_context": {
             key: value
             for key, value in point.items()
-            if key not in set(_VALUE_KEYS) | set(_PERIOD_KEYS) | {"Fecha", "Anyo", "Ano", "FK_Periodo"}
+            if key
+            not in set(_VALUE_KEYS) | set(_PERIOD_KEYS) | {"Fecha", "Anyo", "Ano", "FK_Periodo"}
         },
     }
 
@@ -253,11 +281,7 @@ def _build_row(
         "series_name": series_name,
         "series_code": _pick_string(series, ("COD", "Cod", "Codigo")),
         "meta_data": meta_data,
-        "series": {
-            key: value
-            for key, value in series.items()
-            if key not in {"Data", "data"}
-        },
+        "series": {key: value for key, value in series.items() if key not in {"Data", "data"}},
         "point": point,
     }
 
@@ -315,7 +339,9 @@ def _extract_variable_id(series: dict[str, Any], meta_data: list[Any]) -> str:
     for item in meta_data:
         if not isinstance(item, dict):
             continue
-        candidate_label = _pick_string(item, ("Variable", "variable", "Descripcion", "description", "Nombre", "name"))
+        candidate_label = _pick_string(
+            item, ("Variable", "variable", "Descripcion", "description", "Nombre", "name")
+        )
         if any(hint in _normalized_text(candidate_label) for hint in _GEO_HINTS):
             continue
         candidate_id = _pick_string(item, _ID_KEYS)
@@ -329,7 +355,9 @@ def _extract_geography(meta_data: list[Any], series: dict[str, Any]) -> tuple[st
     for item in meta_data:
         if not isinstance(item, dict):
             continue
-        candidate_label = _pick_string(item, ("Variable", "variable", "Descripcion", "description", "Nombre", "name"))
+        candidate_label = _pick_string(
+            item, ("Variable", "variable", "Descripcion", "description", "Nombre", "name")
+        )
         if any(hint in _normalized_text(candidate_label) for hint in _GEO_HINTS):
             return _pick_string(item, ("Nombre", "Valor", "value")), _pick_string(item, _ID_KEYS)
 

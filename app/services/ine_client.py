@@ -60,7 +60,9 @@ class INEClientService:
             cache_scope="operation_variables",
         )
 
-    async def get_variable_values(self, op_code: str, variable_id: str) -> dict[str, Any] | list[Any]:
+    async def get_variable_values(
+        self, op_code: str, variable_id: str
+    ) -> dict[str, Any] | list[Any]:
         return await self._fetch_json(
             f"VALORES_VARIABLEOPERACION/{variable_id}/{op_code}",
             cache_scope="variable_values",

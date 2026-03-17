@@ -7,6 +7,8 @@ from time import perf_counter
 from typing import Any
 
 import httpx
+from arq import create_pool
+from arq.cron import cron
 from prometheus_client import start_http_server
 from redis.asyncio import Redis
 
@@ -18,7 +20,10 @@ from app.core.redis import redis_settings_from_url
 from app.core.resilience import AsyncCircuitBreaker
 from app.db import dispose_db, init_db, session_scope
 from app.repositories.analytics_snapshots import AnalyticalSnapshotRepository
-from app.repositories.catastro_cache import CatastroMunicipalityAggregateCacheRepository
+from app.repositories.catastro_cache import (
+    CatastroMunicipalityAggregateCacheRepository,
+    CatastroTerritorialAggregateCacheRepository,
+)
 from app.repositories.catalog import TableCatalogRepository
 from app.repositories.ingestion import IngestionRepository
 from app.repositories.series import SeriesRepository
@@ -26,8 +31,11 @@ from app.repositories.territorial_export_artifacts import TerritorialExportArtif
 from app.repositories.territorial import TerritorialRepository
 from app.services.asturias_resolver import AsturiasResolutionError, AsturiasResolver
 from app.services.catastro_client import CatastroClientError, CatastroClientService
+from app.services.ideas_wfs_client import IDEASWFSClientError, IDEASWFSClientService
 from app.services.ine_client import INEClientError, INEClientService
 from app.services.ine_operation_ingestion import INEOperationIngestionService
+from app.services.sadei_client import SADEIClientError, SADEIClientService
+from app.services.sadei_normalizers import normalize_sadei_dataset
 from app.services.territorial_analytics import (
     MUNICIPALITY_REPORT_TYPE,
     TerritorialAnalyticsService,
@@ -267,6 +275,9 @@ async def run_territorial_export_job(
             series_repo = SeriesRepository(session=session)
             analytical_snapshot_repo = AnalyticalSnapshotRepository(session=session)
             catastro_cache_repo = CatastroMunicipalityAggregateCacheRepository(session=session)
+            catastro_aggregate_cache_repo = CatastroTerritorialAggregateCacheRepository(
+                session=session
+            )
             artifact_repo = TerritorialExportArtifactRepository(session=session)
             ingestion_repo = IngestionRepository(session=session)
             analytics_service = TerritorialAnalyticsService(
@@ -287,10 +298,13 @@ async def run_territorial_export_job(
                 analytics_service=analytics_service,
                 catastro_client=catastro_client,
                 catastro_cache_repo=catastro_cache_repo,
+                catastro_aggregate_cache_repo=catastro_aggregate_cache_repo,
                 ingestion_repo=ingestion_repo,
                 artifact_repo=artifact_repo,
                 export_ttl_seconds=settings.territorial_export_ttl_seconds,
                 catastro_cache_ttl_seconds=settings.catastro_cache_ttl_seconds,
+                catastro_aggregate_cache_ttl_seconds=settings.catastro_aggregate_cache_ttl_seconds,
+                catastro_aggregate_max_concurrency=settings.catastro_aggregate_max_concurrency,
             )
             result = await export_service.build_export(
                 job_id=job_id,
@@ -386,6 +400,194 @@ async def run_territorial_export_job(
     return None
 
 
+async def run_sadei_sync_job(
+    ctx: dict[str, Any], job_id: str, payload: dict[str, Any]
+) -> dict[str, Any] | None:
+    job_store: RedisJobStore = ctx["job_store"]
+    sadei_client: SADEIClientService = ctx["sadei_client"]
+    dataset_id: str = payload["dataset_id"]
+    started_at = perf_counter()
+
+    async def report_progress(progress: dict[str, Any]) -> None:
+        await job_store.update_progress(job_id, **progress)
+
+    try:
+        await job_store.mark_running(job_id)
+        await report_progress({"stage": "fetching_sadei", "dataset_id": dataset_id})
+
+        rows = await sadei_client.fetch_dataset(dataset_id)
+        items = normalize_sadei_dataset(rows, dataset_id)
+
+        await report_progress({"stage": "upserting", "rows": len(items)})
+
+        upserted = 0
+        if items:
+            async with session_scope() as session:
+                series_repo = SeriesRepository(session=session)
+                upserted = await series_repo.upsert_many(items)
+
+        result = {
+            "dataset_id": dataset_id,
+            "rows_fetched": len(rows),
+            "rows_normalized": len(items),
+            "rows_upserted": upserted,
+        }
+        await job_store.complete_job(job_id, result)
+        record_job_duration("sadei_sync", "completed", perf_counter() - started_at)
+        logger.info("sadei_sync_job_completed", extra={"job_id": job_id, **result})
+        return result
+    except SADEIClientError as exc:
+        await job_store.fail_job(job_id, {"message": exc.detail, "dataset_id": dataset_id})
+        record_job_duration("sadei_sync", "failed", perf_counter() - started_at)
+        logger.warning(
+            "sadei_sync_job_failed",
+            extra={"job_id": job_id, "dataset_id": dataset_id, "error": exc.detail},
+        )
+    except Exception as exc:
+        logger.exception(
+            "sadei_sync_job_unexpected_error", extra={"job_id": job_id, "dataset_id": dataset_id}
+        )
+        await job_store.fail_job(
+            job_id,
+            {
+                "message": "Unexpected error in SADEI sync.",
+                "dataset_id": dataset_id,
+                "error": str(exc),
+            },
+        )
+        record_job_duration("sadei_sync", "failed", perf_counter() - started_at)
+    return None
+
+
+async def run_ideas_sync_job(
+    ctx: dict[str, Any], job_id: str, payload: dict[str, Any]
+) -> dict[str, Any] | None:
+    job_store: RedisJobStore = ctx["job_store"]
+    ideas_client: IDEASWFSClientService = ctx["ideas_client"]
+    layer_name: str = payload["layer_name"]
+    started_at = perf_counter()
+
+    async def report_progress(progress: dict[str, Any]) -> None:
+        await job_store.update_progress(job_id, **progress)
+
+    try:
+        await job_store.mark_running(job_id)
+        await report_progress({"stage": "fetching_ideas_wfs", "layer_name": layer_name})
+
+        geojson = await ideas_client.fetch_layer(layer_name=layer_name)
+        features = geojson.get("features", [])
+
+        result = {
+            "layer_name": layer_name,
+            "features_fetched": len(features),
+        }
+        await job_store.complete_job(job_id, result)
+        record_job_duration("ideas_sync", "completed", perf_counter() - started_at)
+        logger.info("ideas_sync_job_completed", extra={"job_id": job_id, **result})
+        return result
+    except IDEASWFSClientError as exc:
+        await job_store.fail_job(job_id, {"message": exc.detail, "layer_name": layer_name})
+        record_job_duration("ideas_sync", "failed", perf_counter() - started_at)
+        logger.warning(
+            "ideas_sync_job_failed",
+            extra={"job_id": job_id, "layer_name": layer_name, "error": exc.detail},
+        )
+    except Exception as exc:
+        logger.exception(
+            "ideas_sync_job_unexpected_error", extra={"job_id": job_id, "layer_name": layer_name}
+        )
+        await job_store.fail_job(
+            job_id,
+            {
+                "message": "Unexpected error in IDEAS sync.",
+                "layer_name": layer_name,
+                "error": str(exc),
+            },
+        )
+        record_job_duration("ideas_sync", "failed", perf_counter() - started_at)
+    return None
+
+
+async def scheduled_ine_update(ctx: dict[str, Any]) -> None:
+    """Cron job: enqueue INE ingestion for each configured operation code."""
+    settings = ctx["settings"]
+    job_store: RedisJobStore = ctx["job_store"]
+    arq_pool = ctx["arq_pool"]
+    for op_code in settings.scheduled_ine_operations:
+        try:
+            job_record = await job_store.create_job(
+                "operation_asturias_ingestion", {"operation_code": op_code}
+            )
+            job_id = job_record["job_id"]
+            await arq_pool.enqueue_job(
+                "run_operation_asturias_job", job_id=job_id, payload={"operation_code": op_code}
+            )
+            logger.info(
+                "scheduled_ine_update_enqueued",
+                extra={"operation_code": op_code, "job_id": job_id},
+            )
+        except Exception:
+            logger.exception(
+                "scheduled_ine_update_enqueue_failed", extra={"operation_code": op_code}
+            )
+
+
+async def scheduled_territorial_sync(ctx: dict[str, Any]) -> None:
+    """Cron job: placeholder for IGN administrative boundaries weekly sync."""
+    settings = ctx["settings"]
+    if not settings.scheduled_territorial_sync_enabled:
+        logger.info("scheduled_territorial_sync_disabled")
+        return
+    logger.info(
+        "scheduled_territorial_sync_triggered",
+        extra={"note": "IGN sync job not yet implemented — Fase B"},
+    )
+
+
+async def scheduled_sadei_sync(ctx: dict[str, Any]) -> None:
+    """Cron job: enqueue SADEI sync for each configured dataset."""
+    settings = ctx["settings"]
+    job_store: RedisJobStore = ctx["job_store"]
+    arq_pool = ctx["arq_pool"]
+    for dataset_id in settings.sadei_sync_datasets:
+        try:
+            job_record = await job_store.create_job("sadei_sync", {"dataset_id": dataset_id})
+            job_id = job_record["job_id"]
+            await arq_pool.enqueue_job(
+                "run_sadei_sync_job", job_id=job_id, payload={"dataset_id": dataset_id}
+            )
+            logger.info(
+                "scheduled_sadei_sync_enqueued",
+                extra={"dataset_id": dataset_id, "job_id": job_id},
+            )
+        except Exception:
+            logger.exception(
+                "scheduled_sadei_sync_enqueue_failed", extra={"dataset_id": dataset_id}
+            )
+
+
+async def scheduled_ideas_sync(ctx: dict[str, Any]) -> None:
+    """Cron job: enqueue IDEAS/SITPA WFS sync for each configured layer."""
+    settings = ctx["settings"]
+    job_store: RedisJobStore = ctx["job_store"]
+    arq_pool = ctx["arq_pool"]
+    for layer_name in settings.ideas_sync_layers:
+        try:
+            job_record = await job_store.create_job("ideas_sync", {"layer_name": layer_name})
+            job_id = job_record["job_id"]
+            await arq_pool.enqueue_job(
+                "run_ideas_sync_job", job_id=job_id, payload={"layer_name": layer_name}
+            )
+            logger.info(
+                "scheduled_ideas_sync_enqueued",
+                extra={"layer_name": layer_name, "job_id": job_id},
+            )
+        except Exception:
+            logger.exception(
+                "scheduled_ideas_sync_enqueue_failed", extra={"layer_name": layer_name}
+            )
+
+
 async def startup(ctx: dict[str, Any]) -> None:
     settings = get_settings()
     configure_logging(settings.log_level)
@@ -424,6 +626,8 @@ async def startup(ctx: dict[str, Any]) -> None:
         ),
     )
     resolver = AsturiasResolver(ine_client=ine_client, cache=cache)
+    sadei_client = SADEIClientService(http_client=http_client, settings=settings)
+    ideas_client = IDEASWFSClientService(settings=settings)
     catastro_circuit_breaker = AsyncCircuitBreaker(
         provider="catastro",
         fail_max=settings.provider_circuit_breaker_failures,
@@ -432,13 +636,18 @@ async def startup(ctx: dict[str, Any]) -> None:
         success_threshold=settings.provider_circuit_breaker_success_threshold,
     )
 
+    arq_pool = await create_pool(redis_settings_from_url(settings.redis_url))
+
     ctx["settings"] = settings
     ctx["redis"] = redis
     ctx["job_store"] = job_store
+    ctx["arq_pool"] = arq_pool
     ctx["http_client"] = http_client
     ctx["cache"] = cache
     ctx["ine_client"] = ine_client
     ctx["resolver"] = resolver
+    ctx["sadei_client"] = sadei_client
+    ctx["ideas_client"] = ideas_client
     ctx["catastro_circuit_breaker"] = catastro_circuit_breaker
     ctx["worker_id"] = f"{socket.gethostname()}:{settings.job_queue_name}"
     ctx["heartbeat_task"] = asyncio.create_task(
@@ -469,6 +678,10 @@ async def shutdown(ctx: dict[str, Any]) -> None:
             metrics_server.server_close()
         except Exception:
             logger.warning("worker_metrics_server_shutdown_failed")
+
+    arq_pool = ctx.get("arq_pool")
+    if arq_pool is not None:
+        await arq_pool.aclose()
 
     http_client: httpx.AsyncClient | None = ctx.get("http_client")
     if http_client is not None:
@@ -512,6 +725,14 @@ class WorkerSettings:
         run_operation_asturias_job,
         run_municipality_report_job,
         run_territorial_export_job,
+        run_sadei_sync_job,
+        run_ideas_sync_job,
+    ]
+    cron_jobs = [
+        cron(scheduled_ine_update, hour={3}, minute={0}),  # daily 03:00
+        cron(scheduled_territorial_sync, weekday={1}, hour={4}),  # Monday 04:00
+        cron(scheduled_sadei_sync, hour={5}, minute={0}),  # daily 05:00
+        cron(scheduled_ideas_sync, weekday={1}, hour={4}, minute={30}),  # Monday 04:30
     ]
     on_startup = startup
     on_shutdown = shutdown

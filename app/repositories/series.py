@@ -27,6 +27,7 @@ UPSERT_COLUMN_NAMES = {
     "unit",
     "metadata",
     "raw_payload",
+    "source_provider",
 }
 
 CONFLICT_COLUMNS = [
@@ -103,6 +104,7 @@ class SeriesRepository:
                     "territorial_unit_id": statement.excluded.territorial_unit_id,
                     "metadata": statement.excluded["metadata"],
                     "raw_payload": statement.excluded.raw_payload,
+                    "source_provider": statement.excluded.source_provider,
                 },
             )
 
@@ -414,6 +416,9 @@ class SeriesRepository:
                 payload.get("metadata", payload.get("metadata_json", {}))
             ),
             "raw_payload": SeriesRepository._json_value(payload.get("raw_payload", {})),
+            "source_provider": SeriesRepository._string_value(
+                payload.get("source_provider") or "ine"
+            ),
         }
 
         filtered_row = {key: value for key, value in row.items() if key in UPSERT_COLUMN_NAMES}

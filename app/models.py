@@ -84,6 +84,9 @@ class INESeriesNormalized(Base):
     unit: Mapped[str] = mapped_column(String(128), default="", server_default="")
     metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, default=dict)
     raw_payload: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    source_provider: Mapped[str] = mapped_column(
+        String(32), default="ine", server_default="ine", index=True
+    )
     inserted_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -139,6 +142,9 @@ class INETableCatalog(Base):
     metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, default=dict)
     notes: Mapped[str] = mapped_column(Text, default="", server_default="")
     last_warning: Mapped[str] = mapped_column(Text, default="", server_default="")
+    source_provider: Mapped[str] = mapped_column(
+        String(32), default="ine", server_default="ine", index=True
+    )
 
 
 class GeocodeCache(Base):
@@ -305,6 +311,37 @@ class CatastroMunicipalityAggregateCache(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
 
 
+class CatastroTerritorialAggregateCache(Base):
+    __tablename__ = "catastro_territorial_aggregate_cache"
+    __table_args__ = (
+        UniqueConstraint(
+            "provider_family",
+            "unit_level",
+            "code_value",
+            "reference_year",
+            name="uq_catastro_territorial_aggregate_cache_scope",
+        ),
+        Index(
+            "ix_catastro_territorial_aggregate_cache_scope_expires",
+            "provider_family",
+            "unit_level",
+            "code_value",
+            "reference_year",
+            "expires_at",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    provider_family: Mapped[str] = mapped_column(String(64), index=True)
+    unit_level: Mapped[str] = mapped_column(String(32), index=True)
+    code_value: Mapped[str] = mapped_column(String(128), index=True)
+    reference_year: Mapped[str] = mapped_column(String(8), index=True)
+    payload: Mapped[dict[str, Any] | list[Any]] = mapped_column(JSONB)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, default=dict)
+    cached_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
 class TerritorialUnit(Base):
     __tablename__ = "territorial_units"
     __table_args__ = (
@@ -395,3 +432,58 @@ class TerritorialUnitAlias(Base):
     normalized_alias: Mapped[str] = mapped_column(String(255), index=True)
     alias_type: Mapped[str] = mapped_column(String(32), default="name", server_default="name")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class CartographicQAIncident(Base):
+    __tablename__ = "cartographic_qa_incidents"
+    __table_args__ = (Index("ix_qa_incidents_layer_resolved", "layer", "resolved", "detected_at"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    layer: Mapped[str] = mapped_column(String(128), index=True)
+    entity_id: Mapped[str] = mapped_column(String(255), index=True)
+    error_type: Mapped[str] = mapped_column(String(64), index=True)
+    severity: Mapped[str] = mapped_column(String(16), default="warning", server_default="warning")
+    description: Mapped[str] = mapped_column(Text, default="", server_default="")
+    source_provider: Mapped[str] = mapped_column(String(32), default="", server_default="")
+    detected_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+    resolved: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", index=True
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, default=dict)
+
+
+class IDEASFeature(Base):
+    __tablename__ = "ideas_features_normalized"
+    __table_args__ = (
+        UniqueConstraint(
+            "layer_name",
+            "feature_id",
+            name="uq_ideas_features_normalized_layer_feature",
+        ),
+        Index("ix_ideas_features_normalized_layer_expires", "layer_name", "expires_at"),
+        Index("ix_ideas_features_normalized_geometry_gist", "geometry", postgresql_using="gist"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    layer_name: Mapped[str] = mapped_column(String(128), index=True)
+    feature_id: Mapped[str] = mapped_column(String(255), index=True)
+    source_provider: Mapped[str] = mapped_column(
+        String(32), default="ideas", server_default="ideas", index=True
+    )
+    geometry: Mapped[Any | None] = mapped_column(
+        Geometry(
+            geometry_type="GEOMETRY",
+            srid=POSTGIS_DEFAULT_SRID,
+            spatial_index=False,
+        ),
+        nullable=True,
+    )
+    attributes_json: Mapped[dict[str, Any]] = mapped_column("attributes", JSONB, default=dict)
+    org_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    ingested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)

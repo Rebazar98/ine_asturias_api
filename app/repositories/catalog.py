@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any
@@ -102,7 +102,11 @@ class TableCatalogRepository:
         if self.session is None:
             self.logger.debug(
                 "catalog_status_update_skipped",
-                extra={"reason": "database_disabled", "operation_code": operation_code, "table_id": table_id},
+                extra={
+                    "reason": "database_disabled",
+                    "operation_code": operation_code,
+                    "table_id": table_id,
+                },
             )
             return False
 

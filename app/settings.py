@@ -54,6 +54,12 @@ class Settings(BaseSettings):
     catastro_cache_ttl_seconds: int = Field(
         default=604800, alias="CATASTRO_CACHE_TTL_SECONDS", ge=0
     )
+    catastro_aggregate_cache_ttl_seconds: int = Field(
+        default=86400, alias="CATASTRO_AGGREGATE_CACHE_TTL_SECONDS", ge=0
+    )
+    catastro_aggregate_max_concurrency: int = Field(
+        default=4, alias="CATASTRO_AGGREGATE_MAX_CONCURRENCY", ge=1, le=20
+    )
     catastro_urbano_year: str | None = Field(default=None, alias="CATASTRO_URBANO_YEAR")
     max_concurrent_table_fetches: int = Field(
         default=3, alias="MAX_CONCURRENT_TABLE_FETCHES", ge=1, le=10
@@ -74,6 +80,26 @@ class Settings(BaseSettings):
     worker_heartbeat_ttl_seconds: int = Field(default=60, alias="WORKER_HEARTBEAT_TTL_SECONDS")
     worker_metrics_port: int = Field(default=9001, alias="WORKER_METRICS_PORT")
     worker_metrics_url: str | None = Field(default=None, alias="WORKER_METRICS_URL")
+    scheduled_ine_operations: list[str] = Field(
+        default=["22", "30"], alias="SCHEDULED_INE_OPERATIONS"
+    )
+    scheduled_territorial_sync_enabled: bool = Field(
+        default=True, alias="SCHEDULED_TERRITORIAL_SYNC_ENABLED"
+    )
+    job_store_backend: str = Field(default="redis", alias="JOB_STORE_BACKEND")
+    trusted_host_header: str = Field(default="X-Forwarded-For", alias="TRUSTED_HOST_HEADER")
+    sadei_base_url: str = Field(default="https://sadei.es", alias="SADEI_BASE_URL")
+    sadei_sync_datasets: list[str] = Field(
+        default=["padron_municipal", "pib_municipal"], alias="SADEI_SYNC_DATASETS"
+    )
+    ideas_wfs_base_url: str = Field(
+        default="https://ideas.asturias.es/arcgis/services/SIGPAC/SIGPAC_WFS/MapServer/WFSServer",
+        alias="IDEAS_WFS_BASE_URL",
+    )
+    ideas_sync_layers: list[str] = Field(
+        default=["limites_parroquiales"], alias="IDEAS_SYNC_LAYERS"
+    )
+    cartographic_qa_enabled: bool = Field(default=True, alias="CARTOGRAPHIC_QA_ENABLED")
 
     model_config = SettingsConfigDict(
         env_file=".env",

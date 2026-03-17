@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import unicodedata
@@ -106,9 +106,14 @@ class AsturiasResolver:
             record_id = self._pick_first(record, ("Id", "id", "Codigo", "codigo"))
             if not record_id:
                 continue
-            name = self._pick_first(record, ("Nombre", "name", "Variable", "Descripcion", "description"))
+            name = self._pick_first(
+                record, ("Nombre", "name", "Variable", "Descripcion", "description")
+            )
             normalized_name = self._normalize_text(name)
-            score = max((weight for key, weight in _GEO_KEYWORDS.items() if key in normalized_name), default=0)
+            score = max(
+                (weight for key, weight in _GEO_KEYWORDS.items() if key in normalized_name),
+                default=0,
+            )
             if score > 0:
                 candidates.append((score, {"id": str(record_id), "name": name}))
 
@@ -124,7 +129,9 @@ class AsturiasResolver:
             record_id = self._pick_first(record, ("Id", "id", "Codigo", "codigo"))
             if not record_id:
                 continue
-            name = self._pick_first(record, ("Nombre", "name", "Descripcion", "description", "Valor"))
+            name = self._pick_first(
+                record, ("Nombre", "name", "Descripcion", "description", "Valor")
+            )
             normalized_name = self._normalize_text(name)
             if "asturias" not in normalized_name:
                 continue
