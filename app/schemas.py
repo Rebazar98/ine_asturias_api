@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
+from fastapi import Query
 from pydantic import BaseModel, Field, RootModel, field_validator
 
 from app.repositories.territorial_export_artifacts import (
@@ -50,6 +51,24 @@ class AsturiasResolutionResult(BaseModel):
     asturias_value_id: str
     variable_name: str | None = None
     asturias_label: str | None = None
+
+
+class AsturiasOperationQueryParams(BaseModel):
+    """Query parameters for GET /ine/operation/{op_code}/asturias.
+
+    Injected via FastAPI Depends() to group the 9 business-logic query
+    params and keep the route signature concise.
+    """
+
+    geo_variable_id: str | None = Field(Query(default=None))
+    asturias_value_id: str | None = Field(Query(default=None))
+    nult: int | None = Field(Query(default=None, ge=1))
+    det: int | None = Field(Query(default=None, ge=0, le=2))
+    tip: Literal["A", "M", "AM"] | None = Field(Query(default=None))
+    periodicidad: str | None = Field(Query(default=None))
+    max_tables: int | None = Field(Query(default=None, ge=1, le=25))
+    background: bool | None = Field(Query(default=None))
+    skip_known_no_data: bool = Field(Query(default=False))
 
 
 class BackgroundJobAcceptedResponse(BaseModel):
@@ -568,3 +587,12 @@ class QAIncidentsResponse(BaseModel):
     has_next: bool
     has_previous: bool
     filters: dict[str, Any] = Field(default_factory=dict)
+
+
+class ErrorDetail(BaseModel):
+    message: str
+    request_id: str | None = None
+
+
+class ErrorResponse(BaseModel):
+    detail: ErrorDetail

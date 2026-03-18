@@ -34,13 +34,24 @@ class BaseRateLimiter:
 
 
 class InMemoryRateLimiter(BaseRateLimiter):
+    _SWEEP_THRESHOLD = 500
+
     def __init__(self) -> None:
         self._entries: dict[str, tuple[int, float]] = {}
         self._lock = asyncio.Lock()
 
+    def _sweep_expired(self) -> None:
+        """Remove all expired windows. Must be called while holding self._lock."""
+        now = time.time()
+        expired = [k for k, (_, reset_at) in self._entries.items() if reset_at <= now]
+        for k in expired:
+            del self._entries[k]
+
     async def increment(self, key: str, *, window_seconds: int) -> RateLimitSnapshot:
         now = time.time()
         async with self._lock:
+            if len(self._entries) > self._SWEEP_THRESHOLD:
+                self._sweep_expired()
             count, reset_at = self._entries.get(key, (0, now + window_seconds))
             if reset_at <= now:
                 count = 0

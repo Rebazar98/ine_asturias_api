@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, UTC
 from typing import Any
 
 from sqlalchemy import select
@@ -59,7 +59,7 @@ class TableCatalogRepository:
                 "request_path": statement.excluded.request_path,
                 "resolution_context": statement.excluded.resolution_context,
                 "metadata": statement.excluded["metadata"],
-                "updated_at": datetime.now(timezone.utc),
+                "updated_at": datetime.now(UTC),
             },
         )
 
@@ -110,7 +110,7 @@ class TableCatalogRepository:
             )
             return False
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         statement = insert(INETableCatalog.__table__).values(
             {
                 "operation_code": operation_code,

@@ -462,7 +462,13 @@ class CatastroClientService:
                     },
                 ) from exc
 
-        raise RuntimeError("Retry loop exhausted without returning a Catastro response.")
+        raise CatastroUpstreamError(
+            status_code=500,
+            detail={
+                "message": "Catastro retry loop completed without a result. This is a logic error.",
+                "retryable": False,
+            },
+        )
 
     async def _log_retry(
         self,

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime, timezone
+from datetime import datetime, UTC
 from time import perf_counter
 
 from arq.connections import ArqRedis
@@ -34,6 +34,7 @@ from app.repositories.territorial import (
 )
 from app.schemas import (
     BackgroundJobStatusResponse,
+    ErrorResponse,
     GeocodeResponse,
     GeocodingCoordinatesResponse,
     ReverseGeocodeResponse,
@@ -362,6 +363,10 @@ async def get_territorial_job_status(
     status_code=status.HTTP_202_ACCEPTED,
     tags=["territorial-jobs"],
     summary="Queue a multi-source territorial export bundle",
+    responses={
+        422: {"model": ErrorResponse, "description": "Validation error"},
+        503: {"model": ErrorResponse, "description": "Catastro service or circuit breaker unavailable"},
+    },
 )
 async def create_territorial_export_job(
     request: Request,
@@ -488,7 +493,7 @@ async def download_territorial_export(
         )
 
     artifact = await artifact_repo.get_by_export_id(export_id)
-    if artifact is None or artifact["expires_at"] <= datetime.now(timezone.utc):
+    if artifact is None or artifact["expires_at"] <= datetime.now(UTC):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"message": "Territorial export artifact was not found.", "job_id": job_id},
@@ -732,7 +737,7 @@ async def get_territorial_catalog(
     territorial_levels = [_build_territorial_catalog_level_coverage(row) for row in coverage_rows]
     return TerritorialCatalogResponse(
         source=TERRITORIAL_CATALOG_SOURCE,
-        generated_at=datetime.now(timezone.utc),
+        generated_at=datetime.now(UTC),
         summary=TerritorialCatalogSummaryResponse(
             resources_total=len(resources),
             territorial_levels_total=len(territorial_levels),

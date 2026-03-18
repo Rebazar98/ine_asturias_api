@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, UTC
 from typing import Any
 
 from sqlalchemy import select
@@ -63,7 +63,7 @@ class AnalyticalSnapshotRepository:
             scope_key=normalized_scope_key,
             filters=filters,
         )
-        lookup_time = now or datetime.now(timezone.utc)
+        lookup_time = now or datetime.now(UTC)
         statement = (
             select(AnalyticalSnapshot)
             .where(
@@ -111,7 +111,7 @@ class AnalyticalSnapshotRepository:
             scope_key=normalized_scope_key,
             filters=snapshot_filters,
         )
-        write_time = now or datetime.now(timezone.utc)
+        write_time = now or datetime.now(UTC)
         snapshot_generated_at = generated_at or write_time
         expires_at = write_time + timedelta(seconds=ttl_seconds)
         statement = insert(AnalyticalSnapshot.__table__).values(

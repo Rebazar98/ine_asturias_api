@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, UTC
 from typing import Any
 
 from sqlalchemy import select
@@ -82,7 +82,7 @@ class TerritorialExportArtifactRepository:
             artifact_format=artifact_format,
             include_providers=include_providers,
         )
-        lookup_time = now or datetime.now(timezone.utc)
+        lookup_time = now or datetime.now(UTC)
         statement = (
             select(TerritorialExportArtifact)
             .where(
@@ -146,7 +146,7 @@ class TerritorialExportArtifactRepository:
             artifact_format=artifact_format,
             include_providers=include_providers,
         )
-        write_time = now or datetime.now(timezone.utc)
+        write_time = now or datetime.now(UTC)
         expires_at = write_time + timedelta(seconds=ttl_seconds)
         payload_sha256 = hashlib.sha256(payload_bytes).hexdigest()
         byte_size = len(payload_bytes)

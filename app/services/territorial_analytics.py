@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Awaitable, Callable
-from datetime import datetime, timezone
+from datetime import datetime, UTC
 from time import perf_counter
 from typing import Any
 
@@ -47,7 +47,7 @@ class TerritorialAnalyticsService:
         self.series_repo = series_repo
         self.analytical_snapshot_repo = analytical_snapshot_repo
         self.analytical_snapshot_ttl_seconds = max(0, analytical_snapshot_ttl_seconds)
-        self.now_factory = now_factory or (lambda: datetime.now(timezone.utc))
+        self.now_factory = now_factory or (lambda: datetime.now(UTC))
         self.logger = get_logger("app.services.territorial_analytics")
 
     async def build_municipality_summary(

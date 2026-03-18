@@ -8,7 +8,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, UTC
 from typing import Any
 from zipfile import ZIP_DEFLATED, ZipFile
 
@@ -794,7 +794,7 @@ class TerritorialExportService:
         self.catastro_cache_ttl_seconds = max(0, catastro_cache_ttl_seconds)
         self.catastro_aggregate_cache_ttl_seconds = max(0, catastro_aggregate_cache_ttl_seconds)
         self.catastro_aggregate_max_concurrency = max(1, catastro_aggregate_max_concurrency)
-        self.now_factory = now_factory or (lambda: datetime.now(timezone.utc))
+        self.now_factory = now_factory or (lambda: datetime.now(UTC))
         self.logger = get_logger("app.services.territorial_exports")
         self.providers: dict[str, TerritorialExportProvider] = {
             EXPORT_PROVIDER_TERRITORIAL: TerritorialMetadataExportProvider(),
@@ -948,7 +948,11 @@ class TerritorialExportService:
             now=generated_at,
         )
         if artifact is None:
-            raise RuntimeError("Territorial export artifact storage is unavailable.")
+            self.logger.error(
+                "territorial_export_artifact_storage_failed",
+                extra={"job_id": job_id, "export_key": export_key},
+            )
+            return None
 
         self.logger.info(
             "territorial_export_artifact_built",

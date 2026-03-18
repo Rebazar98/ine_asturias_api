@@ -1,7 +1,14 @@
+import contextvars
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
+
+# Holds the active request_id for the duration of an async request or job.
+# Set by request middleware; propagated to background jobs via job_params.
+request_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "request_id", default=None
+)
 
 
 _RESERVED_ATTRS = {
@@ -32,8 +39,13 @@ _RESERVED_ATTRS = {
 
 class JsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
+        # Auto-inject request_id from async context if present and not already set
+        rid = request_id_var.get()
+        if rid is not None and "request_id" not in record.__dict__:
+            record.__dict__["request_id"] = rid
+
         payload: dict[str, Any] = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "level": record.levelname,
             "logger": record.name,
             "message": record.getMessage(),

@@ -93,7 +93,7 @@ class IGNAdministrativeBoundariesLoaderService:
         )
         effective_dataset_version = (
             (dataset_version or "").strip()
-            or str(((payload.get("metadata") or {}).get("dataset_version") or "")).strip()
+            or str((payload.get("metadata") or {}).get("dataset_version") or "").strip()
             or "ign_admin_snapshot"
         )
 

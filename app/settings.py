@@ -1,4 +1,4 @@
-from enum import Enum
+from enum import StrEnum
 from functools import lru_cache
 
 from pydantic import Field, field_validator, model_validator
@@ -7,7 +7,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from app.core.security import ensure_secret_strength, extract_password_from_dsn
 
 
-class Environment(str, Enum):
+class Environment(StrEnum):
     LOCAL = "local"
     STAGING = "staging"
     PRODUCTION = "production"
@@ -87,6 +87,13 @@ class Settings(BaseSettings):
         default=True, alias="SCHEDULED_TERRITORIAL_SYNC_ENABLED"
     )
     job_store_backend: str = Field(default="redis", alias="JOB_STORE_BACKEND")
+    job_running_ttl_seconds: int = Field(default=3600, alias="JOB_RUNNING_TTL_SECONDS", ge=60)
+    cors_allowed_origins: list[str] = Field(default=["*"], alias="CORS_ALLOWED_ORIGINS")
+    cors_allow_credentials: bool = Field(default=False, alias="CORS_ALLOW_CREDENTIALS")
+    cors_allowed_methods: list[str] = Field(
+        default=["GET", "POST", "DELETE"], alias="CORS_ALLOWED_METHODS"
+    )
+    cors_allowed_headers: list[str] = Field(default=["*"], alias="CORS_ALLOWED_HEADERS")
     trusted_host_header: str = Field(default="X-Forwarded-For", alias="TRUSTED_HOST_HEADER")
     sadei_base_url: str = Field(default="https://sadei.es", alias="SADEI_BASE_URL")
     sadei_sync_datasets: list[str] = Field(

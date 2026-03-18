@@ -5,7 +5,8 @@ import json
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable
+from typing import Any
+from collections.abc import Awaitable, Callable
 
 from redis.asyncio import Redis
 
@@ -49,10 +50,23 @@ class BaseAsyncCache(ABC):
 
 
 class InMemoryTTLCache(BaseAsyncCache):
-    def __init__(self, enabled: bool = True, default_ttl_seconds: int = 300) -> None:
+    def __init__(
+        self,
+        enabled: bool = True,
+        default_ttl_seconds: int = 300,
+        max_size: int | None = None,
+    ) -> None:
         super().__init__(enabled=enabled, default_ttl_seconds=default_ttl_seconds)
         self._store: dict[str, CacheEntry] = {}
         self._lock = asyncio.Lock()
+        self.max_size = max_size
+
+    def _sweep(self) -> None:
+        """Remove all expired entries. Must be called while holding self._lock."""
+        now = time.monotonic()
+        expired = [k for k, e in self._store.items() if e.expires_at <= now]
+        for k in expired:
+            del self._store[k]
 
     async def get(self, key: str) -> Any | None:
         if not self.enabled:
@@ -73,6 +87,11 @@ class InMemoryTTLCache(BaseAsyncCache):
 
         ttl = ttl_seconds or self.default_ttl_seconds
         async with self._lock:
+            if self.max_size is not None and len(self._store) >= self.max_size:
+                self._sweep()
+            if self.max_size is not None and len(self._store) >= self.max_size:
+                oldest_key = min(self._store, key=lambda k: self._store[k].expires_at)
+                del self._store[oldest_key]
             self._store[key] = CacheEntry(value=value, expires_at=time.monotonic() + ttl)
 
     async def delete(self, key: str) -> None:

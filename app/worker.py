@@ -14,7 +14,7 @@ from redis.asyncio import Redis
 
 from app.core.cache import InMemoryTTLCache, LayeredCache, RedisTTLCache
 from app.core.jobs import RedisJobStore
-from app.core.logging import configure_logging, get_logger
+from app.core.logging import configure_logging, get_logger, request_id_var
 from app.core.metrics import record_job_duration
 from app.core.redis import redis_settings_from_url
 from app.core.resilience import AsyncCircuitBreaker
@@ -55,6 +55,7 @@ async def run_operation_asturias_job(
     ine_client: INEClientService = ctx["ine_client"]
     resolver: AsturiasResolver = ctx["resolver"]
 
+    _rid_token = request_id_var.set(payload.get("_request_id"))
     op_code = payload["operation_code"]
     started_at = perf_counter()
 
@@ -142,6 +143,8 @@ async def run_operation_asturias_job(
             "failed",
             perf_counter() - started_at,
         )
+    finally:
+        request_id_var.reset(_rid_token)
     return None
 
 
@@ -150,6 +153,7 @@ async def run_municipality_report_job(
 ) -> dict[str, Any] | None:
     settings = ctx["settings"]
     job_store: RedisJobStore = ctx["job_store"]
+    _rid_token = request_id_var.set(payload.get("_request_id"))
     municipality_code = payload["municipality_code"]
     started_at = perf_counter()
 
@@ -246,6 +250,8 @@ async def run_municipality_report_job(
             "failed",
             perf_counter() - started_at,
         )
+    finally:
+        request_id_var.reset(_rid_token)
     return None
 
 
@@ -254,6 +260,7 @@ async def run_territorial_export_job(
 ) -> dict[str, Any] | None:
     settings = ctx["settings"]
     job_store: RedisJobStore = ctx["job_store"]
+    _rid_token = request_id_var.set(payload.get("_request_id"))
     started_at = perf_counter()
 
     async def report_progress(progress: dict[str, Any]) -> None:
@@ -397,6 +404,8 @@ async def run_territorial_export_job(
             "failed",
             perf_counter() - started_at,
         )
+    finally:
+        request_id_var.reset(_rid_token)
     return None
 
 

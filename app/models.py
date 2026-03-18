@@ -500,9 +500,7 @@ class IDEASFeature(Base):
 
 class SyncSchedule(Base):
     __tablename__ = "sync_schedule"
-    __table_args__ = (
-        UniqueConstraint("org_id", "source", name="uq_sync_schedule_org_source"),
-    )
+    __table_args__ = (UniqueConstraint("org_id", "source", name="uq_sync_schedule_org_source"),)
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     org_id: Mapped[str] = mapped_column(String(64), index=True)

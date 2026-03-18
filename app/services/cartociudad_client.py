@@ -282,7 +282,13 @@ class CartoCiudadClientService:
                     },
                 ) from exc
 
-        raise RuntimeError("Retry loop exhausted without returning a response.")
+        raise CartoCiudadUpstreamError(
+            status_code=500,
+            detail={
+                "message": "CartoCiudad retry loop completed without a result. This is a logic error.",
+                "retryable": False,
+            },
+        )
 
     async def _log_retry(
         self,

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, UTC
 from typing import Any
 
 from sqlalchemy import func, select
@@ -103,7 +103,7 @@ class CartographicQARepository:
         if result is None:
             return False
         result.resolved = True
-        result.resolved_at = datetime.now(tz=timezone.utc)
+        result.resolved_at = datetime.now(tz=UTC)
         try:
             await self.session.commit()
         except SQLAlchemyError:

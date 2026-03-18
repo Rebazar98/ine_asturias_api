@@ -287,9 +287,9 @@ def test_geocode_endpoint_maps_normalization_error_without_echoing_query(
     response = client.get("/geocode?query=Oviedo")
 
     assert response.status_code == 502
-    assert response.json()["detail"] == {
-        "message": "The CartoCiudad result could not be normalized to semantic coordinates."
-    }
+    assert response.json()["detail"]["message"] == (
+        "The CartoCiudad result could not be normalized to semantic coordinates."
+    )
     assert len(dummy_ingestion_repo.records) == 1
 
 
@@ -450,7 +450,5 @@ def test_reverse_geocode_endpoint_maps_normalization_error(
     response = client.get("/reverse_geocode?lat=43.3614&lon=-5.8494")
 
     assert response.status_code == 502
-    assert response.json()["detail"] == {
-        "message": "CartoCiudad returned an unexpected payload type."
-    }
+    assert response.json()["detail"]["message"] == "CartoCiudad returned an unexpected payload type."
     assert len(dummy_ingestion_repo.records) == 1

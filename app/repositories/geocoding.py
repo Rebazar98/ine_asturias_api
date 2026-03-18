@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, UTC
 from typing import Any
 
 from sqlalchemy import select
@@ -63,7 +63,7 @@ class GeocodingCacheRepository:
         if not normalized_query:
             return None
 
-        lookup_time = now or datetime.now(timezone.utc)
+        lookup_time = now or datetime.now(UTC)
         statement = (
             select(GeocodeCache)
             .where(
@@ -101,7 +101,7 @@ class GeocodingCacheRepository:
         if not normalized_query:
             return None
 
-        cached_at = now or datetime.now(timezone.utc)
+        cached_at = now or datetime.now(UTC)
         expires_at = cached_at + timedelta(seconds=ttl_seconds)
         statement = insert(GeocodeCache.__table__).values(
             {
@@ -167,7 +167,7 @@ class GeocodingCacheRepository:
             lon=lon,
             precision_digits=precision_digits,
         )
-        lookup_time = now or datetime.now(timezone.utc)
+        lookup_time = now or datetime.now(UTC)
         statement = (
             select(ReverseGeocodeCache)
             .where(
@@ -213,7 +213,7 @@ class GeocodingCacheRepository:
             lon=lon,
             precision_digits=precision_digits,
         )
-        cached_at = now or datetime.now(timezone.utc)
+        cached_at = now or datetime.now(UTC)
         expires_at = cached_at + timedelta(seconds=ttl_seconds)
         statement = insert(ReverseGeocodeCache.__table__).values(
             {

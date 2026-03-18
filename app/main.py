@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import time
 from contextlib import asynccontextmanager
+from typing import Any
+from uuid import uuid4
 
 import httpx
 from arq.connections import create_pool
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from redis.asyncio import Redis
 
@@ -16,11 +21,11 @@ from app.api.routes_ine import router as ine_router
 from app.api.routes_territorial import router as territorial_router
 from app.core.cache import InMemoryTTLCache, LayeredCache, RedisTTLCache
 from app.core.jobs import InMemoryJobStore, RedisJobStore
-from app.core.logging import configure_logging, get_logger
+from app.core.logging import configure_logging, get_logger, request_id_var
 from app.core.metrics import record_http_request
 from app.core.rate_limit import InMemoryRateLimiter, RedisRateLimiter
 from app.core.redis import redis_settings_from_url
-from app.core.resilience import AsyncCircuitBreaker
+from app.core.resilience import AsyncCircuitBreaker, CircuitBreakerOpenError
 from app.core.security import sanitize_query_params_for_logging
 from app.db import dispose_db, init_db
 from app.services.asturias_resolver import AsturiasResolutionError
@@ -153,6 +158,20 @@ async def lifespan(app: FastAPI):
         )
 
 
+def _error_response(
+    status_code: int,
+    detail: Any,
+    *,
+    headers: dict[str, str] | None = None,
+) -> JSONResponse:
+    rid = request_id_var.get()
+    if isinstance(detail, dict):
+        body = {"detail": {**detail, "request_id": rid}}
+    else:
+        body = {"detail": detail}
+    return JSONResponse(status_code=status_code, content=body, headers=headers)
+
+
 def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(
@@ -160,6 +179,14 @@ def create_app() -> FastAPI:
         version=settings.app_version,
         description="FastAPI ingestion and proxy API for INE data focused on Asturias.",
         lifespan=lifespan,
+    )
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_allowed_origins,
+        allow_credentials=settings.cors_allow_credentials,
+        allow_methods=settings.cors_allowed_methods,
+        allow_headers=settings.cors_allowed_headers,
     )
 
     app.include_router(health_router)
@@ -173,6 +200,9 @@ def create_app() -> FastAPI:
         started_at = time.perf_counter()
         path_template = getattr(request.scope.get("route"), "path", request.url.path)
 
+        request_id = request.headers.get("X-Request-ID") or str(uuid4())
+        token = request_id_var.set(request_id)
+
         try:
             response = await call_next(request)
         except Exception:
@@ -185,13 +215,17 @@ def create_app() -> FastAPI:
                     "path_template": path_template,
                     **sanitize_query_params_for_logging(request.query_params),
                     "duration_ms": round(duration_seconds * 1000, 2),
+                    "request_id": request_id,
                 },
             )
             record_http_request(request.method, path_template, 500, duration_seconds)
-            raise
+            return _error_response(500, {"message": "Internal server error."})
+        finally:
+            request_id_var.reset(token)
 
         duration_seconds = time.perf_counter() - started_at
         response.headers["X-Process-Time-Ms"] = str(round(duration_seconds * 1000, 2))
+        response.headers["X-Request-ID"] = request_id
         logger.info(
             "request_completed",
             extra={
@@ -200,6 +234,7 @@ def create_app() -> FastAPI:
                 "path_template": path_template,
                 "status_code": response.status_code,
                 "duration_ms": round(duration_seconds * 1000, 2),
+                "request_id": request_id,
             },
         )
         record_http_request(request.method, path_template, response.status_code, duration_seconds)
@@ -207,29 +242,49 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(INEClientError)
     async def ine_client_error_handler(_: Request, exc: INEClientError) -> JSONResponse:
-        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+        return _error_response(exc.status_code, exc.detail)
 
     @app.exception_handler(CartoCiudadClientError)
     async def cartociudad_client_error_handler(
         _: Request, exc: CartoCiudadClientError
     ) -> JSONResponse:
-        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+        return _error_response(exc.status_code, exc.detail)
 
     @app.exception_handler(CartoCiudadNormalizationError)
     async def cartociudad_normalization_error_handler(
         _: Request, exc: CartoCiudadNormalizationError
     ) -> JSONResponse:
-        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+        return _error_response(exc.status_code, exc.detail)
 
     @app.exception_handler(CatastroClientError)
     async def catastro_client_error_handler(_: Request, exc: CatastroClientError) -> JSONResponse:
-        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+        return _error_response(exc.status_code, exc.detail)
 
     @app.exception_handler(AsturiasResolutionError)
     async def asturias_resolution_error_handler(
         _: Request, exc: AsturiasResolutionError
     ) -> JSONResponse:
-        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+        return _error_response(exc.status_code, exc.detail)
+
+    @app.exception_handler(CircuitBreakerOpenError)
+    async def circuit_breaker_open_error_handler(
+        _: Request, exc: CircuitBreakerOpenError
+    ) -> JSONResponse:
+        return _error_response(
+            503,
+            {
+                "message": "Service temporarily unavailable. Please retry later.",
+                "provider": exc.provider,
+                "retry_after_seconds": exc.retry_after_seconds,
+            },
+            headers={"Retry-After": str(math.ceil(exc.retry_after_seconds))},
+        )
+
+    @app.exception_handler(RequestValidationError)
+    async def request_validation_error_handler(
+        _: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        return _error_response(422, {"message": "Validation error.", "errors": exc.errors()})
 
     return app
 

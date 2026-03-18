@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from abc import ABC, abstractmethod
-from datetime import datetime, timezone
+from datetime import datetime, UTC
 from typing import Any
 from uuid import uuid4
 
@@ -274,6 +274,8 @@ class RedisJobStore(BaseJobStore):
     def _ttl_for_status(self, status: str) -> int | None:
         if status in {"completed", "failed"}:
             return self.settings.job_result_ttl_seconds
+        if status in {"running", "queued"}:
+            return self.settings.job_running_ttl_seconds
         return None
 
     @staticmethod
@@ -296,7 +298,7 @@ def _copy_job_record(record: dict[str, Any]) -> dict[str, Any]:
 
 
 def _utcnow() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _copy_jsonish(value: Any) -> Any:

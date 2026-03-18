@@ -19,11 +19,11 @@ services:
     image: redis:7-alpine@sha256:8b81dd37ff027bec4e516d41acfbe9fe2460070dc6d4a4570a2ac5b9d59df065
     ports:
       - "${REDIS_HOST_PORT:-6379}:6379"
-    command: ["redis-server", "--appendonly", "yes"]
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:-local-dev-redis-password}"]
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-local-dev-redis-password}", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -44,7 +44,7 @@ services:
       CACHE_TTL_SECONDS: ${CACHE_TTL_SECONDS:-300}
       API_KEY: ${API_KEY}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      REDIS_URL: ${REDIS_URL:-redis://:${REDIS_PASSWORD:-local-dev-redis-password}@redis:6379/0}
       JOB_QUEUE_NAME: ${JOB_QUEUE_NAME:-ine_jobs}
       JOB_RESULT_TTL_SECONDS: ${JOB_RESULT_TTL_SECONDS:-86400}
       WORKER_HEARTBEAT_TTL_SECONDS: ${WORKER_HEARTBEAT_TTL_SECONDS:-60}

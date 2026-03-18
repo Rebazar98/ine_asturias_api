@@ -7,6 +7,7 @@ asyncpg==0.31.0
 certifi==2026.2.25
 charset-normalizer==3.4.6
 click==8.3.1
+coverage==7.13.5
 et_xmlfile==2.0.0
 fastapi==0.135.1
 GeoAlchemy2==0.18.4
@@ -29,8 +30,8 @@ pydantic==2.12.5
 pydantic-settings==2.13.1
 pydantic_core==2.41.5
 Pygments==2.19.2
-PyJWT==2.12.0
 pytest==8.4.2
+pytest-cov==6.1.0
 python-dateutil==2.9.0.post0
 python-dotenv==1.2.2
 pytz==2026.1.post1

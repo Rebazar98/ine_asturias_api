@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, UTC
 from typing import Any
 
 from sqlalchemy import select
@@ -33,7 +33,7 @@ class CatastroMunicipalityAggregateCacheRepository:
         if self.session is None:
             return None
 
-        lookup_time = now or datetime.now(timezone.utc)
+        lookup_time = now or datetime.now(UTC)
         statement = (
             select(CatastroMunicipalityAggregateCache)
             .where(
@@ -73,7 +73,7 @@ class CatastroMunicipalityAggregateCacheRepository:
         if self.session is None or ttl_seconds <= 0:
             return None
 
-        cached_at = now or datetime.now(timezone.utc)
+        cached_at = now or datetime.now(UTC)
         expires_at = cached_at + timedelta(seconds=ttl_seconds)
         statement = insert(CatastroMunicipalityAggregateCache.__table__).values(
             {
@@ -183,7 +183,7 @@ class CatastroTerritorialAggregateCacheRepository:
         if self.session is None:
             return None
 
-        lookup_time = now or datetime.now(timezone.utc)
+        lookup_time = now or datetime.now(UTC)
         statement = (
             select(CatastroTerritorialAggregateCache)
             .where(
@@ -226,7 +226,7 @@ class CatastroTerritorialAggregateCacheRepository:
         if self.session is None or ttl_seconds <= 0:
             return None
 
-        cached_at = now or datetime.now(timezone.utc)
+        cached_at = now or datetime.now(UTC)
         expires_at = cached_at + timedelta(seconds=ttl_seconds)
         statement = insert(CatastroTerritorialAggregateCache.__table__).values(
             {

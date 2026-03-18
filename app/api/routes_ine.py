@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse
 
 from app.core.jobs import BaseJobStore
-from app.core.logging import get_logger
+from app.core.logging import get_logger, request_id_var
 from app.core.metrics import record_job_duration
 from app.core.rate_limit import RateLimitPolicy
 from app.dependencies import (
@@ -33,10 +33,12 @@ from app.repositories.territorial import (
     TerritorialRepository,
 )
 from app.schemas import (
+    AsturiasOperationQueryParams,
     BackgroundJobAcceptedResponse,
     BackgroundJobStatusResponse,
     CatalogOperationSummaryResponse,
     CatalogTableItemResponse,
+    ErrorResponse,
     INESeriesFiltersResponse,
     INESeriesListItemResponse,
     INESeriesListResponse,
@@ -74,6 +76,11 @@ INE_OPERATION_RATE_LIMIT = build_rate_limit_dependency(
     response_model=JSONPayload,
     tags=["ine-provider"],
     summary="Fetch and persist a raw INE table",
+    responses={
+        422: {"model": ErrorResponse, "description": "Validation error"},
+        502: {"model": ErrorResponse, "description": "INE upstream returned invalid data"},
+        503: {"model": ErrorResponse, "description": "INE service unavailable"},
+    },
 )
 async def get_table_data(
     table_id: str,
@@ -202,6 +209,9 @@ async def get_job_status(
         "Semantic query endpoint over normalized INE observations. "
         "It uses INE geography codes as the current canonical external territorial code system."
     ),
+    responses={
+        422: {"model": ErrorResponse, "description": "Validation error"},
+    },
 )
 async def list_normalized_ine_series(
     operation_code: str | None = Query(default=None),
@@ -288,22 +298,18 @@ async def list_normalized_ine_series(
 @router.get(
     "/ine/operation/{op_code}/asturias",
     response_model=JSONPayload,
-    responses={202: {"model": BackgroundJobAcceptedResponse}},
+    responses={
+        202: {"model": BackgroundJobAcceptedResponse},
+        422: {"model": ErrorResponse, "description": "Validation error"},
+        503: {"model": ErrorResponse, "description": "INE service or circuit breaker unavailable"},
+    },
     tags=["ine-ingestion"],
     summary="Ingest Asturias-scoped data for an INE operation",
 )
 async def get_asturias_operation_data(
     request: Request,
     op_code: str,
-    geo_variable_id: str | None = Query(default=None),
-    asturias_value_id: str | None = Query(default=None),
-    nult: int | None = Query(default=None, ge=1),
-    det: int | None = Query(default=None, ge=0, le=2),
-    tip: Literal["A", "M", "AM"] | None = Query(default=None),
-    periodicidad: str | None = Query(default=None),
-    max_tables: int | None = Query(default=None, ge=1, le=25),
-    background: bool | None = Query(default=None),
-    skip_known_no_data: bool = Query(default=False),
+    q: AsturiasOperationQueryParams = Depends(),
     _: None = Depends(INE_OPERATION_RATE_LIMIT),
     settings: Settings = Depends(get_settings),
     ine_client: INEClientService = Depends(get_ine_client_service),
@@ -312,31 +318,32 @@ async def get_asturias_operation_data(
     job_store: BaseJobStore = Depends(get_job_store),
     arq_pool: ArqRedis | None = Depends(get_arq_pool),
 ) -> JSONPayload | JSONResponse:
-    effective_max_tables = _resolve_max_tables(max_tables, settings)
-    background_mode = _resolve_background_mode(background, settings)
+    effective_max_tables = _resolve_max_tables(q.max_tables, settings)
+    background_mode = _resolve_background_mode(q.background, settings)
     logger.info(
         "asturias_operation_lookup_started",
         extra={
             "operation_code": op_code,
-            "max_tables_requested": max_tables,
+            "max_tables_requested": q.max_tables,
             "max_tables_effective": effective_max_tables,
             "background": background_mode,
-            "skip_known_no_data": skip_known_no_data,
+            "skip_known_no_data": q.skip_known_no_data,
             "app_env": settings.app_env,
         },
     )
 
     job_params = _build_job_params(
         operation_code=op_code,
-        geo_variable_id=geo_variable_id,
-        asturias_value_id=asturias_value_id,
-        nult=nult,
-        det=det,
-        tip=tip,
-        periodicidad=periodicidad,
+        geo_variable_id=q.geo_variable_id,
+        asturias_value_id=q.asturias_value_id,
+        nult=q.nult,
+        det=q.det,
+        tip=q.tip,
+        periodicidad=q.periodicidad,
         max_tables=effective_max_tables,
-        skip_known_no_data=skip_known_no_data,
+        skip_known_no_data=q.skip_known_no_data,
     )
+    job_params["_request_id"] = request_id_var.get()
 
     if background_mode:
         job = await job_store.create_job(job_type=BACKGROUND_JOB_TYPE, params=job_params)
@@ -355,14 +362,14 @@ async def get_asturias_operation_data(
                     _run_asturias_operation_job_inline(
                         job_store=job_store,
                         op_code=op_code,
-                        geo_variable_id=geo_variable_id,
-                        asturias_value_id=asturias_value_id,
-                        nult=nult,
-                        det=det,
-                        tip=tip,
-                        periodicidad=periodicidad,
+                        geo_variable_id=q.geo_variable_id,
+                        asturias_value_id=q.asturias_value_id,
+                        nult=q.nult,
+                        det=q.det,
+                        tip=q.tip,
+                        periodicidad=q.periodicidad,
                         max_tables=effective_max_tables,
-                        skip_known_no_data=skip_known_no_data,
+                        skip_known_no_data=q.skip_known_no_data,
                         ine_client=ine_client,
                         resolver=resolver,
                         operation_service=operation_service,
@@ -406,8 +413,8 @@ async def get_asturias_operation_data(
 
     resolution = await resolver.resolve(
         op_code=op_code,
-        geo_variable_id=geo_variable_id,
-        asturias_value_id=asturias_value_id,
+        geo_variable_id=q.geo_variable_id,
+        asturias_value_id=q.asturias_value_id,
     )
     logger.info(
         "asturias_operation_resolution_ready",
@@ -421,12 +428,12 @@ async def get_asturias_operation_data(
     payload = await operation_service.ingest_asturias_operation(
         op_code=op_code,
         resolution=resolution,
-        nult=nult,
-        det=det,
-        tip=tip,
-        periodicidad=periodicidad,
+        nult=q.nult,
+        det=q.det,
+        tip=q.tip,
+        periodicidad=q.periodicidad,
         max_tables=effective_max_tables,
-        skip_known_no_data=skip_known_no_data,
+        skip_known_no_data=q.skip_known_no_data,
         ine_client=ine_client,
         max_concurrent_table_fetches=settings.max_concurrent_table_fetches,
     )

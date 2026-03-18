@@ -3,6 +3,11 @@ import time
 
 import httpx
 
+from app.core.cache import InMemoryTTLCache
+from app.dependencies import get_ine_client_service
+from app.main import app
+from app.services.ine_client import INEClientService
+from app.settings import Settings
 from tests.conftest import override_ine_service
 
 
@@ -360,3 +365,76 @@ def test_asturias_endpoint_fetches_selected_tables_with_bounded_concurrency(
     assert set(table_start_times) == {"501", "502"}
     assert abs(table_start_times["501"] - table_start_times["502"]) < 0.04
     assert [item.table_id for item in dummy_series_repo.items] == ["501", "502", "502"]
+
+
+def test_asturias_inline_job_marks_failed_when_ine_upstream_returns_503(
+    client, dummy_ingestion_repo, dummy_series_repo
+):
+    """When the INE API returns 503, the inline background job must end as 'failed'.
+
+    Retries are disabled (max_attempts=1) so the job fails immediately without
+    the default 1-second backoff that would outlast the polling window.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, json={"error": "service unavailable"})
+
+    transport = httpx.MockTransport(handler)
+    http_client = httpx.AsyncClient(transport=transport)
+    settings = Settings(
+        ine_base_url="https://mocked.ine",
+        enable_cache=False,
+        http_retry_max_attempts=1,
+        http_retry_backoff_seconds=0.01,
+    )
+    cache = InMemoryTTLCache(enabled=False, default_ttl_seconds=60)
+    service = INEClientService(http_client=http_client, settings=settings, cache=cache)
+    app.dependency_overrides[get_ine_client_service] = lambda: service
+
+    response = client.get("/ine/operation/OP_AST/asturias?background=true&max_tables=1")
+    assert response.status_code == 202
+
+    accepted = response.json()
+    job_record = None
+    for _ in range(50):
+        status_response = client.get(accepted["status_path"])
+        assert status_response.status_code == 200
+        job_record = status_response.json()
+        if job_record["status"] in {"failed", "completed"}:
+            break
+        time.sleep(0.02)
+
+    assert job_record is not None
+    assert job_record["status"] == "failed"
+    assert "error" in job_record
+
+
+def test_asturias_inline_job_marks_failed_when_resolution_finds_no_asturias_territory(
+    client, dummy_ingestion_repo, dummy_series_repo
+):
+    """When the INE operation has no territory variable, resolution fails and the job is 'failed'."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/VARIABLES_OPERACION/OP_AST":
+            # Return variables with no geographic/territory dimension
+            return httpx.Response(200, json=[{"Id": "999", "Nombre": "Indicador economico"}])
+        raise AssertionError(f"Unexpected path: {request.url.path}")
+
+    override_ine_service(handler)
+
+    response = client.get("/ine/operation/OP_AST/asturias?background=true&max_tables=1")
+    assert response.status_code == 202
+
+    accepted = response.json()
+    job_record = None
+    for _ in range(50):
+        status_response = client.get(accepted["status_path"])
+        assert status_response.status_code == 200
+        job_record = status_response.json()
+        if job_record["status"] in {"failed", "completed"}:
+            break
+        time.sleep(0.02)
+
+    assert job_record is not None
+    assert job_record["status"] == "failed"
+    assert "error" in job_record

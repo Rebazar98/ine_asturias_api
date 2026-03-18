@@ -1,3 +1,5 @@
+from unittest.mock import patch
+
 import pytest
 
 from app.core.cache import InMemoryTTLCache, LayeredCache, RedisTTLCache
@@ -39,6 +41,39 @@ async def test_redis_ttl_cache_roundtrips_json_payloads() -> None:
         )
     ]
     assert await cache.get("table:501") == payload
+
+
+@pytest.mark.anyio
+async def test_cache_max_size_evicts_soonest_expiring() -> None:
+    cache = InMemoryTTLCache(default_ttl_seconds=300, max_size=2)
+
+    await cache.set("a", "value_a", ttl_seconds=100)
+    await cache.set("b", "value_b", ttl_seconds=10)  # expires soonest
+    # Cache is now full (2/2). Adding "c" must evict "b" (lowest expires_at).
+    await cache.set("c", "value_c", ttl_seconds=200)
+
+    assert await cache.get("a") == "value_a"
+    assert await cache.get("c") == "value_c"
+    assert await cache.get("b") is None  # evicted
+
+
+@pytest.mark.anyio
+async def test_cache_sweep_removes_expired_before_eviction() -> None:
+    cache = InMemoryTTLCache(default_ttl_seconds=300, max_size=2)
+
+    # t=0: fill the cache
+    with patch("app.core.cache.time.monotonic", return_value=0.0):
+        await cache.set("a", "value_a", ttl_seconds=1)   # expires at t=1
+        await cache.set("b", "value_b", ttl_seconds=100)  # expires at t=100
+
+    # t=2: "a" is now expired; adding "c" should sweep "a" first, then insert "c"
+    # without evicting "b".
+    with patch("app.core.cache.time.monotonic", return_value=2.0):
+        await cache.set("c", "value_c", ttl_seconds=100)
+
+        assert await cache.get("b") == "value_b"
+        assert await cache.get("c") == "value_c"
+        assert await cache.get("a") is None  # swept as expired
 
 
 @pytest.mark.anyio

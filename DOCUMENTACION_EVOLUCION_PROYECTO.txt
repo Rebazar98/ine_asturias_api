@@ -120,6 +120,84 @@ Fase 8. Endurecimiento de migraciones y operacion inicial
   - base heredada correcta: stamp seguro y upgrade a head completados.
   - base inconsistente: fallo explicito sin hacer stamp.
 
+Ciclo 3. Trazabilidad de request_id (2026-03-18)
+- Se introdujo request_id_var como ContextVar en app/core/logging.py.
+- Middleware en app/main.py inyecta un UUID por cada request HTTP y lo devuelve en la cabecera X-Request-ID.
+- Los job functions de worker (run_operation_asturias_job, run_municipality_report_job,
+  run_territorial_export_job) extraen _request_id del payload y lo propagan al ContextVar; lo resetean
+  en el bloque finally para evitar fugas entre tareas.
+- Se anadieron event listeners de SQLAlchemy (before_cursor_execute / after_cursor_execute) en app/db.py
+  que registran en log estructurado cualquier consulta que supere 500 ms (slow_query_detected).
+- 6 tests nuevos en tests/test_request_id.py verifican generacion automatica, eco al cliente,
+  aislamiento entre requests y reset del ContextVar tras cada ciclo.
+- Estado de suite tras el ciclo: 260 passed, 75% cobertura.
+
+Ciclo 4. Control de excepciones (2026-03-18)
+- Se unifico el formato de error de la API mediante el helper _error_response() en app/main.py,
+  que inyecta el request_id activo en todos los cuerpos de error.
+- Se registro un handler de CircuitBreakerOpenError que devuelve 503 con cabecera Retry-After
+  (entero segun RFC 9110, calculado con math.ceil).
+- Se registro un handler de RequestValidationError que normaliza los errores de Pydantic (422)
+  a un dict consistente con claves message, errors y request_id.
+- Las excepciones genericas 500 se manejan en el bloque except del middleware de timing, no como
+  @app.exception_handler(Exception), evitando el doble re-raise de Starlette/ServerErrorMiddleware
+  que rompia el TestClient con raise_server_exceptions=True.
+- Se sustituyeron tres RuntimeError sueltos en ine_client.py, cartociudad_client.py y
+  catastro_client.py por excepciones tipadas (INEUpstreamError, CartoCiudadUpstreamError,
+  CatastroUpstreamError) con campo retryable=False.
+- 4 tests nuevos en tests/test_error_handling.py y correcciones en test_geocode_endpoint.py
+  (comparacion por clave concreta en lugar de igualdad exacta de dict, que ahora incluye request_id).
+- Estado de suite tras el ciclo: 266 passed, 76% cobertura.
+
+Ciclo 5. Mejoras de calidad restantes (2026-03-18)
+- CORS: se anadio CORSMiddleware con 5 settings de entorno (CORS_ALLOWED_ORIGINS,
+  CORS_ALLOW_CREDENTIALS, CORS_ALLOWED_METHODS, CORS_ALLOWED_HEADERS, CORS_ALLOW_CREDENTIALS).
+  El default permite todos los origenes para facilitar el desarrollo local.
+- Stale jobs: RedisJobStore._ttl_for_status() ahora asigna JOB_RUNNING_TTL_SECONDS (default 3600 s)
+  a los estados running y queued, que antes no expiraban nunca y podian quedar como jobs fantasma.
+- RuntimeError en territorial_exports.py: el caso en que artifact_repo.save devuelve None ya no
+  lanza RuntimeError sino que loguea el error y devuelve None, dejando que el caller gestione.
+- OpenAPI: se crearon los modelos ErrorDetail y ErrorResponse en app/schemas.py y se anotaron
+  cuatro rutas clave con responses= (422 y 503) para que aparezcan en el esquema generado.
+- Tests unitarios de worker: se creo tests/test_worker_jobs.py con 6 tests que ejercitan
+  run_operation_asturias_job y run_municipality_report_job sin DB ni Redis, usando mocks de
+  session_scope y clientes directos en el ctx.
+- Tests de inline job: se anadieron 2 tests a tests/test_asturias.py que verifican que un job
+  en background acaba en estado failed cuando el upstream devuelve 503 o cuando la resolucion
+  territorial falla. El test de 503 desactiva los reintentos del cliente INE (http_retry_max_attempts=1)
+  para que el job falle dentro de la ventana de polling.
+- Estado de suite tras el ciclo: 274 passed, 76% cobertura, ruff limpio.
+
+Ciclo 6. Cobertura de worker, scheduled jobs y normalizers (2026-03-18)
+- tests/test_worker_jobs.py extendido: se anadieron tests para run_territorial_export_job
+  (CatastroClientError, excepcion generica, resultado None, propagacion de request_id),
+  run_sadei_sync_job (SADEIClientError, excepcion generica, ruta de exito),
+  run_ideas_sync_job (IDEASWFSClientError, ruta de exito). Total: 15 tests en el fichero.
+- tests/test_scheduled_jobs.py (nuevo): 9 tests que ejercitan las 4 funciones de cron
+  (scheduled_territorial_sync, scheduled_ine_update, scheduled_sadei_sync, scheduled_ideas_sync)
+  con _MockArqPool (cuenta encolados) y _FailingArqPool (simula fallo de redis.enqueue).
+- tests/test_normalizers.py extendido: 22 tests nuevos para parse_numeric_value,
+  normalize_table_payload, _extract_period, _ensure_list y extraccion geografica. Total 24 tests.
+- Estado de suite tras el ciclo: 316 passed, 82% cobertura, ruff limpio.
+
+Ciclo 7. Calidad de componentes core (2026-03-18)
+- tests/test_resilience.py (nuevo): 16 tests del maquina de estados AsyncCircuitBreaker:
+  estado inicial cerrado, before_call bloqueante cuando abierto, transicion cerrado->abierto,
+  abierto->semiabierto tras timeout, semiabierto->cerrado con todos exitos, reapertura inmediata
+  ante cualquier fallo en semiabierto (force_open=True), limpieza de opened_at al salir.
+- tests/test_security.py extendido: 28 tests unitarios puros para generate_api_key,
+  get_api_key_from_env, compare_api_keys, hash_sensitive_data, sanitize_for_logging,
+  sanitize_query_params_for_logging, extract_password_from_dsn, is_weak_secret,
+  ensure_secret_strength.
+- tests/test_worker_jobs.py extendido: rutas de exito para los 3 jobs principales,
+  _heartbeat_loop (verifica que record_worker_heartbeat se llama al menos una vez;
+  el mock de asyncio.sleep usa real_sleep capturado antes del patch para evitar recursion),
+  _start_worker_metrics_server (verifica llamada a start_http_server y manejo de excepcion).
+- tests/test_rate_limit.py extendido: BaseRateLimiter.increment lanza NotImplementedError,
+  RedisRateLimiter primer incremento (establece expire, no consulta TTL), incremento sucesivo
+  con TTL positivo (no re-expira), incremento sucesivo con TTL <= 0 (re-establece expire).
+- Estado de suite tras el ciclo: 381 passed, 86% cobertura, ruff limpio.
+
 3. ARQUITECTURA ACTUAL
 ----------------------
 La arquitectura sigue una separacion ligera pero util:

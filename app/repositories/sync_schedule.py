@@ -19,7 +19,7 @@ class SyncScheduleRepository:
     async def list_active(self, *, org_id: str | None = None) -> list[dict[str, Any]]:
         if self.session is None:
             return []
-        stmt = select(SyncSchedule).where(SyncSchedule.is_active == True)  # noqa: E712
+        stmt = select(SyncSchedule).where(SyncSchedule.is_active.is_(True))
         if org_id is not None:
             stmt = stmt.where(SyncSchedule.org_id == org_id)
         result = await self.session.execute(stmt)
