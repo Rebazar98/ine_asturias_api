@@ -63,15 +63,46 @@ class INEClientService:
     async def get_variable_values(
         self, op_code: str, variable_id: str
     ) -> dict[str, Any] | list[Any]:
-        return await self._fetch_json(
-            f"VALORES_VARIABLEOPERACION/{variable_id}/{op_code}",
-            cache_scope="variable_values",
-        )
+        try:
+            return await self._fetch_json(
+                f"VALORES_VARIABLEOPERACION/{variable_id}/{op_code}",
+                cache_scope="variable_values",
+            )
+        except INEInvalidPayloadError:
+            # Some operations return an empty body for geographic variable values
+            # (HTTP 200 but no JSON). Treat as empty list so the resolver can
+            # activate name-based fallback instead of failing.
+            self.logger.warning(
+                "ine_variable_values_empty_body",
+                extra={"op_code": op_code, "variable_id": variable_id},
+            )
+            return []
 
     async def get_operation_tables(self, op_code: str) -> dict[str, Any] | list[Any]:
         return await self._fetch_json(
             f"TABLAS_OPERACION/{op_code}",
             cache_scope="operation_tables",
+        )
+
+    async def get_operation_series(
+        self, op_code: str, page: int = 1
+    ) -> dict[str, Any] | list[Any]:
+        return await self._fetch_json(
+            f"SERIES_OPERACION/{op_code}",
+            params={"det": 2, "page": page},
+            cache_scope="operation_series",
+        )
+
+    async def get_serie_data(
+        self, cod_serie: str, nult: int | None = None
+    ) -> dict[str, Any] | list[Any]:
+        params: dict[str, Any] = {}
+        if nult is not None:
+            params["nult"] = nult
+        return await self._fetch_json(
+            f"DATOS_SERIE/{cod_serie}",
+            params=params or None,
+            cache_scope="serie_data",
         )
 
     async def _fetch_json(
@@ -218,7 +249,7 @@ class INEClientService:
 
                 duration_seconds = time.perf_counter() - started_at
                 record_provider_request("ine", endpoint_family, "http_error", duration_seconds)
-                if self.circuit_breaker is not None:
+                if self.circuit_breaker is not None and exc.response.status_code >= 500:
                     await self.circuit_breaker.record_failure(
                         reason=f"http_{exc.response.status_code}"
                     )

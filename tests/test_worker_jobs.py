@@ -48,22 +48,40 @@ async def _failing_session_scope():
 
 
 def test_resolution_error_marks_job_failed() -> None:
-    """AsturiasResolutionError in resolver must fail the job with exc.detail."""
+    """AsturiasResolutionError in resolver is caught; job fails only if ingestion also fails."""
 
     class FailingResolver:
         async def resolve(self, **kwargs: Any) -> Any:
             raise AsturiasResolutionError(detail={"message": "Cannot resolve operation"})
 
+    class FailingIngestionService:
+        def __init__(self, **kwargs: Any) -> None:
+            pass
+
+        async def ingest_asturias_operation(self, **kwargs: Any) -> Any:
+            raise AsturiasResolutionError(
+                detail={"message": "Cannot resolve operation"}, status_code=404
+            )
+
+    @asynccontextmanager
+    async def _mock_session():
+        yield object()
+
     async def scenario() -> None:
         job_store = InMemoryJobStore()
         ctx = _base_ctx(job_store)
         ctx["resolver"] = FailingResolver()
-        ctx["ine_client"] = None  # never reached
+        ctx["ine_client"] = None
 
         job = await job_store.create_job("test", {"operation_code": "22"})
-        result = await run_operation_asturias_job(
-            ctx, job["job_id"], {"operation_code": "22"}
-        )
+
+        with (
+            patch("app.worker.session_scope", new=_mock_session),
+            patch("app.worker.INEOperationIngestionService", new=FailingIngestionService),
+        ):
+            result = await run_operation_asturias_job(
+                ctx, job["job_id"], {"operation_code": "22"}
+            )
 
         assert result is None
         record = await job_store.get_job(job["job_id"])

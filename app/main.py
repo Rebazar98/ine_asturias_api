@@ -52,6 +52,7 @@ async def lifespan(app: FastAPI):
         timeout=httpx.Timeout(
             settings.http_timeout_seconds, connect=min(settings.http_timeout_seconds, 5.0)
         ),
+        follow_redirects=True,
     )
     app.state.redis = None
     app.state.arq_redis = None

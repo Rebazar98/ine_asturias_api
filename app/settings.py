@@ -64,6 +64,9 @@ class Settings(BaseSettings):
     max_concurrent_table_fetches: int = Field(
         default=3, alias="MAX_CONCURRENT_TABLE_FETCHES", ge=1, le=10
     )
+    max_concurrent_series_fetches: int = Field(
+        default=5, alias="MAX_CONCURRENT_SERIES_FETCHES", ge=1, le=20
+    )
     rate_limit_enabled: bool = Field(default=True, alias="RATE_LIMIT_ENABLED")
     provider_circuit_breaker_failures: int = Field(
         default=5, alias="PROVIDER_CIRCUIT_BREAKER_FAILURES", ge=1, le=20

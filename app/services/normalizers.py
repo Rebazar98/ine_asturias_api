@@ -400,3 +400,118 @@ def _normalized_text(value: str) -> str:
     normalized = unicodedata.normalize("NFKD", value or "")
     ascii_value = normalized.encode("ascii", "ignore").decode("ascii")
     return ascii_value.lower().strip()
+
+
+# ---------------------------------------------------------------------------
+# Series directas (DATOS_SERIE) — normalizer
+# ---------------------------------------------------------------------------
+
+_FK_PERIODO_TO_SUFFIX: dict[int, str] = {
+    1: "M01", 2: "M02", 3: "M03", 4: "M04", 5: "M05", 6: "M06",
+    7: "M07", 8: "M08", 9: "M09", 10: "M10", 11: "M11", 12: "M12",
+    13: "T1", 14: "T2", 15: "T3", 16: "T4",
+    28: "",  # anual — sólo Anyo
+}
+
+
+def _build_period_from_anyo_fk(anyo: Any, fk_periodo: Any) -> str | None:
+    """Construye el string de periodo a partir de Anyo + FK_Periodo del INE.
+
+    Ejemplos: (2011, 8) → "2011M08", (2022, 28) → "2022", (2023, 3) → "2023T1".
+    Valores FK_Periodo desconocidos producen un string trazable como "2020FK99".
+    """
+    if anyo is None:
+        return None
+    year_str = str(anyo)
+    if fk_periodo is None:
+        return year_str
+    try:
+        suffix = _FK_PERIODO_TO_SUFFIX.get(int(fk_periodo))
+    except (TypeError, ValueError):
+        return f"{year_str}FK{fk_periodo}"
+    if suffix is None:
+        return f"{year_str}FK{fk_periodo}"
+    return f"{year_str}{suffix}" if suffix else year_str
+
+
+def normalize_serie_direct_payload_with_stats(
+    series_list: list[dict[str, Any]],
+    op_code: str,
+) -> NormalizationOutcome:
+    """Normaliza una lista de respuestas DATOS_SERIE en NormalizedSeriesItems.
+
+    Cada elemento de `series_list` es la respuesta directa de
+    ``GET DATOS_SERIE/{cod}`` con estructura::
+
+        {"COD": str, "Nombre": str, "FK_Unidad": int,
+         "Data": [{"Anyo": int, "FK_Periodo": int, "Valor": float, "Secreto": bool}]}
+
+    El ``geography_code`` y ``geography_name`` se fijan a los valores de
+    Asturias ("33" / "Principado de Asturias") porque estas series ya han
+    sido filtradas por nombre de serie antes de llamar a este normalizer.
+    """
+    outcome = NormalizationOutcome()
+    outcome.payload_type = "list"
+    outcome.series_detected = len(series_list)
+
+    for series in series_list:
+        if not isinstance(series, dict):
+            continue
+        cod = series.get("COD") or series.get("Cod") or ""
+        nombre = series.get("Nombre") or ""
+        fk_unidad = series.get("FK_Unidad")
+        unit = str(fk_unidad) if fk_unidad is not None else ""
+        data_points = series.get("Data") or []
+        outcome.observations_total += len(data_points)
+
+        for point in data_points:
+            if not isinstance(point, dict):
+                continue
+
+            secreto = point.get("Secreto", False)
+            raw_valor = point.get("Valor")
+            value: float | None = None
+            if not secreto:
+                value = parse_numeric_value(raw_valor)
+
+            anyo = point.get("Anyo")
+            fk_periodo = point.get("FK_Periodo")
+            period = _build_period_from_anyo_fk(anyo, fk_periodo)
+
+            if period is None and value is None:
+                outcome.discarded_counts["missing_period_and_value"] = (
+                    outcome.discarded_counts.get("missing_period_and_value", 0) + 1
+                )
+                continue
+
+            outcome.items.append(
+                NormalizedSeriesItem(
+                    operation_code=op_code,
+                    table_id=cod,
+                    variable_id=cod,
+                    geography_name="Principado de Asturias",
+                    geography_code="33",
+                    period=period or "unknown",
+                    value=value,
+                    unit=unit,
+                    metadata={
+                        "series_name": nombre,
+                        "series_code": cod,
+                        "meta_data": [],
+                        "series_context": {k: v for k, v in series.items() if k != "Data"},
+                        "point_context": {
+                            k: v for k, v in point.items()
+                            if k not in {"Valor", "Anyo", "FK_Periodo", "Fecha"}
+                        },
+                    },
+                    raw_payload={
+                        "series_name": nombre,
+                        "series_code": cod,
+                        "meta_data": [],
+                        "series": {k: v for k, v in series.items() if k != "Data"},
+                        "point": point,
+                    },
+                )
+            )
+
+    return outcome

@@ -1,4 +1,8 @@
-from app.services.normalizers import inspect_payload_shape, normalize_asturias_payload
+from app.services.normalizers import (
+    inspect_payload_shape,
+    normalize_asturias_payload,
+    normalize_serie_direct_payload_with_stats,
+)
 
 
 REALISTIC_ASTURIAS_PAYLOAD = [
@@ -256,3 +260,80 @@ def test_ensure_list_wraps_scalar_metadata():
     result = normalize_table_payload(payload, "T1")
     assert len(result) == 1
     assert result[0].geography_name == "Oviedo"
+
+
+# ---------------------------------------------------------------------------
+# normalize_serie_direct_payload_with_stats
+# ---------------------------------------------------------------------------
+
+_SERIE_EPOB1290 = {
+    "COD": "EPOB1290",
+    "Nombre": "Asturias. Hombres. 0 años. Personas.",
+    "FK_Unidad": 3,
+    "Data": [
+        {"Anyo": 2011, "FK_Periodo": 8, "Valor": 4321.0, "Secreto": False},
+        {"Anyo": 2022, "FK_Periodo": 28, "Valor": 3900.0, "Secreto": False},
+    ],
+}
+
+
+def test_normalize_serie_direct_builds_monthly_period():
+    """FK_Periodo=8 must produce the period string '2011M08'."""
+    outcome = normalize_serie_direct_payload_with_stats([_SERIE_EPOB1290], "21")
+    monthly_item = next(i for i in outcome.items if i.period == "2011M08")
+    assert monthly_item.value == 4321.0
+
+
+def test_normalize_serie_direct_anual_period_no_suffix():
+    """FK_Periodo=28 (annual) must produce the period string '2022' with no suffix."""
+    outcome = normalize_serie_direct_payload_with_stats([_SERIE_EPOB1290], "21")
+    annual_item = next(i for i in outcome.items if i.period == "2022")
+    assert annual_item.value == 3900.0
+
+
+def test_normalize_serie_direct_sets_geography_code_33():
+    """geography_code must always be '33' (Asturias) regardless of input."""
+    outcome = normalize_serie_direct_payload_with_stats([_SERIE_EPOB1290], "21")
+    assert all(item.geography_code == "33" for item in outcome.items)
+    assert all(item.geography_name == "Principado de Asturias" for item in outcome.items)
+
+
+def test_normalize_serie_direct_uses_cod_as_table_and_variable_id():
+    """table_id and variable_id must both be set to the series COD."""
+    outcome = normalize_serie_direct_payload_with_stats([_SERIE_EPOB1290], "21")
+    assert all(item.table_id == "EPOB1290" for item in outcome.items)
+    assert all(item.variable_id == "EPOB1290" for item in outcome.items)
+
+
+def test_normalize_serie_direct_secreto_true_produces_none_value():
+    """When Secreto=True, value must be None (suppressed observation)."""
+    serie = {
+        "COD": "EPOB9999",
+        "Nombre": "Asturias. Dato secreto.",
+        "FK_Unidad": 3,
+        "Data": [{"Anyo": 2020, "FK_Periodo": 28, "Valor": 999.0, "Secreto": True}],
+    }
+    outcome = normalize_serie_direct_payload_with_stats([serie], "21")
+    assert len(outcome.items) == 1
+    assert outcome.items[0].value is None
+
+
+def test_normalize_serie_direct_empty_data_produces_no_items():
+    """A serie with an empty Data list must produce zero NormalizedSeriesItems."""
+    serie = {"COD": "EPOB0000", "Nombre": "Sin datos", "Data": []}
+    outcome = normalize_serie_direct_payload_with_stats([serie], "21")
+    assert outcome.items == []
+    assert outcome.series_detected == 1
+    assert outcome.observations_total == 0
+
+
+def test_normalize_serie_direct_missing_period_and_value_counted():
+    """Data point with no Anyo and Secreto=True (value=None) must be discarded and counted."""
+    serie = {
+        "COD": "EPOB1111",
+        "Nombre": "Asturias. Sin periodo.",
+        "Data": [{"Secreto": True}],  # no Anyo, no Valor → period=None, value=None
+    }
+    outcome = normalize_serie_direct_payload_with_stats([serie], "21")
+    assert outcome.items == []
+    assert outcome.discarded_counts.get("missing_period_and_value", 0) == 1

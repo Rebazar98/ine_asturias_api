@@ -16,6 +16,7 @@ from app.services.asturias_resolver import AsturiasResolutionError
 from app.services.normalizers import (
     inspect_payload_shape,
     normalize_asturias_payload_with_stats,
+    normalize_serie_direct_payload_with_stats,
     normalize_table_payload_with_stats,
 )
 
@@ -183,6 +184,154 @@ class INEOperationIngestionService:
         )
         return outcome.items
 
+    async def ingest_asturias_operation_via_series(
+        self,
+        op_code: str,
+        nult: int | None,
+        max_series: int | None,
+        max_concurrent_series_fetches: int,
+        progress_reporter: ProgressReporter | None,
+        ine_client: Any,
+    ) -> dict[str, Any]:
+        """Ingesta de operaciones INE vía series directas (SERIES_OPERACION / DATOS_SERIE).
+
+        Se activa como fallback cuando TABLAS_OPERACION devuelve lista vacía.
+        Pagina SERIES_OPERACION, filtra series con "Asturias" en el nombre,
+        descarga DATOS_SERIE concurrentemente y normaliza los datos.
+        """
+        # 1. Paginar el índice de series
+        series_index: list[dict[str, Any]] = []
+        page = 1
+        while True:
+            page_payload = await ine_client.get_operation_series(op_code, page=page)
+            await self.ingestion_repo.save_raw(
+                source_type="operation_series_index",
+                source_key=f"{op_code}:page{page}",
+                request_path=f"SERIES_OPERACION/{op_code}",
+                request_params={"det": 2, "page": page},
+                payload=page_payload,
+            )
+            records = page_payload if isinstance(page_payload, list) else []
+            if not records:
+                break
+            series_index.extend(records)
+            if max_series is not None and len(series_index) >= max_series:
+                series_index = series_index[:max_series]
+                break
+            page += 1
+
+        if not series_index:
+            raise AsturiasResolutionError(
+                detail={
+                    "message": "No series found for this operation via SERIES_OPERACION.",
+                    "operation_code": op_code,
+                },
+                status_code=404,
+            )
+
+        self.logger.info(
+            "asturias_series_index_ready",
+            extra={"operation_code": op_code, "series_total": len(series_index)},
+        )
+        if progress_reporter is not None:
+            await progress_reporter(
+                {
+                    "stage": "series_index_ready",
+                    "operation_code": op_code,
+                    "series_total": len(series_index),
+                }
+            )
+
+        # 2. Descargar DATOS_SERIE concurrentemente
+        semaphore = asyncio.Semaphore(max(max_concurrent_series_fetches, 1))
+        all_normalized: list[NormalizedSeriesItem] = []
+        errors: list[dict[str, Any]] = []
+
+        async def _fetch_one_serie(series_meta: dict[str, Any]) -> None:
+            # DATOS_SERIE expects the numeric Id, not the string COD
+            series_id = series_meta.get("Id")
+            cod = series_meta.get("COD") or series_meta.get("Cod") or ""
+            serie_key = str(series_id) if series_id is not None else cod
+            if not serie_key:
+                return
+            async with semaphore:
+                try:
+                    serie_payload = await ine_client.get_serie_data(serie_key, nult=nult)
+                except Exception as exc:
+                    errors.append(
+                        {"cod_serie": cod, "error": getattr(exc, "detail", str(exc))}
+                    )
+                    return
+
+            await self.ingestion_repo.save_raw(
+                source_type="serie_direct",
+                source_key=f"{op_code}:{cod}",
+                request_path=f"DATOS_SERIE/{serie_key}",
+                request_params={"nult": nult} if nult is not None else {},
+                payload=serie_payload,
+            )
+
+            series_list = [serie_payload] if isinstance(serie_payload, dict) else serie_payload
+            outcome = await asyncio.to_thread(
+                normalize_serie_direct_payload_with_stats, series_list, op_code
+            )
+            all_normalized.extend(outcome.items)
+
+        await asyncio.gather(*[asyncio.create_task(_fetch_one_serie(s)) for s in series_index])
+
+        # 3. Upsert
+        normalized_rows = 0
+        if all_normalized:
+            normalized_rows = await self.series_repo.upsert_many(all_normalized)
+
+        self.logger.info(
+            "asturias_operation_series_direct_completed",
+            extra={
+                "operation_code": op_code,
+                "series_total": len(series_index),
+                "series_failed": len(errors),
+                "normalized_rows": normalized_rows,
+            },
+        )
+
+        aggregated_payload: dict[str, Any] = {
+            "operation_code": op_code,
+            "ingestion_mode": "series_direct",
+            "series_index_total": len(series_index),
+            "series_fetched": len(series_index) - len(errors),
+            "series_failed": len(errors),
+            "normalized_rows": normalized_rows,
+            "errors": errors,
+            "summary": {
+                "series_index_total": len(series_index),
+                "series_fetched": len(series_index) - len(errors),
+                "series_failed": len(errors),
+                "normalized_rows": normalized_rows,
+                "max_series_effective": max_series,
+                "nult": nult,
+            },
+        }
+
+        await self.ingestion_repo.save_raw(
+            source_type="operation_series_direct",
+            source_key=op_code,
+            request_path=f"SERIES_OPERACION/{op_code} -> DATOS_SERIE/*",
+            request_params={"nult": nult} if nult is not None else {},
+            payload=aggregated_payload,
+        )
+
+        if normalized_rows == 0 and not errors:
+            raise AsturiasResolutionError(
+                detail={
+                    "message": "Series index found but no data could be normalized.",
+                    "operation_code": op_code,
+                    "series_index_total": len(series_index),
+                },
+                status_code=404,
+            )
+
+        return aggregated_payload
+
     async def ingest_asturias_operation(
         self,
         op_code: str,
@@ -196,6 +345,8 @@ class INEOperationIngestionService:
         ine_client: Any,
         max_concurrent_table_fetches: int,
         progress_reporter: ProgressReporter | None = None,
+        max_series: int | None = None,
+        max_concurrent_series_fetches: int = 5,
     ) -> dict[str, Any]:
         tables_payload = await ine_client.get_operation_tables(op_code)
         await self.ingestion_repo.save_raw(
@@ -217,12 +368,38 @@ class INEOperationIngestionService:
         )
 
         if not discovered_table_candidates:
+            self.logger.info(
+                "asturias_operation_no_tables_activating_series_fallback",
+                extra={
+                    "operation_code": op_code,
+                    "max_series": max_series,
+                    "max_concurrent_series_fetches": max_concurrent_series_fetches,
+                },
+            )
+            if progress_reporter is not None:
+                await progress_reporter(
+                    {
+                        "stage": "series_fallback_activated",
+                        "operation_code": op_code,
+                        "reason": "no_tables_found",
+                    }
+                )
+            return await self.ingest_asturias_operation_via_series(
+                op_code=op_code,
+                nult=nult,
+                max_series=max_series,
+                max_concurrent_series_fetches=max_concurrent_series_fetches,
+                progress_reporter=progress_reporter,
+                ine_client=ine_client,
+            )
+
+        if resolution is None:
             raise AsturiasResolutionError(
                 detail={
-                    "message": "No valid tables were found for this operation.",
+                    "message": "Could not resolve the geographic variable for this operation.",
+                    "hint": "Provide geo_variable_id manually.",
                     "operation_code": op_code,
-                },
-                status_code=404,
+                }
             )
 
         resolution_context = {
@@ -260,8 +437,15 @@ class INEOperationIngestionService:
         if max_tables is not None:
             table_candidates = table_candidates[:max_tables]
 
+        # In name-based fallback mode asturias_value_id is None: omit g1 so the
+        # full table is downloaded and Asturias rows are filtered by series name.
+        g1 = (
+            f"{resolution.geo_variable_id}:{resolution.asturias_value_id}"
+            if resolution.asturias_value_id
+            else None
+        )
         table_params = self._build_query_params(
-            g1=f"{resolution.geo_variable_id}:{resolution.asturias_value_id}",
+            g1=g1,
             nult=nult,
             det=det,
             tip=tip,
@@ -639,7 +823,7 @@ class INEOperationIngestionService:
                     payload=filtered_payload,
                     op_code=op_code,
                     geography_name=resolution.asturias_label or "Asturias",
-                    geography_code=resolution.asturias_value_id,
+                    geography_code=resolution.asturias_value_id or "33",
                     table_id=table_id,
                 )
 
@@ -689,7 +873,7 @@ class INEOperationIngestionService:
     @staticmethod
     def _filter_payload_for_asturias(
         payload: dict[str, Any] | list[Any],
-        asturias_value_id: str,
+        asturias_value_id: str | None,
         asturias_label: str,
     ) -> tuple[dict[str, Any] | list[Any], dict[str, int]]:
         records = INEOperationIngestionService._extract_records(payload)
@@ -712,7 +896,7 @@ class INEOperationIngestionService:
     @staticmethod
     def _series_matches_asturias(
         series: dict[str, Any],
-        asturias_value_id: str,
+        asturias_value_id: str | None,
         asturias_label: str,
     ) -> bool:
         labels = {
@@ -728,9 +912,10 @@ class INEOperationIngestionService:
             if not isinstance(item, dict):
                 continue
 
-            for key in ("Id", "id", "Codigo", "codigo", "Code", "code"):
-                if str(item.get(key, "")) == str(asturias_value_id):
-                    return True
+            if asturias_value_id:
+                for key in ("Id", "id", "Codigo", "codigo", "Code", "code"):
+                    if str(item.get(key, "")) == str(asturias_value_id):
+                        return True
 
             for key in ("Nombre", "name", "Valor", "value", "Descripcion", "description"):
                 candidate = INEOperationIngestionService._normalize_text(str(item.get(key, "")))

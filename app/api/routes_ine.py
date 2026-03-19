@@ -341,6 +341,7 @@ async def get_asturias_operation_data(
         tip=q.tip,
         periodicidad=q.periodicidad,
         max_tables=effective_max_tables,
+        max_series=q.max_series,
         skip_known_no_data=q.skip_known_no_data,
     )
     job_params["_request_id"] = request_id_var.get()
@@ -369,6 +370,7 @@ async def get_asturias_operation_data(
                         tip=q.tip,
                         periodicidad=q.periodicidad,
                         max_tables=effective_max_tables,
+                        max_series=q.max_series,
                         skip_known_no_data=q.skip_known_no_data,
                         ine_client=ine_client,
                         resolver=resolver,
@@ -411,20 +413,23 @@ async def get_asturias_operation_data(
         )
         return JSONResponse(status_code=status.HTTP_202_ACCEPTED, content=accepted.model_dump())
 
-    resolution = await resolver.resolve(
-        op_code=op_code,
-        geo_variable_id=q.geo_variable_id,
-        asturias_value_id=q.asturias_value_id,
-    )
-    logger.info(
-        "asturias_operation_resolution_ready",
-        extra={
-            "operation_code": op_code,
-            "geo_variable_id": resolution.geo_variable_id,
-            "asturias_value_id": resolution.asturias_value_id,
-        },
-    )
-
+    resolution: Any = None
+    try:
+        resolution = await resolver.resolve(
+            op_code=op_code,
+            geo_variable_id=q.geo_variable_id,
+            asturias_value_id=q.asturias_value_id,
+        )
+        logger.info(
+            "asturias_operation_resolution_ready",
+            extra={
+                "operation_code": op_code,
+                "geo_variable_id": resolution.geo_variable_id,
+                "asturias_value_id": resolution.asturias_value_id,
+            },
+        )
+    except AsturiasResolutionError:
+        pass
     payload = await operation_service.ingest_asturias_operation(
         op_code=op_code,
         resolution=resolution,
@@ -436,6 +441,8 @@ async def get_asturias_operation_data(
         skip_known_no_data=q.skip_known_no_data,
         ine_client=ine_client,
         max_concurrent_table_fetches=settings.max_concurrent_table_fetches,
+        max_series=q.max_series,
+        max_concurrent_series_fetches=settings.max_concurrent_series_fetches,
     )
     return JSONPayload(root=payload)
 
@@ -450,6 +457,7 @@ async def _run_asturias_operation_job_inline(
     tip: Literal["A", "M", "AM"] | None,
     periodicidad: str | None,
     max_tables: int | None,
+    max_series: int | None,
     skip_known_no_data: bool,
     ine_client: INEClientService,
     resolver: AsturiasResolver,
@@ -464,18 +472,22 @@ async def _run_asturias_operation_job_inline(
     try:
         await job_store.mark_running(job_id)
         await report_progress({"stage": "resolving_asturias", "operation_code": op_code})
-        resolution = await resolver.resolve(
-            op_code=op_code,
-            geo_variable_id=geo_variable_id,
-            asturias_value_id=asturias_value_id,
-        )
-        await report_progress(
-            {
-                "stage": "resolution_completed",
-                "geo_variable_id": resolution.geo_variable_id,
-                "asturias_value_id": resolution.asturias_value_id,
-            }
-        )
+        resolution: Any = None
+        try:
+            resolution = await resolver.resolve(
+                op_code=op_code,
+                geo_variable_id=geo_variable_id,
+                asturias_value_id=asturias_value_id,
+            )
+            await report_progress(
+                {
+                    "stage": "resolution_completed",
+                    "geo_variable_id": resolution.geo_variable_id,
+                    "asturias_value_id": resolution.asturias_value_id,
+                }
+            )
+        except AsturiasResolutionError:
+            pass
         payload = await operation_service.ingest_asturias_operation(
             op_code=op_code,
             resolution=resolution,
@@ -488,6 +500,8 @@ async def _run_asturias_operation_job_inline(
             ine_client=ine_client,
             max_concurrent_table_fetches=get_settings().max_concurrent_table_fetches,
             progress_reporter=report_progress,
+            max_series=max_series,
+            max_concurrent_series_fetches=get_settings().max_concurrent_series_fetches,
         )
         await job_store.complete_job(job_id, payload)
         record_job_duration(BACKGROUND_JOB_TYPE, "completed", time.perf_counter() - started_at)

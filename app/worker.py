@@ -65,18 +65,25 @@ async def run_operation_asturias_job(
     try:
         await job_store.mark_running(job_id)
         await report_progress({"stage": "resolving_asturias", "operation_code": op_code})
-        resolution = await resolver.resolve(
-            op_code=op_code,
-            geo_variable_id=payload.get("geo_variable_id"),
-            asturias_value_id=payload.get("asturias_value_id"),
-        )
-        await report_progress(
-            {
-                "stage": "resolution_completed",
-                "geo_variable_id": resolution.geo_variable_id,
-                "asturias_value_id": resolution.asturias_value_id,
-            }
-        )
+        resolution: Any = None
+        try:
+            resolution = await resolver.resolve(
+                op_code=op_code,
+                geo_variable_id=payload.get("geo_variable_id"),
+                asturias_value_id=payload.get("asturias_value_id"),
+            )
+            await report_progress(
+                {
+                    "stage": "resolution_completed",
+                    "geo_variable_id": resolution.geo_variable_id,
+                    "asturias_value_id": resolution.asturias_value_id,
+                }
+            )
+        except AsturiasResolutionError:
+            logger.info(
+                "asturias_worker_resolver_failed",
+                extra={"op_code": op_code, "job_id": job_id},
+            )
 
         async with session_scope() as session:
             ingestion_repo = IngestionRepository(session=session)
@@ -99,6 +106,8 @@ async def run_operation_asturias_job(
                 ine_client=ine_client,
                 max_concurrent_table_fetches=settings.max_concurrent_table_fetches,
                 progress_reporter=report_progress,
+                max_series=payload.get("max_series"),
+                max_concurrent_series_fetches=settings.max_concurrent_series_fetches,
             )
 
         await job_store.complete_job(job_id, result)
@@ -608,6 +617,7 @@ async def startup(ctx: dict[str, Any]) -> None:
         timeout=httpx.Timeout(
             settings.http_timeout_seconds, connect=min(settings.http_timeout_seconds, 5.0)
         ),
+        follow_redirects=True,
     )
     local_cache = InMemoryTTLCache(
         enabled=settings.enable_cache,

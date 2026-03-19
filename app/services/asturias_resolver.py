@@ -88,21 +88,27 @@ class AsturiasResolver:
             values_payload = await self.ine_client.get_variable_values(op_code, geo_candidate["id"])
             asturias_candidate = self._detect_asturias_value(values_payload)
 
+        name_based_fallback = False
         if not asturias_candidate:
-            raise AsturiasResolutionError(
-                detail={
-                    "message": "Could not resolve Asturias within the geographic variable values.",
-                    "hint": "Provide asturias_value_id manually.",
+            # VALORES_VARIABLEOPERACION returned empty for this operation.
+            # Fall back to name-based matching: download full tables and filter
+            # by series name (e.g. "Asturias", "Principado de Asturias").
+            self.logger.warning(
+                "asturias_resolution_fallback_name_based",
+                extra={
                     "operation_code": op_code,
                     "geo_variable_id": geo_candidate["id"],
-                }
+                    "reason": "VALORES_VARIABLEOPERACION returned no values for geo variable",
+                },
             )
+            name_based_fallback = True
 
         result = AsturiasResolutionResult(
             geo_variable_id=geo_candidate["id"],
-            asturias_value_id=asturias_candidate["id"],
+            asturias_value_id=asturias_candidate["id"] if asturias_candidate else None,
             variable_name=geo_candidate.get("name"),
-            asturias_label=asturias_candidate.get("name"),
+            asturias_label=asturias_candidate.get("name") if asturias_candidate else self.geography_name,
+            name_based_fallback=name_based_fallback,
         )
         await self.cache.set(cache_key, result.model_dump())
         self.logger.info(

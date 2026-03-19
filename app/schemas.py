@@ -48,9 +48,10 @@ class NormalizedSeriesItem(BaseModel):
 
 class AsturiasResolutionResult(BaseModel):
     geo_variable_id: str
-    asturias_value_id: str
+    asturias_value_id: str | None = None
     variable_name: str | None = None
     asturias_label: str | None = None
+    name_based_fallback: bool = False
 
 
 class AsturiasOperationQueryParams(BaseModel):
@@ -66,7 +67,8 @@ class AsturiasOperationQueryParams(BaseModel):
     det: int | None = Field(Query(default=None, ge=0, le=2))
     tip: Literal["A", "M", "AM"] | None = Field(Query(default=None))
     periodicidad: str | None = Field(Query(default=None))
-    max_tables: int | None = Field(Query(default=None, ge=1, le=25))
+    max_tables: int | None = Field(Query(default=None, ge=1, le=500))
+    max_series: int | None = Field(Query(default=None, ge=1, le=5000))
     background: bool | None = Field(Query(default=None))
     skip_known_no_data: bool = Field(Query(default=False))
 
