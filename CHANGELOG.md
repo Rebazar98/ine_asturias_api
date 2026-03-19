@@ -9,6 +9,17 @@ El esquema actual es:
 
 ## [Unreleased]
 
+## [0.2.0-rc1] - 2026-03-19
+
+### Added
+
+- Fallback series-directo en `ingest_asturias_operation_via_series()`: cuando `TABLAS_OPERACION` devuelve lista vacia, la ingesta cambia automaticamente a `SERIES_OPERACION` + `DATOS_SERIE` con paginacion, descarga concurrente configurable (`MAX_CONCURRENT_SERIES_FETCHES`) y normalizacion por `normalize_serie_direct_payload_with_stats`.
+- Nuevos metodos INE client: `get_operation_series(op_code, page)` y `get_serie_data(cod_serie, nult)`.
+- Parametro `max_series` en `GET /ine/operation/{op_code}/asturias` para limitar el volumen de series procesadas.
+- `name_based_fallback` en `AsturiasResolutionResult`: cuando `VALORES_VARIABLEOPERACION` devuelve lista vacia, la resolucion continua por nombre en lugar de abortar.
+- Cobertura de tests de repositorios: `test_catalog_repository.py` (12 tests), `test_cartographic_qa_repository.py` (14 tests) y `test_series_repository.py` ampliado con 6 tests de `upsert_many`.
+- Suite de tests para el fallback de series: 20 tests en `test_asturias_series_fallback.py`.
+
 ### Changed
 
 - `ine_series_normalized` queda preparada para el cruce territorial futuro con una referencia interna opcional `territorial_unit_id`.
@@ -21,6 +32,8 @@ El esquema actual es:
 - Se anade resolucion territorial interna en geocodificacion y reverse geocoding cuando existe match fiable contra `territorial_units`.
 - Se abre la primera capa publica de lectura territorial con `GET /territorios/comunidades-autonomas`, `GET /territorios/provincias` y `GET /municipio/{codigo_ine}`.
 - Se revalida staging y el proceso RC tras la integracion territorial/geografica, con Alembic en `0005_geocoding_cache`, smoke test correcto y restore verification correcto.
+- El circuit breaker solo registra fallo en HTTP 5xx, no en 4xx.
+- `AsturiasResolutionError` en el worker y en el router se captura y permite continuar la ingesta en lugar de abortar el job.
 
 ## [0.1.0-rc1] - 2026-03-12
 

@@ -4419,3 +4419,55 @@ Archivos implicados:
 - `RELEASE_PROCESS.md`
 - `FASE5_AUTOMATIZACION_ANALITICA_BACKLOG.md`
 - `DOCUMENTACION_EVOLUCION_PROYECTO.txt`
+
+FASE 17. CICLO 6 — FALLBACK SERIES-DIRECTO Y COBERTURA DE REPOSITORIOS (RC2)
+-------------------------------------------------------------------------------
+
+Ciclo 8: Fallback de ingesta por series directas
+- Se implemento `ingest_asturias_operation_via_series()` en `app/services/ine_operation_ingestion.py`.
+  Cuando TABLAS_OPERACION devuelve lista vacia, la ingesta cambia automaticamente a SERIES_OPERACION
+  paginando de 10 en 10 y descargando DATOS_SERIE con concurrencia controlada por asyncio.Semaphore
+  (configurable via MAX_CONCURRENT_SERIES_FETCHES, por defecto 5).
+- Se anadieron `get_operation_series()` y `get_serie_data()` a `INEClientService`.
+- Se anadio `normalize_serie_direct_payload_with_stats()` en `app/services/normalizers.py`
+  con helper `_build_period_from_anyo_fk()` para mapear FK_Periodo a cadenas de periodo estandar.
+- `AsturiasResolutionError` en worker.py y routes_ine.py se captura: la ingesta continua aunque
+  la resolucion falle, permitiendo que el fallback por series opere sin depender del resolver.
+- `AsturiasResolutionResult` ampliado con `name_based_fallback: bool` para operar con match
+  por nombre cuando VALORES_VARIABLEOPERACION devuelve lista vacia.
+- Cobertura: 20 nuevos tests en `tests/test_asturias_series_fallback.py` y correcciones en
+  `tests/test_worker_jobs.py` para reflejar la nueva semantica de error.
+
+Ciclo 9: Cobertura de repositorios
+- Se creo `tests/test_catalog_repository.py`: 12 tests sobre `TableCatalogRepository` cubren
+  upsert_discovered_tables, update_table_status, list_by_operation, get_operation_summary
+  y get_known_no_data_table_ids con sesion AsyncMock.
+- Se creo `tests/test_cartographic_qa_repository.py`: 14 tests sobre `CartographicQARepository`
+  cubren save_incidents, list_incidents, mark_resolved y el metodo estatico _empty_page.
+- Se amplio `tests/test_series_repository.py` con 6 tests de `SeriesRepository.upsert_many`:
+  batch vacio, sin sesion, happy path, error SQLAlchemy con rollback, batch_size pequeno y
+  item sin period descartado.
+- Total de tests: 429 pasados.
+
+RC2: v0.2.0-rc1
+- CHANGELOG.md actualizado: [Unreleased] promovido a [0.2.0-rc1] con fecha 2026-03-19.
+- CLAUDE.md actualizado: version 0.2.0-rc1, Fase 6 marcada como completa.
+- Tag de git: v0.2.0-rc1
+
+Archivos implicados:
+- `app/services/ine_operation_ingestion.py`
+- `app/services/ine_client.py`
+- `app/services/normalizers.py`
+- `app/services/asturias_resolver.py`
+- `app/api/routes_ine.py`
+- `app/worker.py`
+- `app/settings.py`
+- `app/schemas.py`
+- `tests/test_asturias_series_fallback.py`
+- `tests/test_catalog_repository.py`
+- `tests/test_cartographic_qa_repository.py`
+- `tests/test_series_repository.py`
+- `tests/test_worker_jobs.py`
+- `CHANGELOG.md`
+- `CLAUDE.md`
+- `DOCUMENTACION_EVOLUCION_PROYECTO.txt`

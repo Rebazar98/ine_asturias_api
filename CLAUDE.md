@@ -10,7 +10,7 @@ Las reglas de arquitectura, capas, convenciones y prohibiciones para agentes est
 
 Backend FastAPI de integración de datos territoriales españoles. Integra INE, CartoCiudad, IGN/CNIG y Catastro en una plataforma unificada con contratos semánticos propios, trazabilidad e idempotencia.
 
-**Versión actual:** `0.1.0-rc1`
+**Versión actual:** `0.2.0-rc1`
 **Stack:** Python 3.12, FastAPI, PostgreSQL 16 + PostGIS, Redis + arq, Alembic, Docker
 
 ---
@@ -93,7 +93,8 @@ ENVIRONMENT=development   # development | staging | production
 | 3 - Modelo territorial + PostGIS | Completa |
 | 4 - CartoCiudad + IGN administrativo | Completa |
 | 5 - Catastro, analítica y exportación | Completa |
-| 6+ - Nuevas fuentes, analítica avanzada, publicación | Pendiente |
+| 6 - Fallback series-directo + cobertura de repositorios | Completa (RC2) |
+| 7+ - Endpoints territoriales, sync robusto, QA cartográfica | Pendiente |
 
 ---
 

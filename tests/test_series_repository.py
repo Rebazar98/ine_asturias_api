@@ -1,4 +1,7 @@
 import asyncio
+from unittest.mock import AsyncMock, MagicMock
+
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.repositories.series import SeriesRepository
 from app.schemas import NormalizedSeriesItem
@@ -147,3 +150,100 @@ def test_list_latest_indicators_by_geography_returns_empty_when_database_disable
             "latest_period": None,
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# upsert_many — con sesión mockeada
+# ---------------------------------------------------------------------------
+
+
+def _make_session():
+    session = AsyncMock()
+    session.execute = AsyncMock()
+    session.commit = AsyncMock()
+    session.rollback = AsyncMock()
+    return session
+
+
+def _sample_item(**overrides) -> NormalizedSeriesItem:
+    defaults = dict(
+        operation_code="22",
+        table_id="501",
+        variable_id="POP",
+        geography_name="Asturias",
+        geography_code="33",
+        period="2024",
+        value=1000.0,
+        unit="personas",
+    )
+    defaults.update(overrides)
+    return NormalizedSeriesItem(**defaults)
+
+
+def test_upsert_many_empty_items_returns_zero():
+    repo = SeriesRepository(session=_make_session())
+    result = asyncio.run(repo.upsert_many([]))
+    assert result == 0
+
+
+def test_upsert_many_no_session_returns_zero():
+    repo = SeriesRepository(session=None)
+    result = asyncio.run(repo.upsert_many([_sample_item()]))
+    assert result == 0
+
+
+def test_upsert_many_happy_path_returns_count():
+    session = _make_session()
+    repo = SeriesRepository(session=session)
+    items = [_sample_item(period="2023"), _sample_item(period="2024")]
+
+    result = asyncio.run(repo.upsert_many(items))
+
+    assert result == 2
+    session.execute.assert_awaited_once()
+    session.commit.assert_awaited_once()
+
+
+def test_upsert_many_sqlalchemy_error_returns_zero():
+    session = _make_session()
+    session.execute.side_effect = SQLAlchemyError("DB error")
+    repo = SeriesRepository(session=session)
+
+    result = asyncio.run(repo.upsert_many([_sample_item()]))
+
+    assert result == 0
+    session.rollback.assert_awaited_once()
+
+
+def test_upsert_many_small_batch_size_splits_correctly():
+    """batch_size=1 con 2 items → 2 execute + 2 commit, retorna 2."""
+    session = _make_session()
+    repo = SeriesRepository(session=session)
+    items = [_sample_item(period="2022"), _sample_item(period="2023")]
+
+    result = asyncio.run(repo.upsert_many(items, batch_size=1))
+
+    assert result == 2
+    assert session.execute.await_count == 2
+    assert session.commit.await_count == 2
+
+
+def test_upsert_many_item_without_period_produces_empty_batch():
+    """Item sin period → prepare_upsert_rows lo descarta → warning logged, returns 0."""
+    session = _make_session()
+    repo = SeriesRepository(session=session)
+    # Dict sin 'period' → descartado por prepare_upsert_rows
+    bad_item = {
+        "operation_code": "22",
+        "table_id": "501",
+        "variable_id": "X",
+        "geography_name": "Asturias",
+        "geography_code": "33",
+        "value": 1.0,
+        "unit": "u",
+    }
+
+    result = asyncio.run(repo.upsert_many([bad_item]))
+
+    assert result == 0
+    session.execute.assert_not_awaited()
