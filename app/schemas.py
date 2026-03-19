@@ -418,6 +418,44 @@ class TerritorialUnitListFiltersResponse(BaseModel):
     active_only: bool = True
 
 
+class IndicatorTerritoryResponse(BaseModel):
+    code: str
+    name: str
+    code_system: str = "ine"
+
+
+class IndicatorSeriesPointResponse(BaseModel):
+    period: str
+    value: float | None = None
+    unit: str | None = None
+
+
+class IndicadorSeriesFiltersResponse(BaseModel):
+    indicador: str
+    codigo_territorial: str
+    code_system: str = "ine"
+    operation_code: str | None = None
+    period_from: str | None = None
+    period_to: str | None = None
+    page: int
+    page_size: int
+
+
+class IndicadorSeriesResponse(BaseModel):
+    source: str = "ine"
+    territory: IndicatorTerritoryResponse
+    indicator: str
+    series: list[IndicatorSeriesPointResponse] = Field(default_factory=list)
+    total: int
+    page: int
+    page_size: int
+    pages: int
+    has_next: bool
+    has_previous: bool
+    filters: IndicadorSeriesFiltersResponse
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class TerritorialUnitListResponse(BaseModel):
     items: list[TerritorialUnitSummaryResponse] = Field(default_factory=list)
     total: int

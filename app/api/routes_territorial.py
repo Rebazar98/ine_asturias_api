@@ -17,6 +17,7 @@ from app.dependencies import (
     get_arq_pool,
     get_cartociudad_geocoding_service,
     get_job_store,
+    get_series_repository,
     get_settings,
     get_territorial_analytics_service,
     get_territorial_export_artifact_repository,
@@ -24,6 +25,7 @@ from app.dependencies import (
     get_territorial_repository,
     require_api_key,
 )
+from app.repositories.series import SeriesRepository
 from app.repositories.territorial_export_artifacts import TerritorialExportArtifactRepository
 from app.repositories.territorial import (
     TERRITORIAL_UNIT_LEVEL_COUNTRY,
@@ -37,6 +39,10 @@ from app.schemas import (
     ErrorResponse,
     GeocodeResponse,
     GeocodingCoordinatesResponse,
+    IndicadorSeriesFiltersResponse,
+    IndicadorSeriesResponse,
+    IndicatorSeriesPointResponse,
+    IndicatorTerritoryResponse,
     ReverseGeocodeResponse,
     TerritorialCatalogLevelCoverageResponse,
     TerritorialCatalogResourceResponse,
@@ -939,6 +945,127 @@ async def create_municipality_report_job(
         municipality_code=codigo_ine,
         status_path=f"/territorios/jobs/{job_id}",
         params=job_params,
+    )
+
+
+@router.get(
+    "/municipios",
+    response_model=TerritorialUnitListResponse,
+    tags=["territorial-read"],
+    summary="List municipalities from the internal territorial model",
+)
+async def list_municipalities(
+    province_code: str | None = Query(default=None, min_length=1),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+    active_only: bool = Query(default=True),
+    territorial_repo: TerritorialRepository = Depends(get_territorial_repository),
+) -> TerritorialUnitListResponse:
+    parent_id = None
+    if province_code is not None:
+        parent_lookup = await territorial_repo.get_unit_by_canonical_code(
+            unit_level=TERRITORIAL_UNIT_LEVEL_PROVINCE,
+            code_value=province_code,
+        )
+        if parent_lookup is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "message": "Province code was not found.",
+                    "province_code": province_code,
+                },
+            )
+        parent_id = parent_lookup["id"]
+
+    result = await territorial_repo.list_units(
+        unit_level=TERRITORIAL_UNIT_LEVEL_MUNICIPALITY,
+        page=page,
+        page_size=page_size,
+        country_code="ES",
+        parent_id=parent_id,
+        active_only=active_only,
+    )
+    return TerritorialUnitListResponse(
+        items=[TerritorialUnitSummaryResponse(**item) for item in result["items"]],
+        total=result["total"],
+        page=result["page"],
+        page_size=result["page_size"],
+        pages=result["pages"],
+        has_next=result["has_next"],
+        has_previous=result["has_previous"],
+        filters=TerritorialUnitListFiltersResponse(**result["filters"]),
+    )
+
+
+@router.get(
+    "/estadisticas/{indicador}/{codigo_territorial}",
+    response_model=IndicadorSeriesResponse,
+    tags=["territorial-analytics"],
+    summary="Get time series for an indicator at a territorial unit",
+    description=(
+        "Returns normalized INE series for a given variable identifier and INE geography code. "
+        "The response is paginated and may be filtered by operation code and period range."
+    ),
+)
+async def get_indicator_series(
+    indicador: str,
+    codigo_territorial: str,
+    operation_code: str | None = Query(default=None, min_length=1),
+    period_from: str | None = Query(default=None, min_length=1),
+    period_to: str | None = Query(default=None, min_length=1),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+    series_repo: SeriesRepository = Depends(get_series_repository),
+) -> IndicadorSeriesResponse:
+    result = await series_repo.list_normalized(
+        variable_id=indicador,
+        geography_code=codigo_territorial,
+        operation_code=operation_code,
+        period_from=period_from,
+        period_to=period_to,
+        page=page,
+        page_size=page_size,
+    )
+
+    geography_name = codigo_territorial
+    if result["items"]:
+        geography_name = result["items"][0].get("geography_name") or codigo_territorial
+
+    operation_codes = list(
+        {item["operation_code"] for item in result["items"] if item.get("operation_code")}
+    )
+
+    return IndicadorSeriesResponse(
+        source="ine",
+        territory=IndicatorTerritoryResponse(
+            code=codigo_territorial,
+            name=geography_name,
+        ),
+        indicator=indicador,
+        series=[
+            IndicatorSeriesPointResponse(
+                period=item["period"],
+                value=item["value"],
+                unit=item.get("unit"),
+            )
+            for item in result["items"]
+        ],
+        total=result["total"],
+        page=result["page"],
+        page_size=result["page_size"],
+        pages=result["pages"],
+        has_next=result["has_next"],
+        has_previous=result["has_previous"],
+        filters=IndicadorSeriesFiltersResponse(
+            indicador=indicador,
+            codigo_territorial=codigo_territorial,
+            operation_code=operation_code,
+            period_from=period_from,
+            period_to=period_to,
+            page=page,
+            page_size=page_size,
+        ),
+        metadata={"operation_codes": sorted(operation_codes)},
     )
 
 

@@ -1494,3 +1494,260 @@ def test_create_territorial_export_job_reuses_fresh_artifact(
     assert first_job["result"]["summary"]["artifact_reused"] is False
     assert second_job["result"]["summary"]["artifact_reused"] is True
     assert dummy_territorial_export_artifact_repo.upsert_calls == 1
+
+
+# ---------------------------------------------------------------------------
+# GET /municipios
+# ---------------------------------------------------------------------------
+
+
+def _make_municipality(unit_id, code_value, canonical_name, parent_id=33):
+    return {
+        "id": unit_id,
+        "parent_id": parent_id,
+        "unit_level": "municipality",
+        "canonical_name": canonical_name,
+        "display_name": canonical_name,
+        "country_code": "ES",
+        "is_active": True,
+        "canonical_code_strategy": {"source_system": "ine", "code_type": "municipality"},
+        "canonical_code": {
+            "source_system": "ine",
+            "code_type": "municipality",
+            "code_value": code_value,
+            "is_primary": True,
+        },
+    }
+
+
+def test_list_municipalities_returns_paginated_results(client, dummy_territorial_repo):
+    dummy_territorial_repo.units_by_level[TERRITORIAL_UNIT_LEVEL_MUNICIPALITY] = [
+        _make_municipality(33044, "33044", "Oviedo"),
+        _make_municipality(33024, "33024", "Gijon"),
+    ]
+
+    response = client.get("/municipios")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 2
+    assert len(data["items"]) == 2
+    names = {item["canonical_name"] for item in data["items"]}
+    assert names == {"Oviedo", "Gijon"}
+    assert data["filters"]["unit_level"] == "municipality"
+    assert data["has_next"] is False
+    assert data["has_previous"] is False
+
+
+def test_list_municipalities_empty_returns_empty(client, dummy_territorial_repo):
+    dummy_territorial_repo.units_by_level[TERRITORIAL_UNIT_LEVEL_MUNICIPALITY] = []
+
+    response = client.get("/municipios")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 0
+    assert data["items"] == []
+
+
+def test_list_municipalities_with_province_filter(client, dummy_territorial_repo):
+    province = {
+        "id": 33,
+        "parent_id": 2,
+        "unit_level": "province",
+        "canonical_name": "Asturias",
+        "display_name": "Asturias",
+        "country_code": "ES",
+        "is_active": True,
+        "canonical_code_strategy": {"source_system": "ine", "code_type": "province"},
+        "canonical_code": {
+            "source_system": "ine",
+            "code_type": "province",
+            "code_value": "33",
+            "is_primary": True,
+        },
+    }
+    dummy_territorial_repo.by_canonical_code[(TERRITORIAL_UNIT_LEVEL_PROVINCE, "33")] = province
+    dummy_territorial_repo.units_by_level[TERRITORIAL_UNIT_LEVEL_MUNICIPALITY] = [
+        _make_municipality(33044, "33044", "Oviedo", parent_id=33),
+        _make_municipality(28001, "28001", "Madrid", parent_id=28),
+    ]
+
+    response = client.get("/municipios?province_code=33")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 1
+    assert data["items"][0]["canonical_name"] == "Oviedo"
+
+
+def test_list_municipalities_province_not_found_returns_404(client, dummy_territorial_repo):
+    response = client.get("/municipios?province_code=99")
+
+    assert response.status_code == 404
+    assert "Province code" in response.json()["detail"]["message"]
+
+
+def test_list_municipalities_pagination(client, dummy_territorial_repo):
+    dummy_territorial_repo.units_by_level[TERRITORIAL_UNIT_LEVEL_MUNICIPALITY] = [
+        _make_municipality(i, str(i), f"Municipio{i}") for i in range(1, 6)
+    ]
+
+    response = client.get("/municipios?page=1&page_size=2")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 5
+    assert len(data["items"]) == 2
+    assert data["pages"] == 3
+    assert data["has_next"] is True
+
+
+# ---------------------------------------------------------------------------
+# GET /estadisticas/{indicador}/{codigo_territorial}
+# ---------------------------------------------------------------------------
+
+
+def test_get_indicator_series_happy_path(client, dummy_series_repo):
+    from app.schemas import NormalizedSeriesItem
+
+    dummy_series_repo.items.extend([
+        NormalizedSeriesItem(
+            operation_code="22",
+            table_id="2852",
+            variable_id="POP_TOTAL",
+            geography_name="Oviedo",
+            geography_code="33044",
+            period="2023",
+            value=221000.0,
+            unit="personas",
+        ),
+        NormalizedSeriesItem(
+            operation_code="22",
+            table_id="2852",
+            variable_id="POP_TOTAL",
+            geography_name="Oviedo",
+            geography_code="33044",
+            period="2024",
+            value=220543.0,
+            unit="personas",
+        ),
+    ])
+
+    response = client.get("/estadisticas/POP_TOTAL/33044")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["source"] == "ine"
+    assert data["territory"]["code"] == "33044"
+    assert data["territory"]["name"] == "Oviedo"
+    assert data["indicator"] == "POP_TOTAL"
+    assert data["total"] == 2
+    assert len(data["series"]) == 2
+    periods = {item["period"] for item in data["series"]}
+    assert periods == {"2023", "2024"}
+    assert data["filters"]["indicador"] == "POP_TOTAL"
+    assert data["filters"]["codigo_territorial"] == "33044"
+
+
+def test_get_indicator_series_empty_returns_empty(client, dummy_series_repo):
+    response = client.get("/estadisticas/UNKNOWN_IND/33044")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 0
+    assert data["series"] == []
+    assert data["territory"]["code"] == "33044"
+    assert data["territory"]["name"] == "33044"
+
+
+def test_get_indicator_series_with_operation_filter(client, dummy_series_repo):
+    from app.schemas import NormalizedSeriesItem
+
+    dummy_series_repo.items.extend([
+        NormalizedSeriesItem(
+            operation_code="22",
+            table_id="2852",
+            variable_id="POP",
+            geography_name="Gijon",
+            geography_code="33024",
+            period="2024",
+            value=270000.0,
+            unit="personas",
+        ),
+        NormalizedSeriesItem(
+            operation_code="99",
+            table_id="9999",
+            variable_id="POP",
+            geography_name="Gijon",
+            geography_code="33024",
+            period="2024",
+            value=999999.0,
+            unit="personas",
+        ),
+    ])
+
+    response = client.get("/estadisticas/POP/33024?operation_code=22")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 1
+    assert data["series"][0]["value"] == 270000.0
+    assert data["filters"]["operation_code"] == "22"
+
+
+def test_get_indicator_series_period_filter(client, dummy_series_repo):
+    from app.schemas import NormalizedSeriesItem
+
+    dummy_series_repo.items.extend([
+        NormalizedSeriesItem(
+            operation_code="22",
+            table_id="2852",
+            variable_id="IND",
+            geography_name="Asturias",
+            geography_code="33",
+            period="2021",
+            value=100.0,
+            unit="u",
+        ),
+        NormalizedSeriesItem(
+            operation_code="22",
+            table_id="2852",
+            variable_id="IND",
+            geography_name="Asturias",
+            geography_code="33",
+            period="2024",
+            value=110.0,
+            unit="u",
+        ),
+    ])
+
+    response = client.get("/estadisticas/IND/33?period_from=2023")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 1
+    assert data["series"][0]["period"] == "2024"
+
+
+def test_get_indicator_series_metadata_contains_operation_codes(client, dummy_series_repo):
+    from app.schemas import NormalizedSeriesItem
+
+    dummy_series_repo.items.extend([
+        NormalizedSeriesItem(
+            operation_code="22",
+            table_id="2852",
+            variable_id="IPC",
+            geography_name="Asturias",
+            geography_code="33",
+            period="2024",
+            value=105.0,
+            unit="indice",
+        ),
+    ])
+
+    response = client.get("/estadisticas/IPC/33")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert "22" in data["metadata"]["operation_codes"]
