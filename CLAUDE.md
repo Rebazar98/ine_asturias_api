@@ -94,7 +94,8 @@ ENVIRONMENT=development   # development | staging | production
 | 4 - CartoCiudad + IGN administrativo | Completa |
 | 5 - Catastro, analítica y exportación | Completa |
 | 6 - Fallback series-directo + cobertura de repositorios | Completa (RC2) |
-| 7+ - Endpoints territoriales, sync robusto, QA cartográfica | Pendiente |
+| 7 - Endpoints territoriales, sync status, QA cartográfica | Completa |
+| 8+ - Nuevas fuentes, analítica avanzada, publicación | Pendiente |
 
 ---
 

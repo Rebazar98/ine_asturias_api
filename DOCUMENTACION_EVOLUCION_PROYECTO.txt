@@ -4471,3 +4471,51 @@ Archivos implicados:
 - `CHANGELOG.md`
 - `CLAUDE.md`
 - `DOCUMENTACION_EVOLUCION_PROYECTO.txt`
+
+FASE 18. CICLO 7 — ENDPOINTS TERRITORIALES, SYNC STATUS Y CALIDAD CARTOGRAFICA
+---------------------------------------------------------------------------------
+
+Fase 7A: Endpoints territoriales pendientes
+- Se añade GET /municipios con paginacion (page, page_size) y filtro opcional
+  por province_code (resuelve a parent_id via TerritorialRepository).
+  Responde con TerritorialUnitListResponse (schema existente).
+- Se añade GET /estadisticas/{indicador}/{codigo_territorial} que cruza series
+  INE normalizadas (SeriesRepository.list_normalized) con geography_code e
+  variable_id. Permite filtrar por operation_code, period_from, period_to y
+  paginar resultados.
+- Nuevos schemas: IndicatorTerritoryResponse, IndicatorSeriesPointResponse,
+  IndicadorSeriesFiltersResponse, IndicadorSeriesResponse.
+- 10 nuevos tests en test_territorial_endpoints.py.
+
+Fase 7B: Sincronizacion programada robusta - GET /sync/status
+- Se crea app/api/routes_sync.py con GET /sync/status que devuelve:
+  - Estado del worker (heartbeat desde job_store.get_worker_status).
+  - Sources configurados: INE (operaciones), SADEI (datasets), IDEAS (layers),
+    territorial (enabled/disabled), con schedule cron de cada uno.
+- Endpoint registrado en app/main.py como sync_router.
+- 11 nuevos tests en tests/test_sync_endpoints.py cubriendo happy path,
+  worker heartbeat ausente, fuentes individuales, auth en staging y local.
+
+Fase 7C: Calidad cartografica operativa
+- Ya cubierta por tests previos: test_cartographic_qa_service.py (5 tests),
+  test_qa_incidents_endpoint.py (8 tests), test_qa_ign_integration.py (7 tests).
+- CartographicQAService y GET /qa/incidents al 100% de cobertura.
+- test_cartographic_qa_repository.py (14 tests) añadidos en Ciclo 9.
+
+Fase 7D: Exportaciones territoriales
+- Ya cubierta: 7 tests de ciclo completo en test_territorial_endpoints.py:
+  crear job → poll estado → descargar artefacto ZIP → verificar contenido
+  del manifest y checksum de providers.
+
+Total: 463 tests pasados tras Fases 7A y 7B. Las Fases 7C y 7D ya estaban
+cubiertas por tests previos.
+
+Archivos implicados:
+- `app/api/routes_territorial.py`
+- `app/api/routes_sync.py`
+- `app/schemas.py`
+- `app/main.py`
+- `tests/test_territorial_endpoints.py`
+- `tests/test_sync_endpoints.py`
+- `CLAUDE.md`
+- `DOCUMENTACION_EVOLUCION_PROYECTO.txt`
