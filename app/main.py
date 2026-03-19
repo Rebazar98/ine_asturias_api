@@ -18,6 +18,7 @@ from redis.asyncio import Redis
 from app.api.qa import router as qa_router
 from app.api.routes_health import router as health_router
 from app.api.routes_ine import router as ine_router
+from app.api.routes_sync import router as sync_router
 from app.api.routes_territorial import router as territorial_router
 from app.core.cache import InMemoryTTLCache, LayeredCache, RedisTTLCache
 from app.core.jobs import InMemoryJobStore, RedisJobStore
@@ -194,6 +195,7 @@ def create_app() -> FastAPI:
     app.include_router(ine_router)
     app.include_router(territorial_router)
     app.include_router(qa_router)
+    app.include_router(sync_router)
 
     @app.middleware("http")
     async def request_timing_middleware(request: Request, call_next):
