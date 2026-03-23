@@ -84,7 +84,7 @@ jobs:
           from pathlib import Path
 
           head = None
-          pattern = re.compile(r'^revision\s*=\s*"([^"]+)"', re.MULTILINE)
+          pattern = re.compile(r'^revision(?:\s*:\s*[^=]+)?\s*=\s*"([^"]+)"', re.MULTILINE)
           for path in sorted(Path("alembic/versions").glob("*.py")):
               match = pattern.search(path.read_text(encoding="utf-8"))
               if match:

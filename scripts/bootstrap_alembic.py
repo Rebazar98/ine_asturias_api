@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -28,7 +29,24 @@ TERRITORIAL_TABLES = {
     "territorial_unit_aliases",
 }
 BASELINE_REVISION = "0001_initial_schema"
-HEAD_REVISION = "0002_postgis_territorial"
+
+
+def detect_head_revision() -> str:
+    pattern = re.compile(r'^revision(?:\s*:\s*[^=]+)?\s*=\s*"([^"]+)"', re.MULTILINE)
+    head_revision: str | None = None
+
+    for path in sorted((PROJECT_ROOT / "alembic" / "versions").glob("*.py")):
+        match = pattern.search(path.read_text(encoding="utf-8"))
+        if match:
+            head_revision = match.group(1)
+
+    if not head_revision:
+        raise RuntimeError("Could not determine Alembic head revision from alembic/versions.")
+
+    return head_revision
+
+
+HEAD_REVISION = detect_head_revision()
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,19 +234,11 @@ def validate_schema_group(
                 continue
             if actual_spec != expected_spec:
                 errors.append(
-                    "{group}: table '{table}', column '{column}' mismatch: expected "
-                    "(data_type={expected_type}, udt_name={expected_udt}, nullable={expected_nullable}) "
-                    "but found (data_type={actual_type}, udt_name={actual_udt}, nullable={actual_nullable})".format(
-                        group=group_name,
-                        table=table_name,
-                        column=column_name,
-                        expected_type=expected_spec.data_type,
-                        expected_udt=expected_spec.udt_name,
-                        expected_nullable=expected_spec.nullable,
-                        actual_type=actual_spec.data_type,
-                        actual_udt=actual_spec.udt_name,
-                        actual_nullable=actual_spec.nullable,
-                    )
+                    f"{group_name}: table '{table_name}', column '{column_name}' mismatch: "
+                    f"expected (data_type={expected_spec.data_type}, "
+                    f"udt_name={expected_spec.udt_name}, nullable={expected_spec.nullable}) "
+                    f"but found (data_type={actual_spec.data_type}, "
+                    f"udt_name={actual_spec.udt_name}, nullable={actual_spec.nullable})"
                 )
 
     return errors
