@@ -371,7 +371,10 @@ async def get_territorial_job_status(
     summary="Queue a multi-source territorial export bundle",
     responses={
         422: {"model": ErrorResponse, "description": "Validation error"},
-        503: {"model": ErrorResponse, "description": "Catastro service or circuit breaker unavailable"},
+        503: {
+            "model": ErrorResponse,
+            "description": "Catastro service or circuit breaker unavailable",
+        },
     },
 )
 async def create_territorial_export_job(
