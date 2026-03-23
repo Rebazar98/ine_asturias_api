@@ -119,7 +119,11 @@ def test_sync_status_territorial_disabled():
 
 def test_sync_status_requires_api_key_in_staging():
     """In staging env, missing API key returns 401."""
-    settings = Settings(API_KEY="a-valid-staging-key-123456789", APP_ENV="staging")
+    settings = Settings(
+        API_KEY="a-valid-staging-key-123456789",
+        APP_ENV="staging",
+        POSTGRES_DSN="postgresql+asyncpg://postgres:super-secure-db-pass-1234@db:5432/ine_asturias",
+    )
     app = create_app()
     app.dependency_overrides[get_settings] = lambda: settings
     app.dependency_overrides[get_job_store] = lambda: InMemoryJobStore()

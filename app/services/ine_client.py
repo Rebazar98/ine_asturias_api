@@ -33,6 +33,50 @@ class INEInvalidPayloadError(INEClientError):
     pass
 
 
+_INE_MOJIBAKE_MARKERS = ("Ã", "Â", "â", "ƒ", "€", "™", "�")
+
+
+def _mojibake_score(value: str) -> int:
+    return sum(value.count(marker) for marker in _INE_MOJIBAKE_MARKERS)
+
+
+def _repair_ine_string(value: str) -> str:
+    current = value
+    for _ in range(3):
+        if _mojibake_score(current) == 0:
+            break
+
+        candidates: list[str] = []
+        for source_encoding in ("cp1252", "latin-1"):
+            try:
+                candidate = current.encode(source_encoding).decode("utf-8")
+            except (UnicodeEncodeError, UnicodeDecodeError):
+                continue
+            if candidate != current:
+                candidates.append(candidate)
+
+        if not candidates:
+            break
+
+        best_candidate = min(candidates, key=_mojibake_score)
+        if _mojibake_score(best_candidate) > _mojibake_score(current):
+            break
+        current = best_candidate
+
+    return current
+
+
+def _fix_ine_encoding(obj: Any) -> Any:
+    """Reverse INE's server-side mojibake: UTF-8 bytes stored as Latin-1 codepoints."""
+    if isinstance(obj, str):
+        return _repair_ine_string(obj)
+    if isinstance(obj, list):
+        return [_fix_ine_encoding(item) for item in obj]
+    if isinstance(obj, dict):
+        return {k: _fix_ine_encoding(v) for k, v in obj.items()}
+    return obj
+
+
 class INEClientService:
     def __init__(
         self,
@@ -55,10 +99,17 @@ class INEClientService:
         )
 
     async def get_operation_variables(self, op_code: str) -> dict[str, Any] | list[Any]:
-        return await self._fetch_json(
-            f"VARIABLES_OPERACION/{op_code}",
-            cache_scope="operation_variables",
-        )
+        try:
+            return await self._fetch_json(
+                f"VARIABLES_OPERACION/{op_code}",
+                cache_scope="operation_variables",
+            )
+        except INEInvalidPayloadError:
+            self.logger.warning(
+                "ine_operation_variables_empty_body",
+                extra={"op_code": op_code},
+            )
+            return []
 
     async def get_variable_values(
         self, op_code: str, variable_id: str
@@ -84,9 +135,7 @@ class INEClientService:
             cache_scope="operation_tables",
         )
 
-    async def get_operation_series(
-        self, op_code: str, page: int = 1
-    ) -> dict[str, Any] | list[Any]:
+    async def get_operation_series(self, op_code: str, page: int = 1) -> dict[str, Any] | list[Any]:
         return await self._fetch_json(
             f"SERIES_OPERACION/{op_code}",
             params={"det": 2, "page": page},
@@ -104,6 +153,19 @@ class INEClientService:
             params=params or None,
             cache_scope="serie_data",
         )
+
+    async def get_variables(self) -> list[Any]:
+        """Return all INE statistical variables from the /VARIABLES endpoint.
+
+        Useful for discovering known geographic variable IDs (e.g. Id=3 for CCAA)
+        without depending on per-operation metadata.  Returns [] on empty body.
+        """
+        try:
+            result = await self._fetch_json("VARIABLES", cache_scope="variables")
+        except INEInvalidPayloadError:
+            self.logger.warning("ine_variables_empty_body")
+            return []
+        return result if isinstance(result, list) else []
 
     async def _fetch_json(
         self,
@@ -133,7 +195,7 @@ class INEClientService:
         )
 
         try:
-            payload = response.json()
+            payload = self._decode_json_response(response)
         except ValueError as exc:
             duration_seconds = time.perf_counter() - started_at
             record_provider_request("ine", endpoint_family, "invalid_json", duration_seconds)
@@ -190,6 +252,22 @@ class INEClientService:
 
         await self.cache.set(cache_key, payload)
         return payload
+
+    @staticmethod
+    def _decode_json_response(response: httpx.Response) -> Any:
+        try:
+            return _fix_ine_encoding(response.json())
+        except ValueError:
+            if not response.content:
+                raise
+
+            for encoding in ("utf-8-sig", "utf-8"):
+                try:
+                    decoded_text = response.content.decode(encoding)
+                    return _fix_ine_encoding(json.loads(decoded_text))
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    continue
+            raise
 
     async def _request_with_resilience(
         self,
