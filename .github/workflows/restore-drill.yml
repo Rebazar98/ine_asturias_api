@@ -29,7 +29,6 @@ jobs:
       DB_USER: postgres
       DB_PASSWORD: local-dev-postgres-Y8mF3vQ2sL7nR5xC
       REDIS_HOST: redis
-      EXPECTED_ALEMBIC_VERSION: 0008_catastro_cache
       ENABLE_SLACK_NOTIFICATIONS: "false"
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
       ENABLE_PAGERDUTY: "false"
@@ -80,6 +79,25 @@ jobs:
       - name: Setup environment variables
         run: |
           echo "WORKFLOW_START=$(date +%s)" >> "$GITHUB_ENV"
+          EXPECTED_ALEMBIC_VERSION=$(python - <<'PY'
+          import re
+          from pathlib import Path
+
+          head = None
+          pattern = re.compile(r'^revision\s*=\s*"([^"]+)"', re.MULTILINE)
+          for path in sorted(Path("alembic/versions").glob("*.py")):
+              match = pattern.search(path.read_text(encoding="utf-8"))
+              if match:
+                  head = match.group(1)
+
+          if not head:
+              raise SystemExit("Could not determine alembic head revision from alembic/versions")
+
+          print(head)
+          PY
+          )
+          echo "EXPECTED_ALEMBIC_VERSION=$EXPECTED_ALEMBIC_VERSION" >> "$GITHUB_ENV"
+          echo "[restore-drill] Alembic head detected: $EXPECTED_ALEMBIC_VERSION"
 
           if [ "$GITHUB_REF" = "refs/heads/main" ] || [[ "$GITHUB_REF" == refs/tags/* ]]; then
             echo "ENVIRONMENT=production" >> "$GITHUB_ENV"
@@ -252,7 +270,7 @@ jobs:
             --min-catalog-rows "$RESTORE_MIN_CATALOG_ROWS" \
             --expected-alembic-version "$EXPECTED_ALEMBIC_VERSION" \
             --functional-operation-code "$RESTORE_FUNCTIONAL_OPERATION_CODE" \
-            --min-functional-series-total "$RESTORE_MIN_FUNCTIONAL_SERIES_TOTAL" | \
+            --min-functional-series-total "$RESTORE_MIN_FUNCTIONAL_SERIES_TOTAL" 2>&1 | \
             tee artifacts/verify-restore.txt
 
           if [ "${PIPESTATUS[0]}" -ne 0 ]; then

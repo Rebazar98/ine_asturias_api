@@ -16,6 +16,10 @@ WORKDIR /app
 RUN addgroup --system --gid ${APP_GID} ${APP_USER} \
     && adduser --system --uid ${APP_UID} --ingroup ${APP_USER} --home /home/${APP_USER} ${APP_USER}
 
+RUN apt-get update \
+    && apt-get install --only-upgrade -y libc-bin libc6 \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt requirements.lock ./
 RUN pip install --no-cache-dir -r requirements.lock \
     && pip check
