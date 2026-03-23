@@ -7,11 +7,9 @@ CNIG NATCODE structure (11 digits for municipalities):
 
 from __future__ import annotations
 
-import pytest
 
 from app.repositories.territorial import (
     TERRITORIAL_UNIT_LEVEL_AUTONOMOUS_COMMUNITY,
-    TERRITORIAL_UNIT_LEVEL_COUNTRY,
     TERRITORIAL_UNIT_LEVEL_MUNICIPALITY,
     TERRITORIAL_UNIT_LEVEL_PROVINCE,
 )

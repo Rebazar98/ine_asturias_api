@@ -1,7 +1,7 @@
 import asyncio
 import io
 import json
-from datetime import datetime, timezone
+from datetime import datetime, UTC
 from zipfile import ZipFile
 
 from app.repositories.territorial import (
@@ -266,7 +266,7 @@ def _build_service(
         series_repo=series_repo,
         analytical_snapshot_repo=snapshot_repo,
         analytical_snapshot_ttl_seconds=3600,
-        now_factory=lambda: datetime(2026, 3, 15, 13, 0, tzinfo=timezone.utc),
+        now_factory=lambda: datetime(2026, 3, 15, 13, 0, tzinfo=UTC),
     )
     return TerritorialExportService(
         territorial_repo=territorial_repo,
@@ -283,7 +283,7 @@ def _build_service(
         catastro_cache_ttl_seconds=604800,
         catastro_aggregate_cache_ttl_seconds=86400,
         catastro_aggregate_max_concurrency=4,
-        now_factory=lambda: datetime(2026, 3, 15, 13, 0, tzinfo=timezone.utc),
+        now_factory=lambda: datetime(2026, 3, 15, 13, 0, tzinfo=UTC),
     )
 
 
@@ -428,7 +428,7 @@ def test_build_export_adds_catastro_territorial_aggregate_for_autonomous_communi
     ingestion_repo = DummyIngestionRepository()
 
     # seed one descendant municipality with a fresh cache entry so no upstream call is needed
-    seeded_at = datetime(2026, 3, 15, 12, 0, tzinfo=timezone.utc)
+    seeded_at = datetime(2026, 3, 15, 12, 0, tzinfo=UTC)
     asyncio.run(
         catastro_cache_repo.upsert_payload(
             provider_family="catastro_urbano_municipality_aggregates",
@@ -558,7 +558,7 @@ def test_build_export_adds_catastro_territorial_aggregate_for_province():
     catastro_aggregate_cache_repo = DummyCatastroTerritorialAggregateCacheRepository()
     ingestion_repo = DummyIngestionRepository()
 
-    seeded_at = datetime(2026, 3, 15, 12, 0, tzinfo=timezone.utc)
+    seeded_at = datetime(2026, 3, 15, 12, 0, tzinfo=UTC)
     asyncio.run(
         catastro_cache_repo.upsert_payload(
             provider_family="catastro_urbano_municipality_aggregates",
@@ -639,7 +639,7 @@ def test_build_export_reuses_catastro_territorial_aggregate_cache():
     ingestion_repo = DummyIngestionRepository()
 
     # pre-seed the territorial aggregate cache so no aggregation is needed
-    seeded_at = datetime(2026, 3, 15, 12, 0, tzinfo=timezone.utc)
+    seeded_at = datetime(2026, 3, 15, 12, 0, tzinfo=UTC)
     cached_payload = {
         "source": "catastro.autonomous_community.aggregates",
         "generated_at": seeded_at.isoformat(),
@@ -726,7 +726,7 @@ def test_build_export_reuses_catastro_cache_without_upstream_call():
     catastro_client = DummyCatastroClientService()
     catastro_cache_repo = DummyCatastroMunicipalityAggregateCacheRepository()
     ingestion_repo = DummyIngestionRepository()
-    seeded_at = datetime(2026, 3, 15, 12, 0, tzinfo=timezone.utc)
+    seeded_at = datetime(2026, 3, 15, 12, 0, tzinfo=UTC)
     asyncio.run(
         catastro_cache_repo.upsert_payload(
             provider_family="catastro_urbano_municipality_aggregates",

@@ -4,7 +4,6 @@ from __future__ import annotations
 import logging
 import uuid
 
-import pytest
 
 from app.core.logging import request_id_var
 

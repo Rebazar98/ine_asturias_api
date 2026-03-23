@@ -9,7 +9,6 @@ Validates that:
 
 from __future__ import annotations
 
-import pytest
 
 from app.models import INESeriesNormalized, IngestionRaw, TerritorialUnit
 

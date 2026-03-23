@@ -3,6 +3,17 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 import pytest
 
+from app.core.security import (
+    compare_api_keys,
+    ensure_secret_strength,
+    extract_password_from_dsn,
+    generate_api_key,
+    get_api_key_from_env,
+    hash_sensitive_data,
+    is_weak_secret,
+    sanitize_for_logging,
+    sanitize_query_params_for_logging,
+)
 from app.dependencies import get_series_repository
 from app.main import app
 from app.settings import Settings, get_settings
@@ -130,24 +141,6 @@ def test_non_local_settings_require_strong_secrets():
 
     assert settings.requires_api_key is True
     assert settings.api_key == "staging-api-key-1234567890abcdef"
-
-
-# ---------------------------------------------------------------------------
-# Security utility functions (app/core/security.py)
-# ---------------------------------------------------------------------------
-
-from app.core.security import (
-    compare_api_keys,
-    ensure_secret_strength,
-    extract_password_from_dsn,
-    generate_api_key,
-    get_api_key_from_env,
-    hash_sensitive_data,
-    is_weak_secret,
-    sanitize_for_logging,
-    sanitize_query_params_for_logging,
-)
-
 
 def test_generate_api_key_returns_non_empty_url_safe_string() -> None:
     key = generate_api_key()

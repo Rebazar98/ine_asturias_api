@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, UTC
 
 from app.repositories.territorial import TERRITORIAL_UNIT_LEVEL_MUNICIPALITY
 from app.schemas import NormalizedSeriesItem
@@ -74,7 +74,7 @@ def test_build_municipality_report_returns_structured_result():
     service = TerritorialAnalyticsService(
         territorial_repo=territorial_repo,
         series_repo=series_repo,
-        now_factory=lambda: datetime(2026, 3, 14, 14, 0, tzinfo=timezone.utc),
+        now_factory=lambda: datetime(2026, 3, 14, 14, 0, tzinfo=UTC),
     )
 
     report = asyncio.run(
@@ -105,7 +105,7 @@ def test_build_municipality_report_persists_and_reuses_snapshot():
         series_repo=series_repo,
         analytical_snapshot_repo=snapshot_repo,
         analytical_snapshot_ttl_seconds=3600,
-        now_factory=lambda: datetime(2026, 3, 14, 14, 0, tzinfo=timezone.utc),
+        now_factory=lambda: datetime(2026, 3, 14, 14, 0, tzinfo=UTC),
     )
 
     first_report = asyncio.run(

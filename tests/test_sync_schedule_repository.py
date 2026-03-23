@@ -10,8 +10,8 @@ Validates:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from datetime import datetime, UTC
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -101,7 +101,7 @@ class TestSyncScheduleRepositoryMockedSession:
             is_active=True,
         )
         row.id = 1
-        row.updated_at = datetime(2026, 3, 17, tzinfo=timezone.utc)
+        row.updated_at = datetime(2026, 3, 17, tzinfo=UTC)
         return row
 
     @pytest.mark.anyio
@@ -174,7 +174,7 @@ class TestSyncScheduleMultiTenant:
             is_active=False,
         )
         row.id = 99
-        row.updated_at = datetime(2026, 3, 17, tzinfo=timezone.utc)
+        row.updated_at = datetime(2026, 3, 17, tzinfo=UTC)
         result = SyncScheduleRepository._serialize(row)
 
         assert result["org_id"] == "another_org"

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, UTC
 from uuid import uuid4
 
 import pytest
@@ -39,7 +39,7 @@ def test_territorial_export_artifact_repository_roundtrip_with_postgres():
                         "source": "internal.export.territorial_bundle",
                         "territorial_context": {"canonical_code": code_value},
                     },
-                    now=datetime(2026, 3, 15, 13, 0, tzinfo=timezone.utc),
+                    now=datetime(2026, 3, 15, 13, 0, tzinfo=UTC),
                 )
                 assert stored is not None
 
@@ -48,7 +48,7 @@ def test_territorial_export_artifact_repository_roundtrip_with_postgres():
                     code_value=code_value,
                     artifact_format="zip",
                     include_providers=["ine", "territorial"],
-                    now=datetime(2026, 3, 15, 13, 1, tzinfo=timezone.utc),
+                    now=datetime(2026, 3, 15, 13, 1, tzinfo=UTC),
                 )
                 assert fresh is not None
                 assert fresh["export_id"] == stored["export_id"]

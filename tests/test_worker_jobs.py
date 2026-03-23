@@ -4,21 +4,28 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
-import pytest
-
 from app.core.jobs import InMemoryJobStore
 from app.core.logging import request_id_var
+from app.schemas import AnalyticalResponse
+from app.schemas import AnalyticalTerritorialContextResponse, TerritorialExportResultResponse
 from app.services.asturias_resolver import AsturiasResolutionError
 from app.services.catastro_client import CatastroUpstreamError
-from app.services.ine_client import INEClientError, INEUpstreamError
+from app.services.ine_client import INEUpstreamError
+from app.services.ideas_wfs_client import IDEASWFSClientError
+from app.services.sadei_client import SADEIClientError
 from app.settings import Settings
 from app.worker import (
+    _heartbeat_loop,
+    _start_worker_metrics_server,
     run_municipality_report_job,
+    run_ideas_sync_job,
     run_operation_asturias_job,
+    run_sadei_sync_job,
     run_territorial_export_job,
 )
 
@@ -379,15 +386,6 @@ def test_territorial_export_request_id_set_and_cleared() -> None:
     assert captured == ["rid-export"]
     assert request_id_var.get() is None
 
-
-# ---------------------------------------------------------------------------
-# run_sadei_sync_job
-# ---------------------------------------------------------------------------
-
-from app.services.sadei_client import SADEIClientError
-from app.worker import run_sadei_sync_job
-
-
 def test_sadei_sync_client_error_marks_job_failed() -> None:
     """SADEIClientError must fail the job with the error detail."""
 
@@ -477,15 +475,6 @@ def test_sadei_sync_success_completes_job() -> None:
         assert record["status"] == "completed"
 
     asyncio.run(scenario())
-
-
-# ---------------------------------------------------------------------------
-# run_ideas_sync_job
-# ---------------------------------------------------------------------------
-
-from app.services.ideas_wfs_client import IDEASWFSClientError
-from app.worker import run_ideas_sync_job
-
 
 def test_ideas_sync_client_error_marks_job_failed() -> None:
     """IDEASWFSClientError must fail the job with the error detail."""
@@ -578,17 +567,8 @@ def test_operation_asturias_job_success_completes_job() -> None:
 
     asyncio.run(scenario())
 
-
-# ---------------------------------------------------------------------------
-# Success path -- run_municipality_report_job
-# ---------------------------------------------------------------------------
-
-from datetime import datetime, timezone
-from app.schemas import AnalyticalResponse
-
-
 def test_municipality_report_job_success_completes_job() -> None:
-    report = AnalyticalResponse(source="test", generated_at=datetime.now(tz=timezone.utc))
+    report = AnalyticalResponse(source="test", generated_at=datetime.now(tz=UTC))
 
     class OkAnalyticsService:
         def __init__(self, **kwargs):
@@ -645,21 +625,13 @@ def test_municipality_report_job_none_result_marks_failed() -> None:
 
     asyncio.run(scenario())
 
-
-# ---------------------------------------------------------------------------
-# Success path -- run_territorial_export_job
-# ---------------------------------------------------------------------------
-
-from app.schemas import AnalyticalTerritorialContextResponse, TerritorialExportResultResponse
-
-
 def test_territorial_export_job_success_completes_job() -> None:
     export_result = TerritorialExportResultResponse(
         export_id=1,
         export_key="test/export.zip",
         territorial_context=AnalyticalTerritorialContextResponse(),
         download_path="/exports/test.zip",
-        expires_at=datetime.now(tz=timezone.utc),
+        expires_at=datetime.now(tz=UTC),
     )
 
     class OkExportService:
@@ -717,15 +689,6 @@ def test_ideas_sync_generic_exception_marks_job_failed() -> None:
         assert "WFS unreachable" in str(record["error"])
 
     asyncio.run(scenario())
-
-
-# ---------------------------------------------------------------------------
-# _heartbeat_loop
-# ---------------------------------------------------------------------------
-
-from unittest.mock import AsyncMock
-from app.worker import _heartbeat_loop
-
 
 def test_heartbeat_loop_calls_record_heartbeat() -> None:
     call_count = 0
@@ -785,14 +748,6 @@ def test_heartbeat_loop_swallows_exceptions() -> None:
                 pass
 
     asyncio.run(scenario())
-
-
-# ---------------------------------------------------------------------------
-# _start_worker_metrics_server
-# ---------------------------------------------------------------------------
-
-from app.worker import _start_worker_metrics_server
-
 
 def test_start_worker_metrics_server_returns_none_on_failure() -> None:
     with patch("app.worker.start_http_server", side_effect=OSError("port in use")):

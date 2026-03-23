@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, UTC
 from typing import Any
 
 import pytest
@@ -12,7 +12,7 @@ from app.dependencies import get_qa_repository
 from app.main import app
 
 
-_NOW = datetime(2026, 3, 17, 10, 0, 0, tzinfo=timezone.utc)
+_NOW = datetime(2026, 3, 17, 10, 0, 0, tzinfo=UTC)
 
 _SAMPLE_INCIDENTS = [
     {

@@ -1,7 +1,6 @@
 """Tests for GET /sync/status endpoint."""
 from __future__ import annotations
 
-import pytest
 from fastapi.testclient import TestClient
 
 from app.core.jobs import InMemoryJobStore

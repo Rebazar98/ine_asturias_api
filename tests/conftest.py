@@ -1,7 +1,7 @@
 from __future__ import annotations
 from copy import deepcopy
 from collections.abc import Awaitable, Callable
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, UTC
 
 import httpx
 import pytest
@@ -66,7 +66,7 @@ class DummyCatastroMunicipalityAggregateCacheRepository:
         row = self.rows.get(key)
         if row is None:
             return None
-        lookup_time = now or datetime.now(timezone.utc)
+        lookup_time = now or datetime.now(UTC)
         if row["expires_at"] <= lookup_time:
             return None
         return deepcopy(row)
@@ -83,7 +83,7 @@ class DummyCatastroMunicipalityAggregateCacheRepository:
         now: datetime | None = None,
     ):
         self.upsert_calls += 1
-        write_time = now or datetime.now(timezone.utc)
+        write_time = now or datetime.now(UTC)
         key = (provider_family, municipality_code, reference_year)
         existing = self.rows.get(key)
         row = {
@@ -123,7 +123,7 @@ class DummyCatastroTerritorialAggregateCacheRepository:
         row = self.rows.get(key)
         if row is None:
             return None
-        lookup_time = now or datetime.now(timezone.utc)
+        lookup_time = now or datetime.now(UTC)
         if row["expires_at"] <= lookup_time:
             return None
         return deepcopy(row)
@@ -141,7 +141,7 @@ class DummyCatastroTerritorialAggregateCacheRepository:
         now: datetime | None = None,
     ):
         self.upsert_calls += 1
-        write_time = now or datetime.now(timezone.utc)
+        write_time = now or datetime.now(UTC)
         key = (provider_family, unit_level, code_value, reference_year)
         existing = self.rows.get(key)
         row = {
@@ -439,8 +439,8 @@ class DummyTableCatalogRepository:
                     "series_kept": 0,
                     "series_discarded": 0,
                     "last_checked_at": None,
-                    "first_seen_at": datetime.now(timezone.utc),
-                    "updated_at": datetime.now(timezone.utc),
+                    "first_seen_at": datetime.now(UTC),
+                    "updated_at": datetime.now(UTC),
                     "metadata": dict(table.get("metadata", {})),
                     "notes": "",
                     "last_warning": "",
@@ -454,7 +454,7 @@ class DummyTableCatalogRepository:
                         "request_path": request_path,
                         "resolution_context": dict(resolution_context or {}),
                         "metadata": dict(table.get("metadata", {})),
-                        "updated_at": datetime.now(timezone.utc),
+                        "updated_at": datetime.now(UTC),
                     }
                 )
             count += 1
@@ -500,8 +500,8 @@ class DummyTableCatalogRepository:
                 "filtered_rows_retrieved": filtered_rows_retrieved,
                 "series_kept": series_kept,
                 "series_discarded": series_discarded,
-                "last_checked_at": datetime.now(timezone.utc),
-                "updated_at": datetime.now(timezone.utc),
+                "last_checked_at": datetime.now(UTC),
+                "updated_at": datetime.now(UTC),
                 "metadata": dict(metadata or existing.get("metadata", {})),
                 "notes": notes,
                 "last_warning": last_warning,
@@ -749,7 +749,7 @@ class DummyAnalyticalSnapshotRepository:
         row = self.rows.get(snapshot_key)
         if row is None:
             return None
-        lookup_time = now or datetime.now(timezone.utc)
+        lookup_time = now or datetime.now(UTC)
         if row["expires_at"] <= lookup_time:
             return None
         return deepcopy(row)
@@ -769,7 +769,7 @@ class DummyAnalyticalSnapshotRepository:
         now: datetime | None = None,
     ):
         self.upsert_calls += 1
-        write_time = now or datetime.now(timezone.utc)
+        write_time = now or datetime.now(UTC)
         snapshot_key = build_snapshot_key(
             snapshot_type=snapshot_type,
             scope_key=scope_key,
@@ -824,7 +824,7 @@ class DummyTerritorialExportArtifactRepository:
         row = self.rows_by_key.get(export_key)
         if row is None:
             return None
-        lookup_time = now or datetime.now(timezone.utc)
+        lookup_time = now or datetime.now(UTC)
         if row["expires_at"] <= lookup_time:
             return None
         return deepcopy(row)
@@ -851,7 +851,7 @@ class DummyTerritorialExportArtifactRepository:
         now: datetime | None = None,
     ):
         self.upsert_calls += 1
-        write_time = now or datetime.now(timezone.utc)
+        write_time = now or datetime.now(UTC)
         export_key = build_export_key(
             unit_level=unit_level,
             code_value=code_value,

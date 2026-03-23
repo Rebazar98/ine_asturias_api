@@ -52,14 +52,8 @@ async def async_main() -> int:
         await dispose_db()
 
     print(
-        "[territorial-seed] municipality_code={code} municipality_name={name} "
-        "territorial_unit_id={unit_id} created_unit={created} normalized_rows_upserted={rows}".format(
-            code=result.municipality_code,
-            name=result.municipality_name,
-            unit_id=result.territorial_unit_id,
-            created=result.created_unit,
-            rows=result.normalized_rows_upserted,
-        )
+        f"[territorial-seed] municipality_code={result.municipality_code} municipality_name={result.municipality_name} "
+        f"territorial_unit_id={result.territorial_unit_id} created_unit={result.created_unit} normalized_rows_upserted={result.normalized_rows_upserted}"
     )
     return 0
 
