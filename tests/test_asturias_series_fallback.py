@@ -10,17 +10,15 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
 import httpx
 import pytest
 
 from app.core.cache import InMemoryTTLCache
-from app.dependencies import get_ine_client_service
-from app.main import app
 from app.schemas import AsturiasResolutionResult
 from app.services.asturias_resolver import AsturiasResolutionError, AsturiasResolver
-from app.services.ine_client import INEClientService, INEInvalidPayloadError
+from app.services.ine_client import INEClientService
 from app.services.ine_operation_ingestion import INEOperationIngestionService
 from app.settings import Settings
 from tests.conftest import (
@@ -87,7 +85,6 @@ def _build_service(ingestion_repo=None, series_repo=None, catalog_repo=None):
 def _mock_client(series_pages: list[list[dict]], serie_data: dict[str, Any]) -> Any:
     """Construye un cliente INE mock con get_operation_series paginado y get_serie_data."""
     client = MagicMock()
-    page_counter = [0]
 
     async def get_operation_series(op_code, page=1):
         idx = page - 1
@@ -451,6 +448,7 @@ def test_resolver_name_based_fallback_when_variable_values_empty():
     assert result.name_based_fallback is True
     assert result.asturias_value_id is None
     assert result.geo_variable_id == "115"
+    assert result.variable_name is None
 
 
 def test_resolver_name_based_fallback_false_when_values_found():
@@ -694,4 +692,5 @@ def test_asturias_endpoint_name_based_fallback_via_tables(
     # Sólo la serie de Asturias pasa el filtro por nombre
     assert payload["summary"]["tables_succeeded"] == 1
     assert len(dummy_series_repo.items) == 1
-    assert dummy_series_repo.items[0].geography_name in {"Asturias", "Principado de Asturias"}
+    assert dummy_series_repo.items[0].geography_name == "Principado de Asturias"
+    assert dummy_series_repo.items[0].geography_code == "33"

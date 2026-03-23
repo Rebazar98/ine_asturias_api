@@ -14,6 +14,7 @@ from app.repositories.series import SeriesRepository
 from app.schemas import NormalizedSeriesItem
 from app.services.asturias_resolver import AsturiasResolutionError
 from app.services.normalizers import (
+    canonicalize_configured_geography_items,
     inspect_payload_shape,
     normalize_asturias_payload_with_stats,
     normalize_serie_direct_payload_with_stats,
@@ -49,10 +50,14 @@ class INEOperationIngestionService:
         ingestion_repo: IngestionRepository,
         series_repo: SeriesRepository,
         catalog_repo: TableCatalogRepository,
+        default_geography_code: str = "33",
+        default_geography_name: str = "Principado de Asturias",
     ) -> None:
         self.ingestion_repo = ingestion_repo
         self.series_repo = series_repo
         self.catalog_repo = catalog_repo
+        self.default_geography_code = default_geography_code
+        self.default_geography_name = default_geography_name
         self.logger = get_logger("app.services.ine_operation_ingestion")
 
     async def normalize_and_store_table(
@@ -170,6 +175,22 @@ class INEOperationIngestionService:
             return []
 
         record_normalization("asturias", len(outcome.items), outcome.discarded_counts)
+        canonicalization = canonicalize_configured_geography_items(
+            outcome.items,
+            geography_name=geography_name,
+            geography_code=geography_code,
+            canonical_name=self.default_geography_name,
+            canonical_code=self.default_geography_code,
+        )
+        if canonicalization["canonicalized_rows"] > 0:
+            self.logger.info(
+                "asturias_geography_canonicalized",
+                extra={
+                    "op_code": op_code,
+                    "table_id": table_id,
+                    **canonicalization,
+                },
+            )
         self.logger.info(
             "asturias_normalization_prepared",
             extra={
@@ -179,6 +200,7 @@ class INEOperationIngestionService:
                 "rows_generated": len(outcome.items),
                 "rows_sent_to_upsert": len(outcome.items),
                 "discarded_counts": outcome.discarded_counts,
+                "canonicalized_rows": canonicalization["canonicalized_rows"],
                 "first_row": outcome.items[0].model_dump(),
             },
         )
@@ -273,7 +295,11 @@ class INEOperationIngestionService:
 
             series_list = [serie_payload] if isinstance(serie_payload, dict) else serie_payload
             outcome = await asyncio.to_thread(
-                normalize_serie_direct_payload_with_stats, series_list, op_code
+                normalize_serie_direct_payload_with_stats,
+                series_list,
+                op_code,
+                self.default_geography_name,
+                self.default_geography_code,
             )
             all_normalized.extend(outcome.items)
 

@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.schemas import NormalizedSeriesItem
+from app.services.geography_aliases import canonicalize_configured_geography
 
 
 _PERIOD_KEYS = ("Periodo", "NombrePeriodo", "period", "Period", "Date")
@@ -48,6 +49,45 @@ class NormalizationOutcome:
     payload_type: str = "unknown"
     series_detected: int = 0
     observations_total: int = 0
+
+
+def canonicalize_configured_geography_items(
+    items: list[NormalizedSeriesItem],
+    *,
+    geography_name: str,
+    geography_code: str,
+    canonical_name: str,
+    canonical_code: str,
+) -> dict[str, Any]:
+    observed_names: set[str] = set()
+    observed_codes: set[str] = set()
+    canonicalized_rows = 0
+
+    for item in items:
+        observed_names.add(item.geography_name)
+        observed_codes.add(item.geography_code)
+        canonical_name_value, canonical_code_value, changed = canonicalize_configured_geography(
+            candidate_name=item.geography_name,
+            candidate_code=item.geography_code,
+            geography_name=geography_name,
+            geography_code=geography_code,
+            canonical_name=canonical_name,
+            canonical_code=canonical_code,
+        )
+        if not changed:
+            continue
+
+        item.geography_name = canonical_name_value
+        item.geography_code = canonical_code_value
+        canonicalized_rows += 1
+
+    return {
+        "canonicalized_rows": canonicalized_rows,
+        "observed_names": sorted(value for value in observed_names if value),
+        "observed_codes": sorted(value for value in observed_codes if value),
+        "canonical_name": canonical_name,
+        "canonical_code": canonical_code,
+    }
 
 
 def normalize_table_payload(
@@ -437,6 +477,8 @@ def _build_period_from_anyo_fk(anyo: Any, fk_periodo: Any) -> str | None:
 def normalize_serie_direct_payload_with_stats(
     series_list: list[dict[str, Any]],
     op_code: str,
+    geography_name: str = "Principado de Asturias",
+    geography_code: str = "33",
 ) -> NormalizationOutcome:
     """Normaliza una lista de respuestas DATOS_SERIE en NormalizedSeriesItems.
 
@@ -446,9 +488,9 @@ def normalize_serie_direct_payload_with_stats(
         {"COD": str, "Nombre": str, "FK_Unidad": int,
          "Data": [{"Anyo": int, "FK_Periodo": int, "Valor": float, "Secreto": bool}]}
 
-    El ``geography_code`` y ``geography_name`` se fijan a los valores de
-    Asturias ("33" / "Principado de Asturias") porque estas series ya han
-    sido filtradas por nombre de serie antes de llamar a este normalizer.
+    El ``geography_code`` y ``geography_name`` se fijan a la identidad
+    territorial canonica configurada para este flujo, porque estas series ya
+    han sido filtradas por nombre antes de llamar a este normalizer.
     """
     outcome = NormalizationOutcome()
     outcome.payload_type = "list"
@@ -489,8 +531,8 @@ def normalize_serie_direct_payload_with_stats(
                     operation_code=op_code,
                     table_id=cod,
                     variable_id=cod,
-                    geography_name="Principado de Asturias",
-                    geography_code="33",
+                    geography_name=geography_name,
+                    geography_code=geography_code,
                     period=period or "unknown",
                     value=value,
                     unit=unit,

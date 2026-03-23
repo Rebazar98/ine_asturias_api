@@ -55,6 +55,133 @@ MIXED_TABLE_PAYLOAD = [
     },
 ]
 
+# Operation 33 (Movimiento Natural de la Población) realistic payloads.
+# Table names arrive from INE with mojibake (UTF-8 bytes stored as Latin-1).
+OP33_TABLE_WITH_ASTURIAS = [
+    {
+        "Nombre": "Asturias. Nacidos vivos por municipio",
+        "MetaData": [
+            {"Variable": "Comunidades y Ciudades AutÃ³nomas", "Nombre": "Principado de Asturias", "Id": "33"},
+            {"Variable": "Indicador", "Nombre": "Nacidos vivos", "Id": "NV"},
+        ],
+        "Data": [{"Periodo": "2022", "Valor": "4521", "Unidad": "personas"}],
+    },
+    {
+        "Nombre": "Madrid. Nacidos vivos por municipio",
+        "MetaData": [
+            {"Variable": "Comunidades y Ciudades AutÃ³nomas", "Nombre": "Madrid", "Id": "28"},
+            {"Variable": "Indicador", "Nombre": "Nacidos vivos", "Id": "NV"},
+        ],
+        "Data": [{"Periodo": "2022", "Valor": "58432", "Unidad": "personas"}],
+    },
+]
+
+OP33_TABLE_NATIONAL_ONLY = [
+    {
+        "Nombre": "Total Nacional. Nupcialidad",
+        "MetaData": [
+            {"Variable": "Indicador", "Nombre": "Total matrimonios", "Id": "TOT"},
+        ],
+        "Data": [{"Periodo": "2022", "Valor": "164356", "Unidad": "matrimonios"}],
+    }
+]
+
+
+def test_asturias_endpoint_fixes_mojibake_in_op33_table_names(
+    client, dummy_ingestion_repo, dummy_series_repo
+):
+    """Table names returned by INE with mojibake encoding are corrected in the response.
+
+    Operation 33 (Movimiento Natural) TABLAS_OPERACION returns names like
+    'InmigraciÃ³n' which must appear as 'Inmigración' in the API response.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/VARIABLES_OPERACION/33":
+            return httpx.Response(
+                200,
+                json=[{"Id": "70", "Nombre": "Comunidades y Ciudades AutÃ³nomas"}],
+            )
+        if request.url.path == "/VALORES_VARIABLEOPERACION/70/33":
+            return httpx.Response(
+                200,
+                json=[
+                    {"Id": "33", "Nombre": "Principado de Asturias"},
+                    {"Id": "28", "Nombre": "Comunidad de Madrid"},
+                ],
+            )
+        if request.url.path == "/TABLAS_OPERACION/33":
+            return httpx.Response(
+                200,
+                json=[
+                    {"IdTabla": "2852", "Nombre": "Tasa Bruta de InmigraciÃ³n procedente del extranjero"},
+                    {"IdTabla": "2901", "Nombre": "Nacidos vivos segÃºn edad de la madre"},
+                ],
+            )
+        if request.url.path == "/DATOS_TABLA/2852":
+            return httpx.Response(200, json=OP33_TABLE_WITH_ASTURIAS)
+        if request.url.path == "/DATOS_TABLA/2901":
+            return httpx.Response(200, json=OP33_TABLE_WITH_ASTURIAS)
+        raise AssertionError(f"Unexpected path: {request.url.path}")
+
+    override_ine_service(handler)
+
+    response = client.get("/ine/operation/33/asturias?background=false")
+
+    assert response.status_code == 200
+    payload = response.json()
+    table_names = {t["table_name"] for t in payload["tables_found"]}
+    assert "Tasa Bruta de Inmigración procedente del extranjero" in table_names
+    assert "Nacidos vivos según edad de la madre" in table_names
+    assert payload["summary"]["tables_succeeded"] == 2
+    assert payload["resolution"]["geo_variable_id"] == "70"
+
+
+def test_asturias_endpoint_op33_national_tables_produce_warnings(
+    client, dummy_ingestion_repo, dummy_series_repo
+):
+    """Tables without a geographic breakdown for Asturias produce no_asturias_rows_after_validation.
+
+    Operation 33 has several national-level tables (no CCAA dimension) which
+    the ingestion filters out and records as warnings, not errors.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/VARIABLES_OPERACION/33":
+            return httpx.Response(200, json=[{"Id": "70", "Nombre": "Comunidades y Ciudades Autonomas"}])
+        if request.url.path == "/VALORES_VARIABLEOPERACION/70/33":
+            return httpx.Response(
+                200,
+                json=[{"Id": "33", "Nombre": "Principado de Asturias"}],
+            )
+        if request.url.path == "/TABLAS_OPERACION/33":
+            return httpx.Response(
+                200,
+                json=[
+                    {"IdTabla": "2852", "Nombre": "Nacidos vivos con desglose territorial"},
+                    {"IdTabla": "2853", "Nombre": "Total nacional sin desglose territorial"},
+                ],
+            )
+        if request.url.path == "/DATOS_TABLA/2852":
+            return httpx.Response(200, json=OP33_TABLE_WITH_ASTURIAS)
+        if request.url.path == "/DATOS_TABLA/2853":
+            return httpx.Response(200, json=OP33_TABLE_NATIONAL_ONLY)
+        raise AssertionError(f"Unexpected path: {request.url.path}")
+
+    override_ine_service(handler)
+
+    response = client.get("/ine/operation/33/asturias?background=false")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["summary"]["tables_succeeded"] == 1
+    assert payload["summary"]["warnings"] == 1
+    assert payload["summary"]["tables_failed"] == 0
+    warning = payload["warnings"][0]
+    assert warning["table_id"] == "2853"
+    assert warning["warning"] == "no_asturias_rows_after_validation"
+    assert len(dummy_series_repo.items) == 1
+
 
 def test_asturias_endpoint_can_run_in_background_and_report_status(
     client, dummy_ingestion_repo, dummy_series_repo
@@ -296,7 +423,8 @@ def test_asturias_endpoint_filters_non_asturias_series_after_download(
     assert len(payload["results"][0]["data"]) == 1
     assert payload["results"][0]["data"][0]["Nombre"] == "Serie Asturias"
     assert len(dummy_series_repo.items) == 1
-    assert dummy_series_repo.items[0].geography_name == "Asturias, Principado de"
+    assert dummy_series_repo.items[0].geography_name == "Principado de Asturias"
+    assert dummy_series_repo.items[0].geography_code == "33"
 
 
 def test_asturias_endpoint_returns_clear_error_if_all_tables_fail(

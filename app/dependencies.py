@@ -162,11 +162,14 @@ def get_operation_ingestion_service(
     ingestion_repo: IngestionRepository = Depends(get_ingestion_repository),
     series_repo: SeriesRepository = Depends(get_series_repository),
     catalog_repo: TableCatalogRepository = Depends(get_table_catalog_repository),
+    settings: Settings = Depends(get_settings),
 ) -> INEOperationIngestionService:
     return INEOperationIngestionService(
         ingestion_repo=ingestion_repo,
         series_repo=series_repo,
         catalog_repo=catalog_repo,
+        default_geography_code=settings.default_geography_code,
+        default_geography_name=settings.default_geography_name,
     )
 
 

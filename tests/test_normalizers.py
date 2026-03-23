@@ -1,6 +1,10 @@
 from app.services.normalizers import (
+    canonicalize_configured_geography_items,
     inspect_payload_shape,
     normalize_asturias_payload,
+    normalize_table_payload,
+    normalize_table_payload_with_stats,
+    parse_numeric_value,
     normalize_serie_direct_payload_with_stats,
 )
 
@@ -66,12 +70,49 @@ def test_normalize_asturias_payload_flattens_root_list_series_into_rows():
     assert rows[0].metadata["series_code"] == "DPOP15001"
     assert rows[0].raw_payload["point"]["Anyo"] == 2021
 
-from app.services.normalizers import (
-    normalize_table_payload,
-    normalize_table_payload_with_stats,
-    parse_numeric_value,
-)
 
+def test_canonicalize_configured_geography_items_rewrites_asturias_aliases():
+    rows = normalize_asturias_payload(
+        payload=REALISTIC_ASTURIAS_PAYLOAD,
+        op_code="22",
+        geography_name="Asturias, Principado de",
+        geography_code="8999",
+        table_id="2852",
+    )
+
+    result = canonicalize_configured_geography_items(
+        rows,
+        geography_name="Asturias, Principado de",
+        geography_code="8999",
+        canonical_name="Principado de Asturias",
+        canonical_code="33",
+    )
+
+    assert result["canonicalized_rows"] == 2
+    assert {row.geography_name for row in rows} == {"Principado de Asturias"}
+    assert {row.geography_code for row in rows} == {"33"}
+
+
+def test_canonicalize_configured_geography_items_leaves_other_geographies_untouched():
+    rows = normalize_asturias_payload(
+        payload=REALISTIC_ASTURIAS_PAYLOAD,
+        op_code="22",
+        geography_name="Madrid",
+        geography_code="28",
+        table_id="2852",
+    )
+
+    result = canonicalize_configured_geography_items(
+        rows,
+        geography_name="Asturias, Principado de",
+        geography_code="8999",
+        canonical_name="Principado de Asturias",
+        canonical_code="33",
+    )
+
+    assert result["canonicalized_rows"] == 0
+    assert {row.geography_name for row in rows} == {"Madrid"}
+    assert {row.geography_code for row in rows} == {"28"}
 
 # ---------------------------------------------------------------------------
 # parse_numeric_value

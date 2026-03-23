@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import re
+import unicodedata
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,6 +15,17 @@ from app.core.logging import get_logger
 from app.core.metrics import record_persistence_batch
 from app.models import INESeriesNormalized
 from app.schemas import NormalizedSeriesItem
+
+
+def _normalize_geography_text(value: str | None) -> str:
+    normalized_value = unicodedata.normalize("NFKD", value or "")
+    normalized_value = "".join(
+        character for character in normalized_value if not unicodedata.combining(character)
+    )
+    normalized_value = normalized_value.casefold().replace("_", " ")
+    normalized_value = re.sub(r"[^\w\s]", " ", normalized_value)
+    normalized_value = re.sub(r"\s+", " ", normalized_value)
+    return normalized_value.strip()
 
 
 UPSERT_COLUMN_NAMES = {
@@ -385,6 +398,128 @@ class SeriesRepository:
             },
         }
 
+    async def reconcile_configured_geography_duplicates(
+        self,
+        *,
+        canonical_geography_name: str,
+        canonical_geography_code: str,
+        alias_geography_names: Sequence[str],
+        alias_geography_codes: Sequence[str],
+    ) -> dict[str, int]:
+        if self.session is None:
+            self.logger.debug(
+                "configured_geography_reconciliation_skipped",
+                extra={"reason": "database_disabled"},
+            )
+            return {
+                "groups_scanned": 0,
+                "groups_reconciled": 0,
+                "rows_updated": 0,
+                "rows_deleted": 0,
+            }
+
+        normalized_alias_names = sorted(
+            {_normalize_geography_text(value) for value in alias_geography_names if value}
+        )
+        normalized_alias_codes = sorted({str(value).strip() for value in alias_geography_codes if value})
+        geography_key_term = canonical_geography_name.split()[-1]
+
+        statement = select(INESeriesNormalized).where(
+            or_(
+                INESeriesNormalized.geography_code.in_(normalized_alias_codes),
+                INESeriesNormalized.geography_name.ilike(f"%{geography_key_term}%"),
+            )
+        )
+
+        result = await self.session.execute(statement)
+        rows = [
+            row
+            for row in result.scalars().all()
+            if (
+                row.geography_code in normalized_alias_codes
+                or _normalize_geography_text(row.geography_name) in normalized_alias_names
+            )
+        ]
+        grouped_rows: dict[tuple[str, str, str, str], list[INESeriesNormalized]] = {}
+        for row in rows:
+            grouped_rows.setdefault(
+                (
+                    row.operation_code,
+                    row.table_id,
+                    row.variable_id,
+                    row.period,
+                ),
+                [],
+            ).append(row)
+
+        groups_reconciled = 0
+        rows_updated = 0
+        rows_deleted = 0
+
+        try:
+            for group_rows in grouped_rows.values():
+                winner, losers = self._select_reconciliation_winner(
+                    rows=group_rows,
+                    canonical_geography_name=canonical_geography_name,
+                    canonical_geography_code=canonical_geography_code,
+                )
+                needs_update = (
+                    winner.geography_name != canonical_geography_name
+                    or winner.geography_code != canonical_geography_code
+                )
+                if not losers and not needs_update:
+                    continue
+
+                groups_reconciled += 1
+
+                if needs_update:
+                    await self.session.execute(
+                        update(INESeriesNormalized)
+                        .where(INESeriesNormalized.id == winner.id)
+                        .values(
+                            geography_name=canonical_geography_name,
+                            geography_code=canonical_geography_code,
+                        )
+                    )
+                    rows_updated += 1
+
+                if losers:
+                    loser_ids = [row.id for row in losers]
+                    await self.session.execute(
+                        delete(INESeriesNormalized).where(INESeriesNormalized.id.in_(loser_ids))
+                    )
+                    rows_deleted += len(loser_ids)
+
+            await self.session.commit()
+        except SQLAlchemyError:
+            await self.session.rollback()
+            self.logger.exception(
+                "configured_geography_reconciliation_failed",
+                extra={
+                    "canonical_geography_name": canonical_geography_name,
+                    "canonical_geography_code": canonical_geography_code,
+                },
+            )
+            raise
+
+        self.logger.info(
+            "configured_geography_reconciliation_completed",
+            extra={
+                "canonical_geography_name": canonical_geography_name,
+                "canonical_geography_code": canonical_geography_code,
+                "groups_scanned": len(grouped_rows),
+                "groups_reconciled": groups_reconciled,
+                "rows_updated": rows_updated,
+                "rows_deleted": rows_deleted,
+            },
+        )
+        return {
+            "groups_scanned": len(grouped_rows),
+            "groups_reconciled": groups_reconciled,
+            "rows_updated": rows_updated,
+            "rows_deleted": rows_deleted,
+        }
+
     @staticmethod
     def prepare_upsert_rows(
         items: Sequence[NormalizedSeriesItem | dict[str, Any]],
@@ -425,6 +560,30 @@ class SeriesRepository:
         if not filtered_row.get("period"):
             return None
         return filtered_row
+
+    @staticmethod
+    def _select_reconciliation_winner(
+        *,
+        rows: Sequence[Any],
+        canonical_geography_name: str,
+        canonical_geography_code: str,
+    ) -> tuple[Any, list[Any]]:
+        ranked_rows = sorted(
+            rows,
+            key=lambda row: (
+                1
+                if (
+                    row.geography_code == canonical_geography_code
+                    and row.geography_name == canonical_geography_name
+                )
+                else 0,
+                1 if row.territorial_unit_id is not None else 0,
+                row.inserted_at,
+                row.id,
+            ),
+            reverse=True,
+        )
+        return ranked_rows[0], ranked_rows[1:]
 
     @staticmethod
     def serialize_latest_indicator_item(item: Any) -> dict[str, Any]:

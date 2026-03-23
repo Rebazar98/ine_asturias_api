@@ -1,5 +1,7 @@
 import asyncio
-from unittest.mock import AsyncMock, MagicMock
+from datetime import UTC, datetime
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -247,3 +249,55 @@ def test_upsert_many_item_without_period_produces_empty_batch():
 
     assert result == 0
     session.execute.assert_not_awaited()
+
+
+def test_select_reconciliation_winner_prefers_existing_canonical_row():
+    canonical = SimpleNamespace(
+        id=1,
+        geography_name="Principado de Asturias",
+        geography_code="33",
+        territorial_unit_id=None,
+        inserted_at=datetime(2026, 3, 23, tzinfo=UTC),
+    )
+    alias = SimpleNamespace(
+        id=2,
+        geography_name="Asturias, Principado de",
+        geography_code="8999",
+        territorial_unit_id=44,
+        inserted_at=datetime(2026, 3, 24, tzinfo=UTC),
+    )
+
+    winner, losers = SeriesRepository._select_reconciliation_winner(
+        rows=[alias, canonical],
+        canonical_geography_name="Principado de Asturias",
+        canonical_geography_code="33",
+    )
+
+    assert winner.id == 1
+    assert [row.id for row in losers] == [2]
+
+
+def test_select_reconciliation_winner_prefers_row_with_territorial_unit_when_no_canonical_exists():
+    with_unit = SimpleNamespace(
+        id=2,
+        geography_name="Asturias, Principado de",
+        geography_code="8999",
+        territorial_unit_id=44,
+        inserted_at=datetime(2026, 3, 23, tzinfo=UTC),
+    )
+    without_unit = SimpleNamespace(
+        id=3,
+        geography_name="Asturias",
+        geography_code="8999",
+        territorial_unit_id=None,
+        inserted_at=datetime(2026, 3, 24, tzinfo=UTC),
+    )
+
+    winner, losers = SeriesRepository._select_reconciliation_winner(
+        rows=[without_unit, with_unit],
+        canonical_geography_name="Principado de Asturias",
+        canonical_geography_code="33",
+    )
+
+    assert winner.id == 2
+    assert [row.id for row in losers] == [3]

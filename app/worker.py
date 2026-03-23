@@ -93,6 +93,8 @@ async def run_operation_asturias_job(
                 ingestion_repo=ingestion_repo,
                 series_repo=series_repo,
                 catalog_repo=catalog_repo,
+                default_geography_code=settings.default_geography_code,
+                default_geography_name=settings.default_geography_name,
             )
             result = await ingestion_service.ingest_asturias_operation(
                 op_code=op_code,
@@ -644,7 +646,12 @@ async def startup(ctx: dict[str, Any]) -> None:
             success_threshold=settings.provider_circuit_breaker_success_threshold,
         ),
     )
-    resolver = AsturiasResolver(ine_client=ine_client, cache=cache)
+    resolver = AsturiasResolver(
+        ine_client=ine_client,
+        cache=cache,
+        geography_code=settings.default_geography_code,
+        geography_name=settings.default_geography_name,
+    )
     sadei_client = SADEIClientService(http_client=http_client, settings=settings)
     ideas_client = IDEASWFSClientService(settings=settings)
     catastro_circuit_breaker = AsyncCircuitBreaker(

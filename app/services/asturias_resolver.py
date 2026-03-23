@@ -7,6 +7,10 @@ from typing import Any
 from app.core.cache import BaseAsyncCache
 from app.core.logging import get_logger
 from app.schemas import AsturiasResolutionResult
+from app.services.geography_aliases import (
+    build_configured_geography_alias_codes,
+    build_configured_geography_alias_names,
+)
 from app.services.ine_client import INEClientService
 
 
@@ -20,6 +24,17 @@ _GEO_KEYWORDS = {
     "provincia": 5,
     "municipio": 4,
 }
+
+# IDs reales del endpoint /wstempus/js/ES/VARIABLES (verificados 2026-03).
+# Se usan para priorizar candidatos, no para aceptarlos sin validacion.
+_KNOWN_GEO_VARIABLE_IDS: frozenset[str] = frozenset({
+    "3",   # Comunidades y Ciudades Autonomas (CCAA)
+    "13",  # Municipios (MUN)
+    "12",  # Secciones (SECC)
+    "11",  # Distritos
+    "70",  # Provincias
+})
+_KNOWN_GEO_VARIABLE_SCORE_BONUS = 100
 
 
 class AsturiasResolutionError(Exception):
@@ -46,8 +61,9 @@ class AsturiasResolver:
         self.geography_code = geography_code
         self.geography_name = geography_name
         self._geography_name_normalized = self._normalize_text(geography_name)
-        # key term: last word of normalized name, e.g. "principado de asturias" → "asturias"
         self._geography_key_term = self._geography_name_normalized.split()[-1]
+        self._geography_alias_names = build_configured_geography_alias_names(geography_name)
+        self._geography_alias_codes = build_configured_geography_alias_codes(geography_code)
         self.logger = get_logger("app.services.asturias_resolver")
 
     async def resolve(
@@ -69,36 +85,45 @@ class AsturiasResolver:
             await self.cache.set(cache_key, result.model_dump())
             return result
 
+        validation_summary: list[dict[str, Any]] = []
         geo_candidate = {"id": geo_variable_id, "name": None} if geo_variable_id else None
         if geo_candidate is None:
             variables_payload = await self.ine_client.get_operation_variables(op_code)
-            geo_candidate = self._detect_geo_variable(variables_payload)
-
-        if not geo_candidate:
-            raise AsturiasResolutionError(
-                detail={
-                    "message": "Could not resolve the geographic variable for this operation.",
-                    "hint": "Provide geo_variable_id manually.",
-                    "operation_code": op_code,
-                }
+            geo_candidates = self._detect_geo_variable_candidates(variables_payload)
+            if not geo_candidates:
+                raise AsturiasResolutionError(
+                    detail={
+                        "message": "Could not resolve the geographic variable for this operation.",
+                        "hint": "Provide geo_variable_id manually.",
+                        "operation_code": op_code,
+                    }
+                )
+            geo_candidate, asturias_candidate, validation_summary = await self._resolve_geo_candidate(
+                op_code=op_code,
+                candidates=geo_candidates,
             )
+        else:
+            asturias_candidate = {"id": asturias_value_id, "name": None} if asturias_value_id else None
+            if asturias_candidate is None:
+                values_payload = await self.ine_client.get_variable_values(op_code, geo_candidate["id"])
+                asturias_candidate = self._detect_asturias_value(values_payload)
+                validation_summary.append(
+                    self._build_candidate_validation_summary(
+                        candidate=geo_candidate,
+                        asturias_candidate=asturias_candidate,
+                    )
+                )
 
-        asturias_candidate = {"id": asturias_value_id, "name": None} if asturias_value_id else None
-        if asturias_candidate is None:
-            values_payload = await self.ine_client.get_variable_values(op_code, geo_candidate["id"])
-            asturias_candidate = self._detect_asturias_value(values_payload)
-
+        geo_candidate_validated = asturias_candidate is not None
         name_based_fallback = False
         if not asturias_candidate:
-            # VALORES_VARIABLEOPERACION returned empty for this operation.
-            # Fall back to name-based matching: download full tables and filter
-            # by series name (e.g. "Asturias", "Principado de Asturias").
             self.logger.warning(
                 "asturias_resolution_fallback_name_based",
                 extra={
                     "operation_code": op_code,
                     "geo_variable_id": geo_candidate["id"],
-                    "reason": "VALORES_VARIABLEOPERACION returned no values for geo variable",
+                    "reason": "VALORES_VARIABLEOPERACION returned no values for validated candidate",
+                    "candidate_validation_summary": validation_summary,
                 },
             )
             name_based_fallback = True
@@ -106,7 +131,7 @@ class AsturiasResolver:
         result = AsturiasResolutionResult(
             geo_variable_id=geo_candidate["id"],
             asturias_value_id=asturias_candidate["id"] if asturias_candidate else None,
-            variable_name=geo_candidate.get("name"),
+            variable_name=geo_candidate.get("name") if geo_candidate_validated else None,
             asturias_label=asturias_candidate.get("name") if asturias_candidate else self.geography_name,
             name_based_fallback=name_based_fallback,
         )
@@ -117,12 +142,22 @@ class AsturiasResolver:
                 "operation_code": op_code,
                 "geo_variable_id": result.geo_variable_id,
                 "asturias_value_id": result.asturias_value_id,
+                "name_based_fallback": result.name_based_fallback,
+                "candidate_validation_summary": validation_summary,
             },
         )
         return result
 
     def _detect_geo_variable(self, payload: dict[str, Any] | list[Any]) -> dict[str, str] | None:
-        candidates: list[tuple[int, dict[str, str]]] = []
+        candidates = self._detect_geo_variable_candidates(payload)
+        if not candidates:
+            return None
+        return {"id": candidates[0]["id"], "name": candidates[0]["name"]}
+
+    def _detect_geo_variable_candidates(
+        self, payload: dict[str, Any] | list[Any]
+    ) -> list[dict[str, Any]]:
+        candidates: list[tuple[int, dict[str, Any]]] = []
         for record in self._iter_records(payload):
             record_id = self._pick_first(record, ("Id", "id", "Codigo", "codigo"))
             if not record_id:
@@ -135,14 +170,25 @@ class AsturiasResolver:
                 (weight for key, weight in _GEO_KEYWORDS.items() if key in normalized_name),
                 default=0,
             )
+            if record_id in _KNOWN_GEO_VARIABLE_IDS:
+                score += _KNOWN_GEO_VARIABLE_SCORE_BONUS
             if score > 0:
-                candidates.append((score, {"id": str(record_id), "name": name}))
+                candidates.append(
+                    (
+                        score,
+                        {
+                            "id": str(record_id),
+                            "name": name,
+                            "score": score,
+                        },
+                    )
+                )
 
         if not candidates:
-            return None
+            return []
 
-        candidates.sort(key=lambda item: item[0], reverse=True)
-        return candidates[0][1]
+        candidates.sort(key=lambda item: (item[0], item[1]["id"]), reverse=True)
+        return [item[1] for item in candidates]
 
     def _detect_asturias_value(self, payload: dict[str, Any] | list[Any]) -> dict[str, str] | None:
         candidates: list[tuple[int, dict[str, str]]] = []
@@ -154,16 +200,68 @@ class AsturiasResolver:
                 record, ("Nombre", "name", "Descripcion", "description", "Valor")
             )
             normalized_name = self._normalize_text(name)
-            if self._geography_key_term not in normalized_name:
+
+            code_score = 0
+            if record_id == self.geography_code:
+                code_score = 100
+            elif record_id in self._geography_alias_codes:
+                code_score = 80
+
+            name_score = 0
+            if normalized_name == self._geography_name_normalized:
+                name_score = 70
+            elif normalized_name in self._geography_alias_names:
+                name_score = 60
+            elif self._geography_key_term and self._geography_key_term in normalized_name:
+                name_score = 20
+
+            score = code_score + name_score
+            if score <= 0:
                 continue
-            score = 20 if normalized_name == self._geography_name_normalized else 10
+
             candidates.append((score, {"id": str(record_id), "name": name}))
 
         if not candidates:
             return None
 
-        candidates.sort(key=lambda item: item[0], reverse=True)
+        candidates.sort(key=lambda item: (item[0], item[1]["id"]), reverse=True)
         return candidates[0][1]
+
+    async def _resolve_geo_candidate(
+        self,
+        *,
+        op_code: str,
+        candidates: list[dict[str, Any]],
+    ) -> tuple[dict[str, Any], dict[str, str] | None, list[dict[str, Any]]]:
+        validation_summary: list[dict[str, Any]] = []
+        for candidate in candidates:
+            values_payload = await self.ine_client.get_variable_values(op_code, candidate["id"])
+            asturias_candidate = self._detect_asturias_value(values_payload)
+            validation_summary.append(
+                self._build_candidate_validation_summary(
+                    candidate=candidate,
+                    asturias_candidate=asturias_candidate,
+                )
+            )
+            if asturias_candidate is not None:
+                return candidate, asturias_candidate, validation_summary
+
+        return candidates[0], None, validation_summary
+
+    @staticmethod
+    def _build_candidate_validation_summary(
+        *,
+        candidate: dict[str, Any],
+        asturias_candidate: dict[str, str] | None,
+    ) -> dict[str, Any]:
+        return {
+            "candidate_id": candidate["id"],
+            "candidate_name": candidate.get("name"),
+            "candidate_score": candidate.get("score"),
+            "validated": asturias_candidate is not None,
+            "matched_value_id": asturias_candidate.get("id") if asturias_candidate else None,
+            "matched_value_name": asturias_candidate.get("name") if asturias_candidate else None,
+        }
 
     def _iter_records(self, payload: dict[str, Any] | list[Any]) -> list[dict[str, Any]]:
         if isinstance(payload, list):
@@ -200,5 +298,4 @@ class AsturiasResolver:
         return f"territory_resolution:{json.dumps(payload, sort_keys=True)}"
 
 
-# Backward-compatible alias — callers using AsturiasResolver continue to work unchanged.
 TerritoryResolver = AsturiasResolver
