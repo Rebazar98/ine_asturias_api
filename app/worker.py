@@ -105,6 +105,7 @@ async def run_operation_asturias_job(
                 periodicidad=payload.get("periodicidad"),
                 max_tables=payload.get("max_tables"),
                 skip_known_no_data=payload.get("skip_known_no_data", False),
+                skip_known_processed=payload.get("skip_known_processed", False),
                 ine_client=ine_client,
                 max_concurrent_table_fetches=settings.max_concurrent_table_fetches,
                 progress_reporter=report_progress,
@@ -536,15 +537,22 @@ async def scheduled_ine_update(ctx: dict[str, Any]) -> None:
     for op_code in settings.scheduled_ine_operations:
         try:
             job_record = await job_store.create_job(
-                "operation_asturias_ingestion", {"operation_code": op_code}
+                "operation_asturias_ingestion",
+                {"operation_code": op_code, "skip_known_processed": True},
             )
             job_id = job_record["job_id"]
             await arq_pool.enqueue_job(
-                "run_operation_asturias_job", job_id=job_id, payload={"operation_code": op_code}
+                "run_operation_asturias_job",
+                job_id=job_id,
+                payload={"operation_code": op_code, "skip_known_processed": True},
             )
             logger.info(
                 "scheduled_ine_update_enqueued",
-                extra={"operation_code": op_code, "job_id": job_id},
+                extra={
+                    "operation_code": op_code,
+                    "job_id": job_id,
+                    "skip_known_processed": True,
+                },
             )
         except Exception:
             logger.exception(

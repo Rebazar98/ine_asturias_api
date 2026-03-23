@@ -216,6 +216,17 @@ class TableCatalogRepository:
         result = await self.session.execute(statement)
         return {value for value in result.scalars().all() if value}
 
+    async def get_processed_table_ids(self, operation_code: str) -> set[str]:
+        if self.session is None:
+            return set()
+
+        statement = select(INETableCatalog.table_id).where(
+            INETableCatalog.operation_code == operation_code,
+            INETableCatalog.validation_status.in_(("has_data", "no_data")),
+        )
+        result = await self.session.execute(statement)
+        return {value for value in result.scalars().all() if value}
+
     @staticmethod
     def _serialize_row(row: INETableCatalog) -> dict[str, Any]:
         return {

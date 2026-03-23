@@ -4,6 +4,7 @@ Covers normalize_and_store_table, normalize_and_store_asturias, and the
 private _prepare_*_normalized_items helpers including exception and empty paths.
 Also covers static helpers, progress_reporter paths, and large-table warnings.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -336,8 +337,8 @@ class TestCountRetrievedRows:
 
     def test_mixed_series(self):
         payload = [
-            {"Data": [{"Periodo": "2022"}]},   # 1 punto
-            {"Nombre": "Sin Data"},             # cuenta como 1
+            {"Data": [{"Periodo": "2022"}]},  # 1 punto
+            {"Nombre": "Sin Data"},  # cuenta como 1
         ]
         assert INEOperationIngestionService._count_retrieved_rows(payload) == 2
 
@@ -488,8 +489,12 @@ class TestIngestAsturiasOperationEdgeCases:
             await service.ingest_asturias_operation(
                 op_code="22",
                 resolution=None,
-                nult=None, det=None, tip=None, periodicidad=None,
-                max_tables=None, skip_known_no_data=False,
+                nult=None,
+                det=None,
+                tip=None,
+                periodicidad=None,
+                max_tables=None,
+                skip_known_no_data=False,
                 ine_client=ine_client,
                 max_concurrent_table_fetches=1,
             )
@@ -509,8 +514,12 @@ class TestIngestAsturiasOperationEdgeCases:
             await service.ingest_asturias_operation(
                 op_code="22",
                 resolution=_make_resolution(),
-                nult=None, det=None, tip=None, periodicidad=None,
-                max_tables=None, skip_known_no_data=False,
+                nult=None,
+                det=None,
+                tip=None,
+                periodicidad=None,
+                max_tables=None,
+                skip_known_no_data=False,
                 ine_client=ine_client,
                 max_concurrent_table_fetches=1,
                 progress_reporter=progress_reporter,
@@ -533,8 +542,12 @@ class TestIngestAsturiasOperationEdgeCases:
             await service.ingest_asturias_operation(
                 op_code="22",
                 resolution=_make_resolution(),
-                nult=None, det=None, tip=None, periodicidad=None,
-                max_tables=None, skip_known_no_data=False,
+                nult=None,
+                det=None,
+                tip=None,
+                periodicidad=None,
+                max_tables=None,
+                skip_known_no_data=False,
                 ine_client=ine_client,
                 max_concurrent_table_fetches=1,
                 progress_reporter=progress_reporter,
@@ -549,13 +562,15 @@ class TestIngestAsturiasOperationEdgeCases:
         service = _make_service()
         ine_client = _make_ine_client(
             get_operation_tables=AsyncMock(return_value=_one_table_payload()),
-            get_table=AsyncMock(return_value=[
-                {
-                    "Nombre": "Madrid. Datos",
-                    "MetaData": [{"Id": "28", "Nombre": "Madrid"}],
-                    "Data": [{"Periodo": "2022", "Valor": "999"}],
-                }
-            ]),
+            get_table=AsyncMock(
+                return_value=[
+                    {
+                        "Nombre": "Madrid. Datos",
+                        "MetaData": [{"Id": "28", "Nombre": "Madrid"}],
+                        "Data": [{"Periodo": "2022", "Valor": "999"}],
+                    }
+                ]
+            ),
         )
         progress_reporter = AsyncMock()
 
@@ -563,8 +578,12 @@ class TestIngestAsturiasOperationEdgeCases:
             await service.ingest_asturias_operation(
                 op_code="22",
                 resolution=_make_resolution(),
-                nult=None, det=None, tip=None, periodicidad=None,
-                max_tables=None, skip_known_no_data=False,
+                nult=None,
+                det=None,
+                tip=None,
+                periodicidad=None,
+                max_tables=None,
+                skip_known_no_data=False,
                 ine_client=ine_client,
                 max_concurrent_table_fetches=1,
                 progress_reporter=progress_reporter,
@@ -619,9 +638,7 @@ class TestPrepareAsturiasTableLargeTable:
         """Table under threshold does not produce large_warning."""
         service = _make_service()
         semaphore = asyncio.Semaphore(1)
-        ine_client = _make_ine_client(
-            get_table=AsyncMock(return_value=_asturias_data_rows(3))
-        )
+        ine_client = _make_ine_client(get_table=AsyncMock(return_value=_asturias_data_rows(3)))
         table = {"table_id": "T1", "table_name": "Tabla pequeña", "metadata": {}}
 
         prepared = await service._prepare_asturias_table(
@@ -651,10 +668,12 @@ class TestResidualLines:
         service = _make_service()
         ine_client = _make_ine_client(
             # Primera página devuelve 1 serie sin Id/COD, la segunda vacía (fin paginación)
-            get_operation_series=AsyncMock(side_effect=[
-                [{}],   # page 1: entry sin Id ni COD
-                [],     # page 2: vacío → fin de paginación
-            ]),
+            get_operation_series=AsyncMock(
+                side_effect=[
+                    [{}],  # page 1: entry sin Id ni COD
+                    [],  # page 2: vacío → fin de paginación
+                ]
+            ),
         )
         with pytest.raises(AsturiasResolutionError) as exc_info:
             await service.ingest_asturias_operation_via_series(
@@ -689,16 +708,17 @@ class TestResidualLines:
         result = await service.ingest_asturias_operation(
             op_code="22",
             resolution=_make_resolution(),
-            nult=None, det=None, tip=None, periodicidad=None,
-            max_tables=None, skip_known_no_data=False,
+            nult=None,
+            det=None,
+            tip=None,
+            periodicidad=None,
+            max_tables=None,
+            skip_known_no_data=False,
             ine_client=ine_client,
             max_concurrent_table_fetches=1,
         )
 
-        assert any(
-            w.get("warning") == "large_table_detected"
-            for w in result.get("warnings", [])
-        )
+        assert any(w.get("warning") == "large_table_detected" for w in result.get("warnings", []))
 
     def test_non_dict_metadata_item_is_skipped_line913(self):
         """Line 913: MetaData list entry that is not a dict → continue, then match by name."""
@@ -725,10 +745,12 @@ class TestIngestAsturiasOperationViaSeriesCoverage:
         """Lines 219-220: series_index is trimmed to max_series and loop breaks."""
         service = _make_service()
         ine_client = _make_ine_client(
-            get_operation_series=AsyncMock(side_effect=[
-                [{"Id": 1, "COD": "S001"}, {"Id": 2, "COD": "S002"}, {"Id": 3, "COD": "S003"}],
-                [],
-            ]),
+            get_operation_series=AsyncMock(
+                side_effect=[
+                    [{"Id": 1, "COD": "S001"}, {"Id": 2, "COD": "S002"}, {"Id": 3, "COD": "S003"}],
+                    [],
+                ]
+            ),
             get_serie_data=AsyncMock(return_value=[]),
         )
         with patch(
@@ -757,10 +779,12 @@ class TestIngestAsturiasOperationViaSeriesCoverage:
         """
         service = _make_service()
         ine_client = _make_ine_client(
-            get_operation_series=AsyncMock(side_effect=[
-                [{"Id": 10, "COD": "S010"}],
-                [],
-            ]),
+            get_operation_series=AsyncMock(
+                side_effect=[
+                    [{"Id": 10, "COD": "S010"}],
+                    [],
+                ]
+            ),
             get_serie_data=AsyncMock(side_effect=RuntimeError("upstream timeout")),
         )
         result = await service.ingest_asturias_operation_via_series(
@@ -786,10 +810,12 @@ class TestIngestAsturiasOperationViaSeriesCoverage:
 
         service = _make_service()
         ine_client = _make_ine_client(
-            get_operation_series=AsyncMock(side_effect=[
-                [{"Id": 10, "COD": "S010"}],
-                [],
-            ]),
+            get_operation_series=AsyncMock(
+                side_effect=[
+                    [{"Id": 10, "COD": "S010"}],
+                    [],
+                ]
+            ),
             get_serie_data=AsyncMock(return_value=[{"Periodo": "2022", "Valor": "100"}]),
         )
         progress_reporter = AsyncMock()
@@ -843,19 +869,25 @@ class TestIngestAsturiasOperationSkipAndMaxTables:
         )
 
         ine_client = _make_ine_client(
-            get_operation_tables=AsyncMock(return_value=[
-                {"IdTabla": "T1", "Nombre": "Tabla ya conocida sin datos"},
-                {"IdTabla": "T2", "Nombre": "Tabla con datos"},
-            ]),
+            get_operation_tables=AsyncMock(
+                return_value=[
+                    {"IdTabla": "T1", "Nombre": "Tabla ya conocida sin datos"},
+                    {"IdTabla": "T2", "Nombre": "Tabla con datos"},
+                ]
+            ),
             get_table=AsyncMock(return_value=_asturias_data_rows(2)),
         )
 
         result = await service.ingest_asturias_operation(
             op_code="22",
             resolution=_make_resolution(),
-            nult=None, det=None, tip=None, periodicidad=None,
+            nult=None,
+            det=None,
+            tip=None,
+            periodicidad=None,
             max_tables=None,
             skip_known_no_data=True,
+            skip_known_processed=False,
             ine_client=ine_client,
             max_concurrent_table_fetches=1,
         )
@@ -866,24 +898,90 @@ class TestIngestAsturiasOperationSkipAndMaxTables:
         assert "T2" in fetch_calls
 
     @pytest.mark.anyio
+    async def test_skip_known_processed_removes_has_data_and_no_data_tables(self):
+        from tests.conftest import DummyTableCatalogRepository
+
+        catalog_repo = DummyTableCatalogRepository()
+        await catalog_repo.update_table_status(
+            operation_code="22",
+            table_id="T1",
+            table_name="Known with data",
+            request_path="DATOS_TABLA/T1",
+            has_asturias_data=True,
+            validation_status="has_data",
+        )
+        await catalog_repo.update_table_status(
+            operation_code="22",
+            table_id="T2",
+            table_name="Known empty",
+            request_path="DATOS_TABLA/T2",
+            has_asturias_data=False,
+            validation_status="no_data",
+        )
+
+        service = INEOperationIngestionService(
+            ingestion_repo=DummyIngestionRepository(),
+            series_repo=DummySeriesRepository(),
+            catalog_repo=catalog_repo,
+        )
+
+        ine_client = _make_ine_client(
+            get_operation_tables=AsyncMock(
+                return_value=[
+                    {"IdTabla": "T1", "Nombre": "Tabla ya conocida con datos"},
+                    {"IdTabla": "T2", "Nombre": "Tabla ya conocida sin datos"},
+                    {"IdTabla": "T3", "Nombre": "Tabla nueva"},
+                ]
+            ),
+            get_table=AsyncMock(return_value=_asturias_data_rows(2)),
+        )
+
+        result = await service.ingest_asturias_operation(
+            op_code="22",
+            resolution=_make_resolution(),
+            nult=None,
+            det=None,
+            tip=None,
+            periodicidad=None,
+            max_tables=None,
+            skip_known_no_data=False,
+            skip_known_processed=True,
+            ine_client=ine_client,
+            max_concurrent_table_fetches=1,
+        )
+
+        assert isinstance(result, dict)
+        fetch_calls = [str(call.args[0]) for call in ine_client.get_table.call_args_list]
+        assert "T1" not in fetch_calls
+        assert "T2" not in fetch_calls
+        assert "T3" in fetch_calls
+        assert result["summary"]["tables_skipped_catalog"] == 2
+
+    @pytest.mark.anyio
     async def test_max_tables_limits_candidates(self):
         """Line 438: max_tables trims the candidate list before fetching."""
         service = _make_service()
         ine_client = _make_ine_client(
-            get_operation_tables=AsyncMock(return_value=[
-                {"IdTabla": "T1", "Nombre": "Primera"},
-                {"IdTabla": "T2", "Nombre": "Segunda"},
-                {"IdTabla": "T3", "Nombre": "Tercera"},
-            ]),
+            get_operation_tables=AsyncMock(
+                return_value=[
+                    {"IdTabla": "T1", "Nombre": "Primera"},
+                    {"IdTabla": "T2", "Nombre": "Segunda"},
+                    {"IdTabla": "T3", "Nombre": "Tercera"},
+                ]
+            ),
             get_table=AsyncMock(return_value=_asturias_data_rows(1)),
         )
 
         result = await service.ingest_asturias_operation(
             op_code="22",
             resolution=_make_resolution(),
-            nult=None, det=None, tip=None, periodicidad=None,
+            nult=None,
+            det=None,
+            tip=None,
+            periodicidad=None,
             max_tables=1,
             skip_known_no_data=False,
+            skip_known_processed=False,
             ine_client=ine_client,
             max_concurrent_table_fetches=1,
         )
@@ -904,9 +1002,13 @@ class TestIngestAsturiasOperationSkipAndMaxTables:
         await service.ingest_asturias_operation(
             op_code="22",
             resolution=_make_resolution(),
-            nult=None, det=None, tip=None, periodicidad=None,
+            nult=None,
+            det=None,
+            tip=None,
+            periodicidad=None,
             max_tables=None,
             skip_known_no_data=False,
+            skip_known_processed=False,
             ine_client=ine_client,
             max_concurrent_table_fetches=1,
             progress_reporter=progress_reporter,

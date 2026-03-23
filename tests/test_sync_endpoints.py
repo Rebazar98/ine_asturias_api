@@ -1,4 +1,5 @@
 """Tests for GET /sync/status endpoint."""
+
 from __future__ import annotations
 
 from fastapi.testclient import TestClient
@@ -19,12 +20,16 @@ def _make_client(worker_heartbeat: dict | None = None):
 
         async def get_worker_status(self, queue_name: str) -> dict:
             if self._heartbeat is None:
-                return {"status": "error", "queue_name": queue_name, "message": "worker heartbeat missing"}
+                return {
+                    "status": "error",
+                    "queue_name": queue_name,
+                    "message": "worker heartbeat missing",
+                }
             return {"status": "ok", "queue_name": queue_name, **self._heartbeat}
 
     settings = Settings(
         API_KEY="test-key",
-        SCHEDULED_INE_OPERATIONS=["22", "30"],
+        SCHEDULED_INE_OPERATIONS=["22", "33"],
         SADEI_SYNC_DATASETS=["padron_municipal"],
         IDEAS_SYNC_LAYERS=["limites_parroquiales"],
         SCHEDULED_TERRITORIAL_SYNC_ENABLED=True,
@@ -71,7 +76,7 @@ def test_sync_status_ine_source():
     ine = next(s for s in data["sources"] if s["source"] == "ine")
     assert ine["enabled"] is True
     assert "22" in ine["operations"]
-    assert "30" in ine["operations"]
+    assert "33" in ine["operations"]
     assert "03:00" in ine["schedule"]
 
 
@@ -122,7 +127,9 @@ def test_sync_status_requires_api_key_in_staging():
     settings = Settings(
         API_KEY="a-valid-staging-key-123456789",
         APP_ENV="staging",
-        POSTGRES_DSN="postgresql+asyncpg://postgres:super-secure-db-pass-1234@db:5432/ine_asturias",
+        POSTGRES_DSN=(
+            "postgresql+asyncpg://postgres:super-secure-db-pass-1234@db:5432/ine_asturias"
+        ),
     )
     app = create_app()
     app.dependency_overrides[get_settings] = lambda: settings

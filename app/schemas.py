@@ -71,6 +71,7 @@ class AsturiasOperationQueryParams(BaseModel):
     max_series: int | None = Field(Query(default=None, ge=1, le=5000))
     background: bool | None = Field(Query(default=None))
     skip_known_no_data: bool = Field(Query(default=False))
+    skip_known_processed: bool = Field(Query(default=False))
 
 
 class BackgroundJobAcceptedResponse(BaseModel):

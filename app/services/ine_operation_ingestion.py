@@ -280,9 +280,7 @@ class INEOperationIngestionService:
                 try:
                     serie_payload = await ine_client.get_serie_data(serie_key, nult=nult)
                 except Exception as exc:
-                    errors.append(
-                        {"cod_serie": cod, "error": getattr(exc, "detail", str(exc))}
-                    )
+                    errors.append({"cod_serie": cod, "error": getattr(exc, "detail", str(exc))})
                     return
 
             await self.ingestion_repo.save_raw(
@@ -370,6 +368,7 @@ class INEOperationIngestionService:
         skip_known_no_data: bool,
         ine_client: Any,
         max_concurrent_table_fetches: int,
+        skip_known_processed: bool = False,
         progress_reporter: ProgressReporter | None = None,
         max_series: int | None = None,
         max_concurrent_series_fetches: int = 5,
@@ -443,7 +442,23 @@ class INEOperationIngestionService:
 
         table_candidates = list(discovered_table_candidates)
         skipped_catalog_table_ids: list[str] = []
-        if skip_known_no_data:
+        if skip_known_processed:
+            skipped_catalog_table_ids = sorted(
+                await self.catalog_repo.get_processed_table_ids(op_code)
+            )
+            if skipped_catalog_table_ids:
+                skipped_lookup = set(skipped_catalog_table_ids)
+                table_candidates = [
+                    table for table in table_candidates if table["table_id"] not in skipped_lookup
+                ]
+                self.logger.info(
+                    "catalog_skipped_known_processed_tables",
+                    extra={
+                        "operation_code": op_code,
+                        "skipped_table_ids": skipped_catalog_table_ids,
+                    },
+                )
+        elif skip_known_no_data:
             skipped_catalog_table_ids = sorted(
                 await self.catalog_repo.get_known_no_data_table_ids(op_code)
             )
@@ -486,7 +501,9 @@ class INEOperationIngestionService:
                 "selected_tables": selected_table_ids,
                 "request_params": table_params,
                 "max_tables_effective": max_tables,
-                "skipped_known_no_data": skipped_catalog_table_ids,
+                "skip_known_processed": skip_known_processed,
+                "skip_known_no_data": skip_known_no_data,
+                "skipped_catalog_table_ids": skipped_catalog_table_ids,
             },
         )
 

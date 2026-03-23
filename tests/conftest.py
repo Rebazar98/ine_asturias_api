@@ -530,6 +530,13 @@ class DummyTableCatalogRepository:
             if row["validation_status"] == "no_data" and row["has_asturias_data"] is False
         }
 
+    async def get_processed_table_ids(self, operation_code):
+        return {
+            row["table_id"]
+            for row in (await self.list_by_operation(operation_code))
+            if row["validation_status"] in {"has_data", "no_data"}
+        }
+
 
 class DummyTerritorialRepository:
     def __init__(self) -> None:

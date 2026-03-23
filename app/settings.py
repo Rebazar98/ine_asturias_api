@@ -84,7 +84,7 @@ class Settings(BaseSettings):
     worker_metrics_port: int = Field(default=9001, alias="WORKER_METRICS_PORT")
     worker_metrics_url: str | None = Field(default=None, alias="WORKER_METRICS_URL")
     scheduled_ine_operations: list[str] = Field(
-        default=["22", "30"], alias="SCHEDULED_INE_OPERATIONS"
+        default=["22", "33"], alias="SCHEDULED_INE_OPERATIONS"
     )
     scheduled_territorial_sync_enabled: bool = Field(
         default=True, alias="SCHEDULED_TERRITORIAL_SYNC_ENABLED"

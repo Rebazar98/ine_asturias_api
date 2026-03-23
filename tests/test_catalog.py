@@ -210,6 +210,77 @@ def test_skip_known_no_data_avoids_reprocessing_catalogued_tables(
     ]
 
 
+def test_skip_known_processed_avoids_reprocessing_tables_with_data_and_no_data(
+    client,
+    dummy_ingestion_repo,
+    dummy_series_repo,
+    dummy_catalog_repo,
+):
+    called_paths = []
+    awaitable_to_sync(
+        dummy_catalog_repo.update_table_status(
+            operation_code="OP_AST",
+            table_id="501",
+            table_name="Tabla Asturias conocida",
+            request_path="DATOS_TABLA/501",
+            validation_status="has_data",
+            has_asturias_data=True,
+            normalized_rows=2,
+            metadata={"IdTabla": "501"},
+        )
+    )
+    awaitable_to_sync(
+        dummy_catalog_repo.update_table_status(
+            operation_code="OP_AST",
+            table_id="502",
+            table_name="Tabla Zaragoza",
+            request_path="DATOS_TABLA/502",
+            validation_status="no_data",
+            has_asturias_data=False,
+            metadata={"IdTabla": "502"},
+            last_warning="no_asturias_rows_after_validation",
+        )
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        called_paths.append(request.url.path)
+        if request.url.path == "/VARIABLES_OPERACION/OP_AST":
+            return httpx.Response(200, json=[{"Id": "115", "Nombre": "Comunidad autonoma"}])
+        if request.url.path == "/VALORES_VARIABLEOPERACION/115/OP_AST":
+            return httpx.Response(200, json=[{"Id": "33", "Nombre": "Asturias"}])
+        if request.url.path == "/TABLAS_OPERACION/OP_AST":
+            return httpx.Response(
+                200,
+                json=[
+                    {"IdTabla": "501", "Nombre": "Tabla Asturias conocida"},
+                    {"IdTabla": "502", "Nombre": "Tabla Zaragoza"},
+                    {"IdTabla": "503", "Nombre": "Tabla Asturias nueva"},
+                ],
+            )
+        if request.url.path == "/DATOS_TABLA/503":
+            return httpx.Response(200, json=ASTURIAS_TABLE_PAYLOAD)
+        if request.url.path in {"/DATOS_TABLA/501", "/DATOS_TABLA/502"}:
+            raise AssertionError("Processed tables should have been skipped by catalog")
+        raise AssertionError(f"Unexpected path: {request.url.path}")
+
+    override_ine_service(handler)
+
+    response = client.get(
+        "/ine/operation/OP_AST/asturias?background=false&skip_known_processed=true&max_tables=3"
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["summary"]["tables_skipped_catalog"] == 2
+    assert payload["tables_selected"] == ["503"]
+    assert called_paths == [
+        "/VARIABLES_OPERACION/OP_AST",
+        "/VALORES_VARIABLEOPERACION/115/OP_AST",
+        "/TABLAS_OPERACION/OP_AST",
+        "/DATOS_TABLA/503",
+    ]
+
+
 def awaitable_to_sync(awaitable):
     import asyncio
 

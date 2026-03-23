@@ -327,6 +327,7 @@ async def get_asturias_operation_data(
             "max_tables_requested": q.max_tables,
             "max_tables_effective": effective_max_tables,
             "background": background_mode,
+            "skip_known_processed": q.skip_known_processed,
             "skip_known_no_data": q.skip_known_no_data,
             "app_env": settings.app_env,
         },
@@ -343,6 +344,7 @@ async def get_asturias_operation_data(
         max_tables=effective_max_tables,
         max_series=q.max_series,
         skip_known_no_data=q.skip_known_no_data,
+        skip_known_processed=q.skip_known_processed,
     )
     job_params["_request_id"] = request_id_var.get()
 
@@ -372,6 +374,7 @@ async def get_asturias_operation_data(
                         max_tables=effective_max_tables,
                         max_series=q.max_series,
                         skip_known_no_data=q.skip_known_no_data,
+                        skip_known_processed=q.skip_known_processed,
                         ine_client=ine_client,
                         resolver=resolver,
                         operation_service=operation_service,
@@ -439,6 +442,7 @@ async def get_asturias_operation_data(
         periodicidad=q.periodicidad,
         max_tables=effective_max_tables,
         skip_known_no_data=q.skip_known_no_data,
+        skip_known_processed=q.skip_known_processed,
         ine_client=ine_client,
         max_concurrent_table_fetches=settings.max_concurrent_table_fetches,
         max_series=q.max_series,
@@ -459,6 +463,7 @@ async def _run_asturias_operation_job_inline(
     max_tables: int | None,
     max_series: int | None,
     skip_known_no_data: bool,
+    skip_known_processed: bool,
     ine_client: INEClientService,
     resolver: AsturiasResolver,
     operation_service: INEOperationIngestionService,
@@ -497,6 +502,7 @@ async def _run_asturias_operation_job_inline(
             periodicidad=periodicidad,
             max_tables=max_tables,
             skip_known_no_data=skip_known_no_data,
+            skip_known_processed=skip_known_processed,
             ine_client=ine_client,
             max_concurrent_table_fetches=get_settings().max_concurrent_table_fetches,
             progress_reporter=report_progress,
