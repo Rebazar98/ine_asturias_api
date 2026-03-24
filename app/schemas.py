@@ -108,6 +108,17 @@ class INESyncOperationCatalogItemResponse(BaseModel):
     background_required: bool = False
     decision_reason: str
     decision_source: str
+    profile_origin: Literal["baseline", "override"] = "baseline"
+    override_active: bool = False
+    override_execution_profile: (
+        Literal["scheduled", "background_only", "manual_only", "discarded"] | None
+    ) = None
+    override_schedule_enabled: bool | None = None
+    override_decision_reason: str | None = None
+    override_decision_source: str | None = None
+    override_applied_at: datetime | None = None
+    baseline_execution_profile: Literal["scheduled", "background_only", "manual_only", "discarded"]
+    baseline_schedule_enabled: bool
     last_job_id: str | None = None
     last_run_status: Literal["queued", "running", "completed", "failed"] | None = None
     last_trigger_mode: str | None = None
@@ -129,9 +140,9 @@ class INESyncOperationCatalogItemResponse(BaseModel):
 
 class INESyncOperationCatalogFiltersResponse(BaseModel):
     operation_code: str | None = None
-    execution_profile: Literal["scheduled", "background_only", "manual_only", "discarded"] | None = (
-        None
-    )
+    execution_profile: (
+        Literal["scheduled", "background_only", "manual_only", "discarded"] | None
+    ) = None
     last_run_status: Literal["queued", "running", "completed", "failed"] | None = None
     schedule_enabled: bool | None = None
     include_unclassified: bool = True
@@ -157,6 +168,12 @@ class INESyncOperationCatalogResponse(BaseModel):
     filters: INESyncOperationCatalogFiltersResponse
     pagination: AnalyticalPaginationResponse
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class INESyncOperationOverrideRequest(BaseModel):
+    execution_profile: Literal["scheduled", "background_only", "manual_only", "discarded"]
+    decision_reason: str = Field(min_length=1)
+    schedule_enabled: bool | None = None
 
 
 class CatalogTableItemResponse(BaseModel):

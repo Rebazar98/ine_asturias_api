@@ -142,6 +142,31 @@ def test_scheduled_ine_update_with_empty_operations_list() -> None:
     asyncio.run(scenario())
 
 
+def test_scheduled_ine_update_respects_effective_override_profiles(monkeypatch) -> None:
+    async def fake_load_scheduled_operation_codes(_settings):
+        return ["353"]
+
+    monkeypatch.setattr(
+        "app.worker._load_scheduled_ine_operation_codes",
+        fake_load_scheduled_operation_codes,
+    )
+
+    async def scenario() -> None:
+        job_store = InMemoryJobStore()
+        arq_pool = _MockArqPool()
+        ctx = {
+            "settings": _settings(scheduled_ine_operations=["71", "22"]),
+            "job_store": job_store,
+            "arq_pool": arq_pool,
+        }
+        await scheduled_ine_update(ctx)
+
+        assert len(arq_pool.enqueued) == 1
+        assert arq_pool.enqueued[0]["payload"]["operation_code"] == "353"
+
+    asyncio.run(scenario())
+
+
 # ---------------------------------------------------------------------------
 # scheduled_sadei_sync
 # ---------------------------------------------------------------------------

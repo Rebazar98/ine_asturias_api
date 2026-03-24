@@ -17,6 +17,12 @@ def _make_row(operation_code: str = "71") -> INEOperationGovernance:
         decision_reason="scheduled_shortlist_campaign_v2",
         decision_source="runtime_settings",
         metadata_json={"configured": True},
+        override_active=False,
+        override_execution_profile=None,
+        override_schedule_enabled=None,
+        override_decision_reason=None,
+        override_decision_source=None,
+        override_applied_at=None,
         last_job_id="job-71",
         last_run_status="completed",
         last_trigger_mode="scheduled",
@@ -63,6 +69,26 @@ async def test_upsert_profile_raises_without_session() -> None:
 
 
 @pytest.mark.anyio
+async def test_set_override_raises_without_session() -> None:
+    repo = INEOperationGovernanceRepository(session=None)
+    with pytest.raises(RuntimeError, match="No database session"):
+        await repo.set_override(
+            operation_code="353",
+            execution_profile="scheduled",
+            schedule_enabled=True,
+            decision_reason="promoted_temporarily",
+            decision_source="manual_override_api",
+        )
+
+
+@pytest.mark.anyio
+async def test_clear_override_raises_without_session() -> None:
+    repo = INEOperationGovernanceRepository(session=None)
+    with pytest.raises(RuntimeError, match="No database session"):
+        await repo.clear_override("353")
+
+
+@pytest.mark.anyio
 async def test_list_all_serializes_rows() -> None:
     row = _make_row()
     session = AsyncMock()
@@ -88,3 +114,52 @@ def test_serialize_sets_background_required_from_profile() -> None:
 
     assert serialized["background_required"] is True
     assert serialized["operation_code"] == "23"
+
+
+@pytest.mark.anyio
+async def test_set_override_persists_override_fields() -> None:
+    session = AsyncMock()
+    fake_missing_result = MagicMock()
+    fake_missing_result.scalars.return_value.first.return_value = None
+    session.execute = AsyncMock(return_value=fake_missing_result)
+    session.add = MagicMock()
+    session.refresh = AsyncMock()
+
+    repo = INEOperationGovernanceRepository(session=session)
+    result = await repo.set_override(
+        operation_code="353",
+        execution_profile="scheduled",
+        schedule_enabled=True,
+        decision_reason="promoted_temporarily",
+        decision_source="manual_override_api",
+    )
+
+    assert result["operation_code"] == "353"
+    assert result["override_active"] is True
+    assert result["override_execution_profile"] == "scheduled"
+    assert result["override_schedule_enabled"] is True
+    session.commit.assert_awaited()
+    session.refresh.assert_awaited()
+
+
+@pytest.mark.anyio
+async def test_clear_override_clears_override_fields() -> None:
+    row = _make_row(operation_code="353")
+    row.override_active = True
+    row.override_execution_profile = "scheduled"
+    row.override_schedule_enabled = True
+    row.override_decision_reason = "promoted_temporarily"
+    row.override_decision_source = "manual_override_api"
+    session = AsyncMock()
+    fake_result = MagicMock()
+    fake_result.scalars.return_value.first.return_value = row
+    session.execute = AsyncMock(return_value=fake_result)
+    session.refresh = AsyncMock()
+
+    repo = INEOperationGovernanceRepository(session=session)
+    result = await repo.clear_override("353")
+
+    assert result is not None
+    assert result["override_active"] is False
+    assert result["override_execution_profile"] is None
+    assert result["override_schedule_enabled"] is None

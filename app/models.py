@@ -538,6 +538,14 @@ class INEOperationGovernance(Base):
         String(64), default="runtime_settings", server_default="runtime_settings"
     )
     metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, default=dict)
+    override_active: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    override_execution_profile: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    override_schedule_enabled: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    override_decision_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    override_decision_source: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    override_applied_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     last_job_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     last_run_status: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     last_trigger_mode: Mapped[str | None] = mapped_column(String(32), nullable=True)

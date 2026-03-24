@@ -3,7 +3,9 @@ from __future__ import annotations
 from app.services.ine_operation_governance import (
     build_configured_ine_operation_profiles,
     filter_ine_operation_profiles,
+    list_effective_scheduled_ine_operation_codes,
     merge_ine_operation_profiles,
+    resolve_effective_ine_operation_profile,
     paginate_ine_operation_profiles,
     resolve_ine_operation_profile,
     summarize_ine_operation_profiles,
@@ -80,10 +82,12 @@ def test_merge_ine_operation_profiles_overlays_persisted_runtime_state() -> None
     assert profiles["71"]["last_job_id"] == "job-71"
     assert profiles["71"]["last_run_status"] == "completed"
     assert profiles["71"]["last_normalized_rows"] == 10958
+    assert profiles["71"]["profile_origin"] == "baseline"
+    assert profiles["71"]["baseline_execution_profile"] == "scheduled"
     assert profiles["23"]["background_required"] is True
 
 
-def test_merge_ine_operation_profiles_keeps_persisted_unclassified_operations() -> None:
+def test_merge_ine_operation_profiles_applies_override_for_unclassified_operations() -> None:
     settings = _settings()
 
     merged = merge_ine_operation_profiles(
@@ -91,12 +95,17 @@ def test_merge_ine_operation_profiles_keeps_persisted_unclassified_operations() 
         [
             {
                 "operation_code": "999",
-                "execution_profile": "manual_only",
-                "schedule_enabled": False,
+                "execution_profile": "scheduled",
+                "schedule_enabled": True,
                 "decision_reason": "manual_review_only",
                 "decision_source": "operator_override",
                 "metadata": {"configured": False},
-                "background_required": False,
+                "override_active": True,
+                "override_execution_profile": "scheduled",
+                "override_schedule_enabled": True,
+                "override_decision_reason": "promoted_temporarily",
+                "override_decision_source": "manual_override_api",
+                "override_applied_at": None,
                 "last_job_id": None,
                 "last_run_status": None,
                 "last_trigger_mode": None,
@@ -110,8 +119,65 @@ def test_merge_ine_operation_profiles_keeps_persisted_unclassified_operations() 
     )
 
     profiles = {profile["operation_code"]: profile for profile in merged}
-    assert profiles["999"]["execution_profile"] == "manual_only"
-    assert profiles["999"]["decision_source"] == "operator_override"
+    assert profiles["999"]["execution_profile"] == "scheduled"
+    assert profiles["999"]["profile_origin"] == "override"
+    assert profiles["999"]["override_active"] is True
+    assert profiles["999"]["decision_source"] == "manual_override_api"
+    assert profiles["999"]["baseline_execution_profile"] == "manual_only"
+    assert profiles["999"]["metadata"]["configured"] is False
+
+
+def test_resolve_effective_ine_operation_profile_uses_override_when_active() -> None:
+    settings = _settings()
+
+    profile = resolve_effective_ine_operation_profile(
+        settings,
+        "23",
+        {
+            "operation_code": "23",
+            "override_active": True,
+            "override_execution_profile": "scheduled",
+            "override_schedule_enabled": True,
+            "override_decision_reason": "promoted_to_scheduler",
+            "override_decision_source": "manual_override_api",
+            "override_applied_at": None,
+        },
+    )
+
+    assert profile["execution_profile"] == "scheduled"
+    assert profile["schedule_enabled"] is True
+    assert profile["profile_origin"] == "override"
+    assert profile["baseline_execution_profile"] == "background_only"
+
+
+def test_list_effective_scheduled_ine_operation_codes_respects_override() -> None:
+    settings = _settings()
+
+    scheduled_codes = list_effective_scheduled_ine_operation_codes(
+        settings,
+        [
+            {
+                "operation_code": "71",
+                "override_active": True,
+                "override_execution_profile": "manual_only",
+                "override_schedule_enabled": False,
+                "override_decision_reason": "paused_temporarily",
+                "override_decision_source": "manual_override_api",
+                "override_applied_at": None,
+            },
+            {
+                "operation_code": "353",
+                "override_active": True,
+                "override_execution_profile": "scheduled",
+                "override_schedule_enabled": True,
+                "override_decision_reason": "promoted_for_trial",
+                "override_decision_source": "manual_override_api",
+                "override_applied_at": None,
+            },
+        ],
+    )
+
+    assert scheduled_codes == ["22", "33", "353"]
 
 
 def test_filter_ine_operation_profiles_supports_profile_and_configured_filters() -> None:

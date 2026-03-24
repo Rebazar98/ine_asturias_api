@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.core.logging import get_logger
 from app.core.jobs import BaseJobStore
@@ -19,11 +19,16 @@ from app.schemas import (
     INESyncOperationCatalogItemResponse,
     INESyncOperationCatalogResponse,
     INESyncOperationCatalogSummaryResponse,
+    INESyncOperationOverrideRequest,
 )
 from app.services.ine_operation_governance import (
+    INE_EXECUTION_PROFILE_SCHEDULED,
+    INE_MANUAL_OVERRIDE_DECISION_SOURCE,
+    derive_schedule_enabled_for_profile,
     filter_ine_operation_profiles,
     merge_ine_operation_profiles,
     paginate_ine_operation_profiles,
+    resolve_effective_ine_operation_profile,
     summarize_ine_operation_profiles,
 )
 from app.settings import Settings
@@ -45,6 +50,25 @@ async def _load_ine_operation_profiles(
         logger.exception(log_event)
         persisted_operation_profiles = []
     return merge_ine_operation_profiles(settings, persisted_operation_profiles)
+
+
+async def _load_ine_operation_profile_item(
+    settings: Settings,
+    ine_governance_repo: INEOperationGovernanceRepository,
+    *,
+    operation_code: str,
+    log_event: str,
+) -> dict[str, Any]:
+    try:
+        persisted_profile = await ine_governance_repo.get_by_operation_code(operation_code)
+    except Exception:
+        logger.exception(log_event, extra={"operation_code": operation_code})
+        persisted_profile = None
+    return resolve_effective_ine_operation_profile(
+        settings,
+        operation_code,
+        persisted_profile,
+    )
 
 
 @router.get(
@@ -178,3 +202,86 @@ async def get_ine_operation_catalog(
             "merged_operations_total": len(operation_profiles),
         },
     )
+
+
+@router.post(
+    "/sync/ine/operations/{operation_code}/override",
+    response_model=INESyncOperationCatalogItemResponse,
+    summary="Persist a manual operational override for an INE operation",
+)
+async def set_ine_operation_override(
+    operation_code: str,
+    request: INESyncOperationOverrideRequest,
+    settings: Settings = Depends(get_settings),
+    ine_governance_repo: INEOperationGovernanceRepository = Depends(
+        get_ine_operation_governance_repository
+    ),
+) -> INESyncOperationCatalogItemResponse:
+    decision_reason = request.decision_reason.strip()
+    if not decision_reason:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={
+                "message": "decision_reason must not be blank.",
+                "operation_code": operation_code,
+            },
+        )
+    effective_schedule_enabled = request.schedule_enabled
+    if effective_schedule_enabled is None:
+        effective_schedule_enabled = derive_schedule_enabled_for_profile(request.execution_profile)
+    if (
+        request.execution_profile != INE_EXECUTION_PROFILE_SCHEDULED
+        and effective_schedule_enabled is True
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={
+                "message": "schedule_enabled=true is only valid for execution_profile='scheduled'.",
+                "operation_code": operation_code,
+            },
+        )
+    if (
+        request.execution_profile == INE_EXECUTION_PROFILE_SCHEDULED
+        and effective_schedule_enabled is False
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={
+                "message": "schedule_enabled=false is not valid for execution_profile='scheduled'.",
+                "operation_code": operation_code,
+            },
+        )
+    persisted = await ine_governance_repo.set_override(
+        operation_code=operation_code,
+        execution_profile=request.execution_profile,
+        schedule_enabled=effective_schedule_enabled,
+        decision_reason=decision_reason,
+        decision_source=INE_MANUAL_OVERRIDE_DECISION_SOURCE,
+    )
+    item = resolve_effective_ine_operation_profile(settings, operation_code, persisted)
+    return INESyncOperationCatalogItemResponse(**item)
+
+
+@router.delete(
+    "/sync/ine/operations/{operation_code}/override",
+    response_model=INESyncOperationCatalogItemResponse,
+    summary="Clear a manual operational override for an INE operation",
+)
+async def clear_ine_operation_override(
+    operation_code: str,
+    settings: Settings = Depends(get_settings),
+    ine_governance_repo: INEOperationGovernanceRepository = Depends(
+        get_ine_operation_governance_repository
+    ),
+) -> INESyncOperationCatalogItemResponse:
+    persisted = await ine_governance_repo.clear_override(operation_code)
+    if persisted is None:
+        item = await _load_ine_operation_profile_item(
+            settings,
+            ine_governance_repo,
+            operation_code=operation_code,
+            log_event="sync_ine_override_clear_lookup_failed",
+        )
+    else:
+        item = resolve_effective_ine_operation_profile(settings, operation_code, persisted)
+    return INESyncOperationCatalogItemResponse(**item)

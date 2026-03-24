@@ -16,10 +16,60 @@ from app.settings import Settings
 
 class DummyGovernanceRepository:
     def __init__(self, rows: list[dict] | None = None):
-        self._rows = rows or []
+        self._rows = {row["operation_code"]: dict(row) for row in (rows or [])}
 
     async def list_all(self) -> list[dict]:
-        return list(self._rows)
+        return list(self._rows.values())
+
+    async def get_by_operation_code(self, operation_code: str) -> dict | None:
+        row = self._rows.get(operation_code)
+        return dict(row) if row else None
+
+    async def set_override(
+        self,
+        *,
+        operation_code: str,
+        execution_profile: str,
+        schedule_enabled: bool,
+        decision_reason: str,
+        decision_source: str,
+    ) -> dict:
+        row = dict(self._rows.get(operation_code, {"operation_code": operation_code}))
+        row.update(
+            {
+                "execution_profile": execution_profile,
+                "schedule_enabled": schedule_enabled,
+                "decision_reason": decision_reason,
+                "decision_source": decision_source,
+                "metadata": row.get("metadata", {}),
+                "override_active": True,
+                "override_execution_profile": execution_profile,
+                "override_schedule_enabled": schedule_enabled,
+                "override_decision_reason": decision_reason,
+                "override_decision_source": decision_source,
+                "override_applied_at": None,
+            }
+        )
+        self._rows[operation_code] = row
+        return dict(row)
+
+    async def clear_override(self, operation_code: str) -> dict | None:
+        row = self._rows.get(operation_code)
+        if row is None:
+            return None
+        row = dict(row)
+        row.update(
+            {
+                "override_active": False,
+                "override_execution_profile": None,
+                "override_schedule_enabled": None,
+                "override_decision_reason": None,
+                "override_decision_source": None,
+                "override_applied_at": None,
+            }
+        )
+        self._rows[operation_code] = row
+        return dict(row)
 
 
 def _make_client(
@@ -264,6 +314,98 @@ def test_sync_ine_operations_supports_pagination():
     assert len(data["items"]) == 3
 
 
+def test_sync_ine_operations_exposes_override_origin_fields():
+    client = _make_client(
+        governance_rows=[
+            {
+                "operation_code": "353",
+                "execution_profile": "scheduled",
+                "schedule_enabled": True,
+                "decision_reason": "manual_override_active",
+                "decision_source": "manual_override_api",
+                "metadata": {"configured": True},
+                "override_active": True,
+                "override_execution_profile": "scheduled",
+                "override_schedule_enabled": True,
+                "override_decision_reason": "promoted_temporarily",
+                "override_decision_source": "manual_override_api",
+                "override_applied_at": None,
+            }
+        ]
+    )
+
+    data = client.get("/sync/ine/operations?operation_code=353").json()
+
+    assert data["items"][0]["profile_origin"] == "override"
+    assert data["items"][0]["override_active"] is True
+    assert data["items"][0]["override_execution_profile"] == "scheduled"
+    assert data["items"][0]["baseline_execution_profile"] == "manual_only"
+
+
+def test_sync_ine_operations_override_endpoint_persists_manual_override():
+    client = _make_client()
+
+    response = client.post(
+        "/sync/ine/operations/353/override",
+        json={
+            "execution_profile": "scheduled",
+            "decision_reason": "promoted_temporarily",
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["operation_code"] == "353"
+    assert data["execution_profile"] == "scheduled"
+    assert data["profile_origin"] == "override"
+    assert data["override_active"] is True
+    assert data["schedule_enabled"] is True
+
+
+def test_sync_ine_operations_override_endpoint_rejects_inconsistent_schedule_enabled():
+    client = _make_client()
+
+    response = client.post(
+        "/sync/ine/operations/23/override",
+        json={
+            "execution_profile": "background_only",
+            "decision_reason": "keep_manual",
+            "schedule_enabled": True,
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_sync_ine_operations_clear_override_restores_baseline():
+    client = _make_client(
+        governance_rows=[
+            {
+                "operation_code": "353",
+                "execution_profile": "scheduled",
+                "schedule_enabled": True,
+                "decision_reason": "manual_override_active",
+                "decision_source": "manual_override_api",
+                "metadata": {"configured": True},
+                "override_active": True,
+                "override_execution_profile": "scheduled",
+                "override_schedule_enabled": True,
+                "override_decision_reason": "promoted_temporarily",
+                "override_decision_source": "manual_override_api",
+                "override_applied_at": None,
+            }
+        ]
+    )
+
+    response = client.delete("/sync/ine/operations/353/override")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["execution_profile"] == "manual_only"
+    assert data["profile_origin"] == "baseline"
+    assert data["override_active"] is False
+
+
 def test_sync_status_sadei_source():
     client = _make_client()
     data = client.get("/sync/status").json()
@@ -355,8 +497,8 @@ def test_sync_ine_operations_requires_api_key_in_staging():
     app = create_app()
     app.dependency_overrides[get_settings] = lambda: settings
     app.dependency_overrides[get_job_store] = lambda: InMemoryJobStore()
-    app.dependency_overrides[get_ine_operation_governance_repository] = (
-        lambda: DummyGovernanceRepository()
+    app.dependency_overrides[get_ine_operation_governance_repository] = lambda: (
+        DummyGovernanceRepository()
     )
     client = TestClient(app)
 
@@ -370,8 +512,8 @@ def test_sync_ine_operations_accessible_in_local_env_without_key():
     store = InMemoryJobStore()
     app.dependency_overrides[get_settings] = lambda: settings
     app.dependency_overrides[get_job_store] = lambda: store
-    app.dependency_overrides[get_ine_operation_governance_repository] = (
-        lambda: DummyGovernanceRepository()
+    app.dependency_overrides[get_ine_operation_governance_repository] = lambda: (
+        DummyGovernanceRepository()
     )
     client = TestClient(app)
 

@@ -66,6 +66,76 @@ class INEOperationGovernanceRepository:
             },
         )
 
+    async def set_override(
+        self,
+        *,
+        operation_code: str,
+        execution_profile: str,
+        schedule_enabled: bool,
+        decision_reason: str,
+        decision_source: str,
+    ) -> dict[str, Any]:
+        session = self._require_session()
+        now = func_now_utc()
+        try:
+            row = await self._get_row(operation_code)
+            if row is None:
+                row = INEOperationGovernance(
+                    operation_code=operation_code,
+                    execution_profile=execution_profile,
+                    schedule_enabled=schedule_enabled,
+                    decision_reason=decision_reason,
+                    decision_source=decision_source,
+                    metadata_json={},
+                )
+                session.add(row)
+            else:
+                row.execution_profile = execution_profile
+                row.schedule_enabled = schedule_enabled
+                row.decision_reason = decision_reason
+                row.decision_source = decision_source
+            row.override_active = True
+            row.override_execution_profile = execution_profile
+            row.override_schedule_enabled = schedule_enabled
+            row.override_decision_reason = decision_reason
+            row.override_decision_source = decision_source
+            row.override_applied_at = now
+            row.updated_at = now
+            await session.commit()
+            await session.refresh(row)
+        except SQLAlchemyError:
+            await session.rollback()
+            self.logger.exception(
+                "ine_operation_governance_set_override_failed",
+                extra={"operation_code": operation_code},
+            )
+            raise
+        return self._serialize(row)
+
+    async def clear_override(self, operation_code: str) -> dict[str, Any] | None:
+        session = self._require_session()
+        try:
+            row = await self._get_row(operation_code)
+            if row is None:
+                return None
+            row.override_active = False
+            row.override_execution_profile = None
+            row.override_schedule_enabled = None
+            row.override_decision_reason = None
+            row.override_decision_source = None
+            row.override_applied_at = None
+            row.updated_at = func_now_utc()
+            await session.commit()
+            await session.refresh(row)
+        except SQLAlchemyError:
+            await session.rollback()
+            self.logger.exception(
+                "ine_operation_governance_clear_override_failed",
+                extra={"operation_code": operation_code},
+            )
+            raise
+        return self._serialize(row)
+
     async def mark_queued(
         self,
         *,
@@ -295,9 +365,7 @@ class INEOperationGovernanceRepository:
         values: dict[str, Any],
         update_fields: dict[str, Any],
     ) -> dict[str, Any]:
-        if self.session is None:
-            raise RuntimeError("No database session available")
-
+        session = self._require_session()
         stmt = (
             insert(INEOperationGovernance)
             .values(**values)
@@ -308,17 +376,30 @@ class INEOperationGovernanceRepository:
             .returning(INEOperationGovernance)
         )
         try:
-            result = await self.session.execute(stmt)
-            await self.session.commit()
+            result = await session.execute(stmt)
+            await session.commit()
             row = result.scalars().one()
         except SQLAlchemyError:
-            await self.session.rollback()
+            await session.rollback()
             self.logger.exception(
                 "ine_operation_governance_upsert_failed",
                 extra={"operation_code": values.get("operation_code")},
             )
             raise
         return self._serialize(row)
+
+    def _require_session(self) -> AsyncSession:
+        if self.session is None:
+            raise RuntimeError("No database session available")
+        return self.session
+
+    async def _get_row(self, operation_code: str) -> INEOperationGovernance | None:
+        session = self._require_session()
+        stmt = select(INEOperationGovernance).where(
+            INEOperationGovernance.operation_code == operation_code
+        )
+        result = await session.execute(stmt)
+        return result.scalars().first()
 
     @staticmethod
     def _serialize(row: INEOperationGovernance) -> dict[str, Any]:
@@ -329,8 +410,14 @@ class INEOperationGovernanceRepository:
             "schedule_enabled": row.schedule_enabled,
             "decision_reason": row.decision_reason,
             "decision_source": row.decision_source,
-            "metadata": row.metadata_json,
+            "metadata": row.metadata_json or {},
             "background_required": row.execution_profile == "background_only",
+            "override_active": row.override_active,
+            "override_execution_profile": row.override_execution_profile,
+            "override_schedule_enabled": row.override_schedule_enabled,
+            "override_decision_reason": row.override_decision_reason,
+            "override_decision_source": row.override_decision_source,
+            "override_applied_at": row.override_applied_at,
             "last_job_id": row.last_job_id,
             "last_run_status": row.last_run_status,
             "last_trigger_mode": row.last_trigger_mode,

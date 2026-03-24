@@ -35,7 +35,10 @@ from app.services.asturias_resolver import AsturiasResolutionError, AsturiasReso
 from app.services.catastro_client import CatastroClientError, CatastroClientService
 from app.services.ideas_wfs_client import IDEASWFSClientError, IDEASWFSClientService
 from app.services.ine_client import INEClientError, INEClientService
-from app.services.ine_operation_governance import resolve_ine_operation_profile
+from app.services.ine_operation_governance import (
+    list_effective_scheduled_ine_operation_codes,
+    resolve_effective_ine_operation_profile,
+)
 from app.services.ine_operation_ingestion import INEOperationIngestionService
 from app.services.sadei_client import SADEIClientError, SADEIClientService
 from app.services.sadei_normalizers import normalize_sadei_dataset
@@ -54,8 +57,26 @@ def _ine_trigger_mode(payload: dict[str, Any]) -> str:
     return str(payload.get("_trigger_mode") or "background")
 
 
-def _ine_governance_context(settings, op_code: str) -> dict[str, Any]:
-    return resolve_ine_operation_profile(settings, op_code)
+async def _resolve_effective_ine_governance_context(
+    repo: INEOperationGovernanceRepository,
+    settings,
+    op_code: str,
+) -> dict[str, Any]:
+    persisted = await repo.get_by_operation_code(op_code)
+    return resolve_effective_ine_operation_profile(settings, op_code, persisted)
+
+
+async def _load_scheduled_ine_operation_codes(settings) -> list[str]:
+    try:
+        async with session_scope() as session:
+            if session is None:
+                return list(settings.scheduled_ine_operations)
+            repo = INEOperationGovernanceRepository(session=session)
+            persisted_profiles = await repo.list_all()
+        return list_effective_scheduled_ine_operation_codes(settings, persisted_profiles)
+    except Exception:
+        logger.warning("scheduled_ine_update_governance_lookup_failed")
+        return list(settings.scheduled_ine_operations)
 
 
 def _extract_error_message(error: Any) -> str:
@@ -79,11 +100,11 @@ async def _mark_ine_governance_running(
     background_reason: str | None,
 ) -> None:
     try:
-        governance = _ine_governance_context(settings, op_code)
         async with session_scope() as session:
             if session is None:
                 return
             repo = INEOperationGovernanceRepository(session=session)
+            governance = await _resolve_effective_ine_governance_context(repo, settings, op_code)
             await repo.mark_running(
                 operation_code=op_code,
                 execution_profile=governance["execution_profile"],
@@ -114,11 +135,11 @@ async def _mark_ine_governance_queued(
     background_reason: str | None,
 ) -> None:
     try:
-        governance = _ine_governance_context(settings, op_code)
         async with session_scope() as session:
             if session is None:
                 return
             repo = INEOperationGovernanceRepository(session=session)
+            governance = await _resolve_effective_ine_governance_context(repo, settings, op_code)
             await repo.mark_queued(
                 operation_code=op_code,
                 execution_profile=governance["execution_profile"],
@@ -150,11 +171,11 @@ async def _mark_ine_governance_completed(
     summary: dict[str, Any],
 ) -> None:
     try:
-        governance = _ine_governance_context(settings, op_code)
         async with session_scope() as session:
             if session is None:
                 return
             repo = INEOperationGovernanceRepository(session=session)
+            governance = await _resolve_effective_ine_governance_context(repo, settings, op_code)
             await repo.mark_completed(
                 operation_code=op_code,
                 execution_profile=governance["execution_profile"],
@@ -189,11 +210,11 @@ async def _mark_ine_governance_failed(
     error: Any,
 ) -> None:
     try:
-        governance = _ine_governance_context(settings, op_code)
         async with session_scope() as session:
             if session is None:
                 return
             repo = INEOperationGovernanceRepository(session=session)
+            governance = await _resolve_effective_ine_governance_context(repo, settings, op_code)
             await repo.mark_failed(
                 operation_code=op_code,
                 execution_profile=governance["execution_profile"],
@@ -771,7 +792,8 @@ async def scheduled_ine_update(ctx: dict[str, Any]) -> None:
     settings = ctx["settings"]
     job_store: RedisJobStore = ctx["job_store"]
     arq_pool = ctx["arq_pool"]
-    for op_code in settings.scheduled_ine_operations:
+    operation_codes = await _load_scheduled_ine_operation_codes(settings)
+    for op_code in operation_codes:
         try:
             job_record = await job_store.create_job(
                 "operation_asturias_ingestion",
