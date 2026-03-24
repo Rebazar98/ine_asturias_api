@@ -8,17 +8,23 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from app.core.logging import get_logger
 from app.core.jobs import BaseJobStore
 from app.dependencies import (
+    get_ine_operation_incident_repository,
     get_ine_operation_governance_repository,
     get_ine_operation_governance_history_repository,
     get_job_store,
     get_settings,
     require_api_key,
 )
+from app.repositories.ine_operation_incidents import INEOperationIncidentRepository
 from app.repositories.ine_operation_governance import INEOperationGovernanceRepository
 from app.repositories.ine_operation_governance_history import (
     INEOperationGovernanceHistoryRepository,
 )
 from app.schemas import (
+    INESyncIncidentFiltersResponse,
+    INESyncIncidentItemResponse,
+    INESyncIncidentResponse,
+    INESyncIncidentSummaryResponse,
     INESyncOperationCatalogFiltersResponse,
     INESyncOperationCatalogItemResponse,
     INESyncOperationCatalogResponse,
@@ -27,6 +33,12 @@ from app.schemas import (
     INESyncOperationHistoryResponse,
     INESyncOperationHistorySummaryResponse,
     INESyncOperationOverrideRequest,
+)
+from app.services.ine_operation_incidents import (
+    attach_ine_incident_profiles,
+    filter_ine_operation_incidents,
+    paginate_ine_operation_incidents,
+    summarize_ine_operation_incidents,
 )
 from app.services.ine_operation_governance import (
     INE_EXECUTION_PROFILE_SCHEDULED,
@@ -221,6 +233,79 @@ async def get_ine_operation_catalog(
         metadata={
             "configured_operations_total": len(configured_profiles),
             "merged_operations_total": len(operation_profiles),
+        },
+    )
+
+
+@router.get(
+    "/sync/ine/incidents",
+    response_model=INESyncIncidentResponse,
+    summary="Get operational incidents for governed INE operations",
+)
+async def get_ine_operation_incidents(
+    status: str | None = Query(default=None, pattern="^(open|resolved)$"),
+    severity: str | None = Query(default=None, pattern="^(low|medium|high)$"),
+    operation_code: str | None = Query(default=None),
+    incident_type: str | None = Query(
+        default=None,
+        pattern="^(repeated_failures|repeated_no_data|heavy_table_threshold_abort|series_direct_blocked|background_forced_heavy_operation|high_warning_rate)$",
+    ),
+    execution_profile: str | None = Query(
+        default=None,
+        pattern="^(scheduled|background_only|manual_only|discarded)$",
+    ),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+    settings: Settings = Depends(get_settings),
+    ine_governance_repo: INEOperationGovernanceRepository = Depends(
+        get_ine_operation_governance_repository
+    ),
+    ine_incident_repo: INEOperationIncidentRepository = Depends(
+        get_ine_operation_incident_repository
+    ),
+) -> INESyncIncidentResponse:
+    operation_profiles = await _load_ine_operation_profiles(
+        settings,
+        ine_governance_repo,
+        log_event="sync_ine_incidents_governance_lookup_failed",
+    )
+    incidents = await ine_incident_repo.list_filtered(
+        status=status,
+        severity=severity,
+        operation_code=operation_code,
+        incident_type=incident_type,
+    )
+    attached = attach_ine_incident_profiles(incidents, operation_profiles)
+    filtered = filter_ine_operation_incidents(
+        attached,
+        status=status,
+        severity=severity,
+        operation_code=operation_code,
+        incident_type=incident_type,
+        execution_profile=execution_profile,
+    )
+    paginated, pagination = paginate_ine_operation_incidents(
+        filtered,
+        page=page,
+        page_size=page_size,
+    )
+    return INESyncIncidentResponse(
+        generated_at=datetime.now(UTC),
+        summary=INESyncIncidentSummaryResponse(**summarize_ine_operation_incidents(filtered)),
+        items=[INESyncIncidentItemResponse(**item) for item in paginated],
+        filters=INESyncIncidentFiltersResponse(
+            status=status,
+            severity=severity,
+            operation_code=operation_code,
+            incident_type=incident_type,
+            execution_profile=execution_profile,
+            page=page,
+            page_size=page_size,
+        ),
+        pagination=pagination,
+        metadata={
+            "merged_operations_total": len(operation_profiles),
+            "filtered_incidents_total": len(filtered),
         },
     )
 

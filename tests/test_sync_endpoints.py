@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from app.core.jobs import InMemoryJobStore
 from app.dependencies import (
+    get_ine_operation_incident_repository,
     get_ine_operation_governance_repository,
     get_ine_operation_governance_history_repository,
     get_job_store,
@@ -115,9 +116,34 @@ class DummyGovernanceHistoryRepository:
         }
 
 
+class DummyIncidentRepository:
+    def __init__(self, rows: list[dict] | None = None) -> None:
+        self._rows = [dict(row) for row in (rows or [])]
+
+    async def list_filtered(
+        self,
+        *,
+        status: str | None = None,
+        severity: str | None = None,
+        operation_code: str | None = None,
+        incident_type: str | None = None,
+    ) -> list[dict]:
+        items = list(self._rows)
+        if status is not None:
+            items = [item for item in items if item.get("status") == status]
+        if severity is not None:
+            items = [item for item in items if item.get("severity") == severity]
+        if operation_code is not None:
+            items = [item for item in items if item.get("operation_code") == operation_code]
+        if incident_type is not None:
+            items = [item for item in items if item.get("incident_type") == incident_type]
+        return [dict(item) for item in items]
+
+
 def _make_client(
     worker_heartbeat: dict | None = None,
     governance_rows: list[dict] | None = None,
+    incident_rows: list[dict] | None = None,
 ):
     """Build a TestClient with an InMemoryJobStore pre-seeded with optional heartbeat."""
 
@@ -150,10 +176,12 @@ def _make_client(
     store = DummyJobStore(heartbeat=worker_heartbeat)
     governance_repo = DummyGovernanceRepository(rows=governance_rows)
     history_repo = DummyGovernanceHistoryRepository()
+    incident_repo = DummyIncidentRepository(rows=incident_rows)
     app.dependency_overrides[get_settings] = lambda: settings
     app.dependency_overrides[get_job_store] = lambda: store
     app.dependency_overrides[get_ine_operation_governance_repository] = lambda: governance_repo
     app.dependency_overrides[get_ine_operation_governance_history_repository] = lambda: history_repo
+    app.dependency_overrides[get_ine_operation_incident_repository] = lambda: incident_repo
     return TestClient(app, headers={"X-API-Key": "test-key"})
 
 
@@ -490,6 +518,70 @@ def test_sync_ine_operation_history_returns_events_for_override_lifecycle():
         "override_updated",
         "override_set",
     ]
+
+
+def test_sync_ine_incidents_returns_filtered_items_with_profile_context():
+    client = _make_client(
+        governance_rows=[
+            {
+                "operation_code": "71",
+                "execution_profile": "scheduled",
+                "schedule_enabled": True,
+                "decision_reason": "scheduled_shortlist_campaign_v2",
+                "decision_source": "runtime_settings",
+                "metadata": {"configured": True},
+                "background_required": False,
+            }
+        ],
+        incident_rows=[
+            {
+                "incident_id": 1,
+                "operation_code": "71",
+                "incident_type": "repeated_failures",
+                "severity": "high",
+                "status": "open",
+                "title": "Operation 71 is failing repeatedly",
+                "message": "failure streak",
+                "first_seen_at": "2026-03-24T00:00:00Z",
+                "last_seen_at": "2026-03-24T01:00:00Z",
+                "last_resolved_at": None,
+                "occurrence_count": 2,
+                "last_job_id": "job-71",
+                "last_run_status": "failed",
+                "suggested_action": "review_manual",
+                "metadata": {},
+            },
+            {
+                "incident_id": 2,
+                "operation_code": "353",
+                "incident_type": "repeated_no_data",
+                "severity": "low",
+                "status": "resolved",
+                "title": "Operation 353 yielded no data",
+                "message": "resolved later",
+                "first_seen_at": "2026-03-24T00:00:00Z",
+                "last_seen_at": "2026-03-24T01:00:00Z",
+                "last_resolved_at": "2026-03-24T02:00:00Z",
+                "occurrence_count": 3,
+                "last_job_id": "job-353",
+                "last_run_status": "completed",
+                "suggested_action": "consider_discarding",
+                "metadata": {},
+            },
+        ],
+    )
+
+    response = client.get("/sync/ine/incidents?status=open&execution_profile=scheduled")
+    assert response.status_code == 200
+    data = response.json()
+
+    assert data["source"] == "internal.sync.ine_incidents"
+    assert data["summary"]["incidents_total"] == 1
+    assert len(data["items"]) == 1
+    assert data["items"][0]["operation_code"] == "71"
+    assert data["items"][0]["execution_profile"] == "scheduled"
+    assert data["items"][0]["schedule_enabled"] is True
+    assert data["items"][0]["background_required"] is False
 
 
 def test_sync_status_sadei_source():

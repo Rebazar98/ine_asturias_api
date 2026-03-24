@@ -34,6 +34,7 @@ from app.worker import (
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _settings() -> Settings:
     return Settings(app_env="local", job_store_backend="memory")
 
@@ -86,9 +87,7 @@ def test_resolution_error_marks_job_failed() -> None:
             patch("app.worker.session_scope", new=_mock_session),
             patch("app.worker.INEOperationIngestionService", new=FailingIngestionService),
         ):
-            result = await run_operation_asturias_job(
-                ctx, job["job_id"], {"operation_code": "22"}
-            )
+            result = await run_operation_asturias_job(ctx, job["job_id"], {"operation_code": "22"})
 
         assert result is None
         record = await job_store.get_job(job["job_id"])
@@ -111,9 +110,7 @@ def test_ine_client_error_marks_job_failed() -> None:
             pass
 
         async def ingest_asturias_operation(self, **kwargs: Any) -> Any:
-            raise INEUpstreamError(
-                status_code=503, detail={"message": "INE service unavailable"}
-            )
+            raise INEUpstreamError(status_code=503, detail={"message": "INE service unavailable"})
 
     @asynccontextmanager
     async def _mock_session():
@@ -134,9 +131,7 @@ def test_ine_client_error_marks_job_failed() -> None:
                 new=FailingIngestionService,
             ),
         ):
-            result = await run_operation_asturias_job(
-                ctx, job["job_id"], {"operation_code": "22"}
-            )
+            result = await run_operation_asturias_job(ctx, job["job_id"], {"operation_code": "22"})
 
         assert result is None
         record = await job_store.get_job(job["job_id"])
@@ -189,9 +184,7 @@ def test_operation_job_generic_exception_marks_failed() -> None:
         ctx["ine_client"] = None
 
         job = await job_store.create_job("test", {"operation_code": "30"})
-        result = await run_operation_asturias_job(
-            ctx, job["job_id"], {"operation_code": "30"}
-        )
+        result = await run_operation_asturias_job(ctx, job["job_id"], {"operation_code": "30"})
 
         assert result is None
         record = await job_store.get_job(job["job_id"])
@@ -250,6 +243,7 @@ def test_municipality_report_request_id_cleared_after_db_failure() -> None:
 
     asyncio.run(scenario())
 
+
 # ---------------------------------------------------------------------------
 # run_territorial_export_job
 # ---------------------------------------------------------------------------
@@ -269,16 +263,16 @@ def test_territorial_export_catastro_error_marks_job_failed() -> None:
             pass
 
         async def build_export(self, **kwargs):
-            raise CatastroUpstreamError(
-                status_code=503, detail={"message": "Catastro unavailable"}
-            )
+            raise CatastroUpstreamError(status_code=503, detail={"message": "Catastro unavailable"})
 
     async def scenario():
         job_store = InMemoryJobStore()
         ctx = _base_ctx(job_store)
         ctx.update({"http_client": None, "cache": None, "catastro_circuit_breaker": None})
 
-        job = await job_store.create_job("test", {"unit_level": "municipality", "code_value": "33044"})
+        job = await job_store.create_job(
+            "test", {"unit_level": "municipality", "code_value": "33044"}
+        )
         with (
             patch("app.worker.session_scope", new=_ok_session_scope),
             patch("app.worker.TerritorialExportService", new=FailingExportService),
@@ -304,7 +298,9 @@ def test_territorial_export_generic_exception_marks_job_failed() -> None:
         ctx = _base_ctx(job_store)
         ctx.update({"http_client": None, "cache": None, "catastro_circuit_breaker": None})
 
-        job = await job_store.create_job("test", {"unit_level": "municipality", "code_value": "33044"})
+        job = await job_store.create_job(
+            "test", {"unit_level": "municipality", "code_value": "33044"}
+        )
         with patch("app.worker.session_scope", new=_failing_session_scope):
             result = await run_territorial_export_job(
                 ctx, job["job_id"], {"unit_level": "municipality", "code_value": "33044"}
@@ -386,6 +382,7 @@ def test_territorial_export_request_id_set_and_cleared() -> None:
     assert captured == ["rid-export"]
     assert request_id_var.get() is None
 
+
 def test_sadei_sync_client_error_marks_job_failed() -> None:
     """SADEIClientError must fail the job with the error detail."""
 
@@ -399,9 +396,7 @@ def test_sadei_sync_client_error_marks_job_failed() -> None:
         ctx["sadei_client"] = FailingSADEIClient()
 
         job = await job_store.create_job("test", {"dataset_id": "padron_municipal"})
-        result = await run_sadei_sync_job(
-            ctx, job["job_id"], {"dataset_id": "padron_municipal"}
-        )
+        result = await run_sadei_sync_job(ctx, job["job_id"], {"dataset_id": "padron_municipal"})
 
         assert result is None
         record = await job_store.get_job(job["job_id"])
@@ -425,9 +420,7 @@ def test_sadei_sync_generic_exception_marks_job_failed() -> None:
         ctx["sadei_client"] = ExplodingSADEIClient()
 
         job = await job_store.create_job("test", {"dataset_id": "pib_municipal"})
-        result = await run_sadei_sync_job(
-            ctx, job["job_id"], {"dataset_id": "pib_municipal"}
-        )
+        result = await run_sadei_sync_job(ctx, job["job_id"], {"dataset_id": "pib_municipal"})
 
         assert result is None
         record = await job_store.get_job(job["job_id"])
@@ -476,6 +469,7 @@ def test_sadei_sync_success_completes_job() -> None:
 
     asyncio.run(scenario())
 
+
 def test_ideas_sync_client_error_marks_job_failed() -> None:
     """IDEASWFSClientError must fail the job with the error detail."""
 
@@ -515,9 +509,7 @@ def test_ideas_sync_success_completes_job() -> None:
         ctx["ideas_client"] = OkIDEASClient()
 
         job = await job_store.create_job("test", {"layer_name": "usos_suelo"})
-        result = await run_ideas_sync_job(
-            ctx, job["job_id"], {"layer_name": "usos_suelo"}
-        )
+        result = await run_ideas_sync_job(ctx, job["job_id"], {"layer_name": "usos_suelo"})
 
         assert result is not None
         assert result["features_fetched"] == 2
@@ -556,9 +548,7 @@ def test_operation_asturias_job_success_completes_job() -> None:
             patch("app.worker.session_scope", new=_ok_session_scope),
             patch("app.worker.INEOperationIngestionService", new=OkIngestionService),
         ):
-            result = await run_operation_asturias_job(
-                ctx, job["job_id"], {"operation_code": "22"}
-            )
+            result = await run_operation_asturias_job(ctx, job["job_id"], {"operation_code": "22"})
 
         assert result is not None
         assert result["summary"]["tables_succeeded"] == 2
@@ -566,6 +556,127 @@ def test_operation_asturias_job_success_completes_job() -> None:
         assert record["status"] == "completed"
 
     asyncio.run(scenario())
+
+
+def test_operation_asturias_job_success_evaluates_incidents() -> None:
+    incident_calls: list[dict[str, Any]] = []
+
+    class OkResolver:
+        async def resolve(self, **kwargs):
+            return SimpleNamespace(geo_variable_id="v1", asturias_value_id="a1")
+
+    class OkIngestionService:
+        def __init__(self, **kwargs):
+            pass
+
+        async def ingest_asturias_operation(self, **kwargs):
+            return {
+                "warnings": [],
+                "summary": {
+                    "tables_succeeded": 2,
+                    "tables_failed": 0,
+                    "normalized_rows": 10,
+                    "warnings": 0,
+                },
+            }
+
+    async def fake_mark_completed(**kwargs):
+        return {
+            "operation_code": "22",
+            "execution_profile": "scheduled",
+            "schedule_enabled": True,
+            "decision_reason": "scheduled_shortlist_campaign_v2",
+            "decision_source": "runtime_settings",
+            "metadata": {"configured": True},
+            "failure_streak": 0,
+            "no_data_streak": 0,
+            "last_tables_succeeded": 2,
+            "last_normalized_rows": 10,
+            "last_warning_count": 0,
+        }
+
+    async def fake_evaluate(**kwargs):
+        incident_calls.append(kwargs)
+
+    async def scenario():
+        job_store = InMemoryJobStore()
+        ctx = _base_ctx(job_store)
+        ctx["resolver"] = OkResolver()
+        ctx["ine_client"] = None
+
+        job = await job_store.create_job("test", {"operation_code": "22"})
+        with (
+            patch("app.worker.session_scope", new=_ok_session_scope),
+            patch("app.worker.INEOperationIngestionService", new=OkIngestionService),
+            patch("app.worker._mark_ine_governance_completed", new=fake_mark_completed),
+            patch("app.worker.evaluate_ine_operation_incidents", new=fake_evaluate),
+        ):
+            await run_operation_asturias_job(ctx, job["job_id"], {"operation_code": "22"})
+
+        assert incident_calls
+        assert incident_calls[0]["run_status"] == "completed"
+        assert incident_calls[0]["operation_code"] == "22"
+
+    asyncio.run(scenario())
+
+
+def test_operation_asturias_job_failure_evaluates_incidents() -> None:
+    incident_calls: list[dict[str, Any]] = []
+
+    class OkResolver:
+        async def resolve(self, **kwargs):
+            return SimpleNamespace(geo_variable_id="v1", asturias_value_id="a1")
+
+    class FailingIngestionService:
+        def __init__(self, **kwargs):
+            pass
+
+        async def ingest_asturias_operation(self, **kwargs):
+            raise INEUpstreamError(
+                status_code=503,
+                detail={"message": "INE service unavailable", "warnings": []},
+            )
+
+    async def fake_mark_failed(**kwargs):
+        return {
+            "operation_code": "22",
+            "execution_profile": "scheduled",
+            "schedule_enabled": True,
+            "decision_reason": "scheduled_shortlist_campaign_v2",
+            "decision_source": "runtime_settings",
+            "metadata": {"configured": True},
+            "failure_streak": 2,
+            "no_data_streak": 0,
+            "last_tables_succeeded": 0,
+            "last_normalized_rows": 0,
+            "last_warning_count": 0,
+            "last_error_message": "INE service unavailable",
+        }
+
+    async def fake_evaluate(**kwargs):
+        incident_calls.append(kwargs)
+
+    async def scenario():
+        job_store = InMemoryJobStore()
+        ctx = _base_ctx(job_store)
+        ctx["resolver"] = OkResolver()
+        ctx["ine_client"] = None
+
+        job = await job_store.create_job("test", {"operation_code": "22"})
+        with (
+            patch("app.worker.session_scope", new=_ok_session_scope),
+            patch("app.worker.INEOperationIngestionService", new=FailingIngestionService),
+            patch("app.worker._mark_ine_governance_failed", new=fake_mark_failed),
+            patch("app.worker.evaluate_ine_operation_incidents", new=fake_evaluate),
+        ):
+            await run_operation_asturias_job(ctx, job["job_id"], {"operation_code": "22"})
+
+        assert incident_calls
+        assert incident_calls[0]["run_status"] == "failed"
+        assert incident_calls[0]["operation_code"] == "22"
+
+    asyncio.run(scenario())
+
 
 def test_municipality_report_job_success_completes_job() -> None:
     report = AnalyticalResponse(source="test", generated_at=datetime.now(tz=UTC))
@@ -625,6 +736,7 @@ def test_municipality_report_job_none_result_marks_failed() -> None:
 
     asyncio.run(scenario())
 
+
 def test_territorial_export_job_success_completes_job() -> None:
     export_result = TerritorialExportResultResponse(
         export_id=1,
@@ -646,7 +758,9 @@ def test_territorial_export_job_success_completes_job() -> None:
         ctx = _base_ctx(job_store)
         ctx.update({"http_client": None, "cache": None, "catastro_circuit_breaker": None})
 
-        job = await job_store.create_job("test", {"unit_level": "municipality", "code_value": "33044"})
+        job = await job_store.create_job(
+            "test", {"unit_level": "municipality", "code_value": "33044"}
+        )
         with (
             patch("app.worker.session_scope", new=_ok_session_scope),
             patch("app.worker.TerritorialExportService", new=OkExportService),
@@ -689,6 +803,7 @@ def test_ideas_sync_generic_exception_marks_job_failed() -> None:
         assert "WFS unreachable" in str(record["error"])
 
     asyncio.run(scenario())
+
 
 def test_heartbeat_loop_calls_record_heartbeat() -> None:
     call_count = 0
@@ -736,9 +851,7 @@ def test_heartbeat_loop_swallows_exceptions() -> None:
             await real_sleep(0)
 
         with patch("app.worker.asyncio.sleep", new=fake_sleep):
-            task = asyncio.create_task(
-                _heartbeat_loop(FailingJobStore(), "q", "w", ttl_seconds=10)
-            )
+            task = asyncio.create_task(_heartbeat_loop(FailingJobStore(), "q", "w", ttl_seconds=10))
             for _ in range(5):
                 await real_sleep(0)
             task.cancel()
@@ -748,6 +861,7 @@ def test_heartbeat_loop_swallows_exceptions() -> None:
                 pass
 
     asyncio.run(scenario())
+
 
 def test_start_worker_metrics_server_returns_none_on_failure() -> None:
     with patch("app.worker.start_http_server", side_effect=OSError("port in use")):

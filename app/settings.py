@@ -78,6 +78,15 @@ class Settings(BaseSettings):
     ine_table_background_only_threshold: int = Field(
         default=100000, alias="INE_TABLE_BACKGROUND_ONLY_THRESHOLD", ge=1
     )
+    ine_incident_failure_streak_threshold: int = Field(
+        default=2, alias="INE_INCIDENT_FAILURE_STREAK_THRESHOLD", ge=1
+    )
+    ine_incident_no_data_streak_threshold: int = Field(
+        default=3, alias="INE_INCIDENT_NO_DATA_STREAK_THRESHOLD", ge=1
+    )
+    ine_incident_warning_count_threshold: int = Field(
+        default=5, alias="INE_INCIDENT_WARNING_COUNT_THRESHOLD", ge=1
+    )
     heavy_ine_operations: list[str] = Field(default=["23"], alias="HEAVY_INE_OPERATIONS")
     manual_only_ine_operations: list[str] = Field(
         default=["353"], alias="MANUAL_ONLY_INE_OPERATIONS"

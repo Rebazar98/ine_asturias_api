@@ -16,6 +16,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -568,6 +569,8 @@ class INEOperationGovernance(Base):
     last_normalized_rows: Mapped[int | None] = mapped_column(Integer, nullable=True)
     last_warning_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     last_error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    failure_streak: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    no_data_streak: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -606,4 +609,55 @@ class INEOperationGovernanceHistory(Base):
     metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, default=dict)
     occurred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class INEOperationIncident(Base):
+    __tablename__ = "ine_operation_incidents"
+    __table_args__ = (
+        Index(
+            "ix_ine_operation_incidents_status_severity",
+            "status",
+            "severity",
+        ),
+        Index(
+            "ix_ine_op_incident_operation_status",
+            "operation_code",
+            "status",
+        ),
+        Index(
+            "uq_ine_op_incident_open",
+            "operation_code",
+            "incident_type",
+            unique=True,
+            postgresql_where=text("status = 'open'"),
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    operation_code: Mapped[str] = mapped_column(String(64), index=True)
+    incident_type: Mapped[str] = mapped_column(String(64), index=True)
+    severity: Mapped[str] = mapped_column(String(16), index=True)
+    status: Mapped[str] = mapped_column(String(16), index=True)
+    title: Mapped[str] = mapped_column(String(255))
+    message: Mapped[str] = mapped_column(Text)
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    last_resolved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    occurrence_count: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    last_job_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    last_run_status: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    suggested_action: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
     )

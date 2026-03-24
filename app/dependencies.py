@@ -22,6 +22,7 @@ from app.repositories.catastro_cache import (
 from app.repositories.catalog import TableCatalogRepository
 from app.repositories.geocoding import GeocodingCacheRepository
 from app.repositories.ingestion import IngestionRepository
+from app.repositories.ine_operation_incidents import INEOperationIncidentRepository
 from app.repositories.ine_operation_governance import INEOperationGovernanceRepository
 from app.repositories.ine_operation_governance_history import (
     INEOperationGovernanceHistoryRepository,
@@ -124,6 +125,12 @@ def get_ine_operation_governance_history_repository(
     session: AsyncSession | None = Depends(get_db_session),
 ) -> INEOperationGovernanceHistoryRepository:
     return INEOperationGovernanceHistoryRepository(session=session)
+
+
+def get_ine_operation_incident_repository(
+    session: AsyncSession | None = Depends(get_db_session),
+) -> INEOperationIncidentRepository:
+    return INEOperationIncidentRepository(session=session)
 
 
 def get_table_catalog_repository(

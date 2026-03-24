@@ -37,6 +37,8 @@ def _make_row(operation_code: str = "71") -> INEOperationGovernance:
         last_normalized_rows=10958,
         last_warning_count=1,
         last_error_message=None,
+        failure_streak=0,
+        no_data_streak=0,
     )
     row.id = 1
     row.created_at = datetime(2026, 3, 24, tzinfo=UTC)

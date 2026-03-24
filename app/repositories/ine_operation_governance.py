@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -269,6 +269,9 @@ class INEOperationGovernanceRepository:
         warning_count = summary.get("warnings")
         if warning_count is None:
             warning_count = 0
+        tables_succeeded = summary.get("tables_succeeded")
+        normalized_rows = summary.get("normalized_rows")
+        no_data_run = (tables_succeeded or 0) == 0 or (normalized_rows or 0) == 0
         return await self._upsert(
             values={
                 "operation_code": operation_code,
@@ -292,6 +295,8 @@ class INEOperationGovernanceRepository:
                 "last_normalized_rows": summary.get("normalized_rows"),
                 "last_warning_count": warning_count,
                 "last_error_message": None,
+                "failure_streak": 0,
+                "no_data_streak": 1 if no_data_run else 0,
             },
             update_fields={
                 "execution_profile": execution_profile,
@@ -314,6 +319,12 @@ class INEOperationGovernanceRepository:
                 "last_normalized_rows": summary.get("normalized_rows"),
                 "last_warning_count": warning_count,
                 "last_error_message": None,
+                "failure_streak": 0,
+                "no_data_streak": (
+                    func.coalesce(INEOperationGovernance.no_data_streak, 0) + 1
+                    if no_data_run
+                    else 0
+                ),
                 "updated_at": func_now_utc(),
             },
         )
@@ -334,6 +345,7 @@ class INEOperationGovernanceRepository:
         finished_at: datetime | None,
         duration_ms: int,
         error_message: str,
+        warning_count: int | None = None,
     ) -> dict[str, Any]:
         effective_finished_at = finished_at or datetime.now(UTC)
         return await self._upsert(
@@ -351,7 +363,10 @@ class INEOperationGovernanceRepository:
                 "last_background_reason": background_reason,
                 "last_run_finished_at": effective_finished_at,
                 "last_duration_ms": duration_ms,
+                "last_warning_count": warning_count,
                 "last_error_message": error_message,
+                "failure_streak": 1,
+                "no_data_streak": 0,
             },
             update_fields={
                 "execution_profile": execution_profile,
@@ -366,7 +381,10 @@ class INEOperationGovernanceRepository:
                 "last_background_reason": background_reason,
                 "last_run_finished_at": effective_finished_at,
                 "last_duration_ms": duration_ms,
+                "last_warning_count": warning_count,
                 "last_error_message": error_message,
+                "failure_streak": func.coalesce(INEOperationGovernance.failure_streak, 0) + 1,
+                "no_data_streak": 0,
                 "updated_at": func_now_utc(),
             },
         )
@@ -446,6 +464,8 @@ class INEOperationGovernanceRepository:
             "last_normalized_rows": row.last_normalized_rows,
             "last_warning_count": row.last_warning_count,
             "last_error_message": row.last_error_message,
+            "failure_streak": row.failure_streak,
+            "no_data_streak": row.no_data_streak,
             "created_at": row.created_at,
             "updated_at": row.updated_at,
         }

@@ -27,6 +27,7 @@ from app.repositories.catastro_cache import (
 )
 from app.repositories.catalog import TableCatalogRepository
 from app.repositories.ingestion import IngestionRepository
+from app.repositories.ine_operation_incidents import INEOperationIncidentRepository
 from app.repositories.ine_operation_governance import INEOperationGovernanceRepository
 from app.repositories.series import SeriesRepository
 from app.repositories.territorial_export_artifacts import TerritorialExportArtifactRepository
@@ -35,6 +36,7 @@ from app.services.asturias_resolver import AsturiasResolutionError, AsturiasReso
 from app.services.catastro_client import CatastroClientError, CatastroClientService
 from app.services.ideas_wfs_client import IDEASWFSClientError, IDEASWFSClientService
 from app.services.ine_client import INEClientError, INEClientService
+from app.services.ine_operation_incidents import evaluate_ine_operation_incidents
 from app.services.ine_operation_governance import (
     list_effective_scheduled_ine_operation_codes,
     resolve_effective_ine_operation_profile,
@@ -88,6 +90,19 @@ def _extract_error_message(error: Any) -> str:
     if error is None:
         return ""
     return str(error)
+
+
+def _extract_warning_count(payload: Any) -> int:
+    if isinstance(payload, dict):
+        warnings = payload.get("warnings")
+        if isinstance(warnings, list):
+            return len(warnings)
+        detail = payload.get("detail")
+        if isinstance(detail, dict):
+            detail_warnings = detail.get("warnings")
+            if isinstance(detail_warnings, list):
+                return len(detail_warnings)
+    return 0
 
 
 async def _mark_ine_governance_running(
@@ -169,14 +184,14 @@ async def _mark_ine_governance_completed(
     background_reason: str | None,
     duration_ms: int,
     summary: dict[str, Any],
-) -> None:
+) -> dict[str, Any] | None:
     try:
         async with session_scope() as session:
             if session is None:
-                return
+                return None
             repo = INEOperationGovernanceRepository(session=session)
             governance = await _resolve_effective_ine_governance_context(repo, settings, op_code)
-            await repo.mark_completed(
+            return await repo.mark_completed(
                 operation_code=op_code,
                 execution_profile=governance["execution_profile"],
                 schedule_enabled=governance["schedule_enabled"],
@@ -196,6 +211,7 @@ async def _mark_ine_governance_completed(
             "ine_operation_governance_completed_failed",
             extra={"operation_code": op_code, "job_id": job_id},
         )
+        return None
 
 
 async def _mark_ine_governance_failed(
@@ -208,14 +224,15 @@ async def _mark_ine_governance_failed(
     background_reason: str | None,
     duration_ms: int,
     error: Any,
-) -> None:
+    warning_count: int | None = None,
+) -> dict[str, Any] | None:
     try:
         async with session_scope() as session:
             if session is None:
-                return
+                return None
             repo = INEOperationGovernanceRepository(session=session)
             governance = await _resolve_effective_ine_governance_context(repo, settings, op_code)
-            await repo.mark_failed(
+            return await repo.mark_failed(
                 operation_code=op_code,
                 execution_profile=governance["execution_profile"],
                 schedule_enabled=governance["schedule_enabled"],
@@ -229,11 +246,55 @@ async def _mark_ine_governance_failed(
                 finished_at=datetime.now(UTC),
                 duration_ms=duration_ms,
                 error_message=_extract_error_message(error),
+                warning_count=warning_count,
             )
     except Exception:
         logger.warning(
             "ine_operation_governance_failed_recording_failed",
             extra={"operation_code": op_code, "job_id": job_id},
+        )
+        return None
+
+
+async def _evaluate_ine_operation_incidents_after_run(
+    *,
+    settings,
+    op_code: str,
+    job_id: str,
+    run_status: str,
+    payload: Any,
+    governance_state: dict[str, Any] | None,
+    background_forced: bool,
+    background_reason: str | None,
+) -> None:
+    if governance_state is None:
+        return
+    try:
+        async with session_scope() as session:
+            if session is None:
+                return
+            incident_repo = INEOperationIncidentRepository(session=session)
+            effective_profile = resolve_effective_ine_operation_profile(
+                settings,
+                op_code,
+                governance_state,
+            )
+            await evaluate_ine_operation_incidents(
+                repo=incident_repo,
+                settings=settings,
+                operation_code=op_code,
+                effective_profile=effective_profile,
+                governance_state=governance_state,
+                run_status=run_status,
+                job_id=job_id,
+                payload=payload,
+                background_forced=background_forced,
+                background_reason=background_reason,
+            )
+    except Exception:
+        logger.warning(
+            "ine_operation_incident_evaluation_failed",
+            extra={"operation_code": op_code, "job_id": job_id, "run_status": run_status},
         )
 
 
@@ -322,7 +383,7 @@ async def run_operation_asturias_job(
 
         await job_store.complete_job(job_id, result)
         duration_seconds = perf_counter() - started_at
-        await _mark_ine_governance_completed(
+        governance_state = await _mark_ine_governance_completed(
             settings=settings,
             op_code=op_code,
             job_id=job_id,
@@ -331,6 +392,16 @@ async def run_operation_asturias_job(
             background_reason=background_reason,
             duration_ms=round(duration_seconds * 1000),
             summary=result.get("summary", {}),
+        )
+        await _evaluate_ine_operation_incidents_after_run(
+            settings=settings,
+            op_code=op_code,
+            job_id=job_id,
+            run_status="completed",
+            payload=result,
+            governance_state=governance_state,
+            background_forced=background_forced,
+            background_reason=background_reason,
         )
         record_ine_operation_execution(
             op_code,
@@ -351,7 +422,7 @@ async def run_operation_asturias_job(
     except (AsturiasResolutionError, INEClientError) as exc:
         await job_store.fail_job(job_id, exc.detail)
         duration_seconds = perf_counter() - started_at
-        await _mark_ine_governance_failed(
+        governance_state = await _mark_ine_governance_failed(
             settings=settings,
             op_code=op_code,
             job_id=job_id,
@@ -360,6 +431,17 @@ async def run_operation_asturias_job(
             background_reason=background_reason,
             duration_ms=round(duration_seconds * 1000),
             error=exc.detail,
+            warning_count=_extract_warning_count(exc.detail),
+        )
+        await _evaluate_ine_operation_incidents_after_run(
+            settings=settings,
+            op_code=op_code,
+            job_id=job_id,
+            run_status="failed",
+            payload=exc.detail,
+            governance_state=governance_state,
+            background_forced=background_forced,
+            background_reason=background_reason,
         )
         record_ine_operation_execution(
             op_code,
@@ -392,7 +474,7 @@ async def run_operation_asturias_job(
         )
         await job_store.fail_job(job_id, detail)
         duration_seconds = perf_counter() - started_at
-        await _mark_ine_governance_failed(
+        governance_state = await _mark_ine_governance_failed(
             settings=settings,
             op_code=op_code,
             job_id=job_id,
@@ -401,6 +483,17 @@ async def run_operation_asturias_job(
             background_reason=background_reason,
             duration_ms=round(duration_seconds * 1000),
             error=detail,
+            warning_count=_extract_warning_count(detail),
+        )
+        await _evaluate_ine_operation_incidents_after_run(
+            settings=settings,
+            op_code=op_code,
+            job_id=job_id,
+            run_status="failed",
+            payload=detail,
+            governance_state=governance_state,
+            background_forced=background_forced,
+            background_reason=background_reason,
         )
         record_ine_operation_execution(
             op_code,

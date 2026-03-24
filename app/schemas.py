@@ -217,6 +217,86 @@ class INESyncOperationHistoryResponse(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class INESyncIncidentItemResponse(BaseModel):
+    incident_id: int
+    operation_code: str
+    incident_type: Literal[
+        "repeated_failures",
+        "repeated_no_data",
+        "heavy_table_threshold_abort",
+        "series_direct_blocked",
+        "background_forced_heavy_operation",
+        "high_warning_rate",
+    ]
+    severity: Literal["low", "medium", "high"]
+    status: Literal["open", "resolved"]
+    title: str
+    message: str
+    first_seen_at: datetime | None = None
+    last_seen_at: datetime | None = None
+    last_resolved_at: datetime | None = None
+    occurrence_count: int = 0
+    last_job_id: str | None = None
+    last_run_status: Literal["queued", "running", "completed", "failed"] | None = None
+    execution_profile: (
+        Literal["scheduled", "background_only", "manual_only", "discarded"] | None
+    ) = None
+    schedule_enabled: bool = False
+    background_required: bool = False
+    suggested_action: (
+        Literal[
+            "review_manual",
+            "downgrade_to_background",
+            "keep_scheduled_observe",
+            "consider_discarding",
+            "promote_manual_campaign",
+        ]
+        | None
+    ) = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class INESyncIncidentSummaryResponse(BaseModel):
+    incidents_total: int
+    open_total: int
+    resolved_total: int
+    high_total: int
+    medium_total: int
+    low_total: int
+
+
+class INESyncIncidentFiltersResponse(BaseModel):
+    status: Literal["open", "resolved"] | None = None
+    severity: Literal["low", "medium", "high"] | None = None
+    operation_code: str | None = None
+    incident_type: (
+        Literal[
+            "repeated_failures",
+            "repeated_no_data",
+            "heavy_table_threshold_abort",
+            "series_direct_blocked",
+            "background_forced_heavy_operation",
+            "high_warning_rate",
+        ]
+        | None
+    ) = None
+    execution_profile: (
+        Literal["scheduled", "background_only", "manual_only", "discarded"] | None
+    ) = None
+    page: int
+    page_size: int
+
+
+class INESyncIncidentResponse(BaseModel):
+    source: Literal["internal.sync.ine_incidents"] = "internal.sync.ine_incidents"
+    generated_at: datetime
+    summary: INESyncIncidentSummaryResponse
+    items: list[INESyncIncidentItemResponse] = Field(default_factory=list)
+    filters: INESyncIncidentFiltersResponse
+    pagination: AnalyticalPaginationResponse
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class CatalogTableItemResponse(BaseModel):
     id: int
     operation_code: str
