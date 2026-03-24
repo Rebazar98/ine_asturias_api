@@ -224,6 +224,40 @@ Politicas de proteccion actuales:
 - `/ine/operation/*`: `10 req/min` por IP en modo publico, `1000 req/min` con `API_KEY`.
 - en `staging` y `production`, `/ine/*`, `/territorios/*` y `/metrics` requieren cabecera `X-API-Key`; en `local/dev/test` la cabecera sigue siendo opcional.
 
+### Runbook corto de priorizacion INE
+
+La campana operativa actual para priorizar operaciones del INE debe ejecutarse con estas reglas:
+
+- una operacion cada vez
+- `skip_known_processed=true`
+- `max_tables=3`
+- uso de `X-API-Key` para evitar throttling local innecesario
+- verificacion posterior de `ine_tables_catalog`, `ine_series_normalized` y `/health`
+
+Ejemplo de llamada:
+
+```http
+GET /ine/operation/22/asturias?background=false&skip_known_processed=true&max_tables=3
+```
+
+Estado operativo consolidado a 24 de marzo de 2026:
+
+- `SCHEDULED_INE_OPERATIONS=["71","22","33"]` se mantiene como shortlist programable actual.
+- `22`: programable. Ultima pasada controlada con `tables_succeeded=3` y `normalized_rows=318`; `1855` filas acumuladas.
+- `33`: programable. Ultima pasada controlada con `tables_succeeded=3` y `normalized_rows=150`; `2106` filas acumuladas.
+- `71`: programable con vigilancia. Sigue aportando valor (`10958` filas acumuladas), pero varias tablas activan `large_table_detected` y una ya cruza `table_processing_aborted_by_threshold`.
+- `23`: `background-only` y fuera del scheduler. Aporta mucho dato (`46170` filas acumuladas), pero mantiene tablas gigantes y fallos operativos; solo debe ejecutarse como exploracion manual en background.
+- `353`: exploracion manual, fuera del scheduler. Tiene un primer `has_data`, pero coste alto e inestabilidad insuficientemente compensada.
+- `10`, `21`, `30`, `72`, `293`: descartadas por ahora para sincronizacion programada.
+
+Criterio operativo para entrar en scheduler:
+
+- varias pasadas controladas sin degradar `api`
+- resultados utiles repetibles para Asturias
+- sin dependencia de `series_direct` masivo
+- sin tablas que crucen recurrentemente los umbrales pesados sin compensar con cobertura util
+- catalogo con evidencia suficiente de `has_data` y valor analitico
+
 ### Dominio semantico
 
 ```http
