@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from math import ceil
 from typing import Any
 
 from app.settings import Settings
@@ -109,6 +110,75 @@ def merge_ine_operation_profiles(
             "background_required": background_required,
         }
     return sort_ine_operation_profiles(list(merged.values()))
+
+
+def filter_ine_operation_profiles(
+    profiles: list[dict[str, Any]],
+    *,
+    operation_code: str | None = None,
+    execution_profile: str | None = None,
+    last_run_status: str | None = None,
+    schedule_enabled: bool | None = None,
+    include_unclassified: bool = True,
+) -> list[dict[str, Any]]:
+    items = profiles
+    if operation_code is not None:
+        items = [item for item in items if item.get("operation_code") == operation_code]
+    if execution_profile is not None:
+        items = [item for item in items if item.get("execution_profile") == execution_profile]
+    if last_run_status is not None:
+        items = [item for item in items if item.get("last_run_status") == last_run_status]
+    if schedule_enabled is not None:
+        items = [item for item in items if bool(item.get("schedule_enabled")) is schedule_enabled]
+    if not include_unclassified:
+        items = [item for item in items if bool(item.get("metadata", {}).get("configured"))]
+    return items
+
+
+def summarize_ine_operation_profiles(
+    profiles: list[dict[str, Any]],
+) -> dict[str, int]:
+    return {
+        "operations_total": len(profiles),
+        "scheduled_total": sum(
+            1 for item in profiles if item.get("execution_profile") == INE_EXECUTION_PROFILE_SCHEDULED
+        ),
+        "background_only_total": sum(
+            1
+            for item in profiles
+            if item.get("execution_profile") == INE_EXECUTION_PROFILE_BACKGROUND_ONLY
+        ),
+        "manual_only_total": sum(
+            1 for item in profiles if item.get("execution_profile") == INE_EXECUTION_PROFILE_MANUAL_ONLY
+        ),
+        "discarded_total": sum(
+            1 for item in profiles if item.get("execution_profile") == INE_EXECUTION_PROFILE_DISCARDED
+        ),
+        "schedule_enabled_total": sum(1 for item in profiles if item.get("schedule_enabled")),
+        "with_last_run_total": sum(1 for item in profiles if item.get("last_run_status")),
+    }
+
+
+def paginate_ine_operation_profiles(
+    profiles: list[dict[str, Any]],
+    *,
+    page: int,
+    page_size: int,
+) -> tuple[list[dict[str, Any]], dict[str, int | bool]]:
+    total = len(profiles)
+    pages = ceil(total / page_size) if total else 0
+    start = (page - 1) * page_size
+    end = start + page_size
+    items = profiles[start:end]
+    pagination = {
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "pages": pages,
+        "has_next": page < pages,
+        "has_previous": page > 1 and total > 0,
+    }
+    return items, pagination
 
 
 def sort_ine_operation_profiles(profiles: list[dict[str, Any]]) -> list[dict[str, Any]]:

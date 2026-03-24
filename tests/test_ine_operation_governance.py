@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from app.services.ine_operation_governance import (
     build_configured_ine_operation_profiles,
+    filter_ine_operation_profiles,
     merge_ine_operation_profiles,
+    paginate_ine_operation_profiles,
     resolve_ine_operation_profile,
+    summarize_ine_operation_profiles,
 )
 from app.settings import Settings
 
@@ -109,3 +112,57 @@ def test_merge_ine_operation_profiles_keeps_persisted_unclassified_operations() 
     profiles = {profile["operation_code"]: profile for profile in merged}
     assert profiles["999"]["execution_profile"] == "manual_only"
     assert profiles["999"]["decision_source"] == "operator_override"
+
+
+def test_filter_ine_operation_profiles_supports_profile_and_configured_filters() -> None:
+    settings = _settings()
+    profiles = merge_ine_operation_profiles(
+        settings,
+        [
+            {
+                "operation_code": "999",
+                "execution_profile": "manual_only",
+                "schedule_enabled": False,
+                "decision_reason": "manual_review_only",
+                "decision_source": "operator_override",
+                "metadata": {"configured": False},
+                "background_required": False,
+                "last_job_id": None,
+                "last_run_status": None,
+                "last_trigger_mode": None,
+                "last_background_forced": False,
+                "last_background_reason": None,
+                "last_duration_ms": None,
+                "last_normalized_rows": None,
+                "last_warning_count": None,
+            }
+        ],
+    )
+
+    background_only = filter_ine_operation_profiles(
+        profiles,
+        execution_profile="background_only",
+    )
+    configured_only = filter_ine_operation_profiles(
+        profiles,
+        include_unclassified=False,
+    )
+
+    assert [item["operation_code"] for item in background_only] == ["23"]
+    assert "999" not in {item["operation_code"] for item in configured_only}
+
+
+def test_summarize_and_paginate_ine_operation_profiles() -> None:
+    settings = _settings()
+    profiles = build_configured_ine_operation_profiles(settings)
+
+    summary = summarize_ine_operation_profiles(profiles)
+    items, pagination = paginate_ine_operation_profiles(profiles, page=2, page_size=3)
+
+    assert summary["operations_total"] == 10
+    assert summary["scheduled_total"] == 3
+    assert summary["background_only_total"] == 1
+    assert pagination["page"] == 2
+    assert pagination["page_size"] == 3
+    assert pagination["has_previous"] is True
+    assert len(items) == 3

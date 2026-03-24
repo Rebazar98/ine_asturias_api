@@ -258,6 +258,11 @@ Criterio operativo para entrar en scheduler:
 - sin tablas que crucen recurrentemente los umbrales pesados sin compensar con cobertura util
 - catalogo con evidencia suficiente de `has_data` y valor analitico
 
+Observabilidad operativa disponible:
+
+- `GET /sync/status` mantiene la vista general de worker y fuentes programadas.
+- `GET /sync/ine/operations` expone el catalogo operativo INE con filtros por `execution_profile`, `last_run_status`, `schedule_enabled` y `operation_code`, incluyendo el ultimo estado observado por operacion.
+
 ### Dominio semantico
 
 ```http

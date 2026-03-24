@@ -154,6 +154,116 @@ def test_sync_status_overlays_last_run_state_from_governance_repo():
     assert profiles["71"]["last_normalized_rows"] == 10958
 
 
+def test_sync_ine_operations_returns_semantic_catalog_contract():
+    client = _make_client()
+    data = client.get("/sync/ine/operations").json()
+
+    assert data["source"] == "internal.sync.ine_operation_catalog"
+    assert "generated_at" in data
+    assert "summary" in data
+    assert "items" in data
+    assert "filters" in data
+    assert "pagination" in data
+    assert data["summary"]["operations_total"] == 10
+    assert data["pagination"]["page"] == 1
+
+
+def test_sync_ine_operations_filters_by_execution_profile():
+    client = _make_client()
+    data = client.get("/sync/ine/operations?execution_profile=background_only").json()
+
+    assert data["summary"]["operations_total"] == 1
+    assert [item["operation_code"] for item in data["items"]] == ["23"]
+
+
+def test_sync_ine_operations_filters_by_last_run_status():
+    client = _make_client(
+        governance_rows=[
+            {
+                "operation_code": "71",
+                "execution_profile": "scheduled",
+                "schedule_enabled": True,
+                "decision_reason": "scheduled_shortlist_campaign_v2",
+                "decision_source": "runtime_settings",
+                "metadata": {"configured": True},
+                "background_required": False,
+                "last_job_id": "job-71",
+                "last_run_status": "completed",
+                "last_trigger_mode": "scheduled",
+                "last_background_forced": False,
+                "last_background_reason": None,
+                "last_run_started_at": None,
+                "last_run_finished_at": None,
+                "last_duration_ms": 4200,
+                "last_tables_found": 171,
+                "last_tables_selected": 3,
+                "last_tables_succeeded": 2,
+                "last_tables_failed": 0,
+                "last_tables_skipped_catalog": 5,
+                "last_normalized_rows": 10958,
+                "last_warning_count": 1,
+                "last_error_message": None,
+                "created_at": None,
+                "updated_at": None,
+            }
+        ]
+    )
+    data = client.get("/sync/ine/operations?last_run_status=completed").json()
+
+    assert data["summary"]["operations_total"] == 1
+    assert data["items"][0]["operation_code"] == "71"
+    assert data["items"][0]["last_run_status"] == "completed"
+
+
+def test_sync_ine_operations_excludes_unclassified_when_requested():
+    client = _make_client(
+        governance_rows=[
+            {
+                "operation_code": "999",
+                "execution_profile": "manual_only",
+                "schedule_enabled": False,
+                "decision_reason": "manual_review_only",
+                "decision_source": "operator_override",
+                "metadata": {"configured": False},
+                "background_required": False,
+                "last_job_id": None,
+                "last_run_status": None,
+                "last_trigger_mode": None,
+                "last_background_forced": False,
+                "last_background_reason": None,
+                "last_run_started_at": None,
+                "last_run_finished_at": None,
+                "last_duration_ms": None,
+                "last_tables_found": None,
+                "last_tables_selected": None,
+                "last_tables_succeeded": None,
+                "last_tables_failed": None,
+                "last_tables_skipped_catalog": None,
+                "last_normalized_rows": None,
+                "last_warning_count": None,
+                "last_error_message": None,
+                "created_at": None,
+                "updated_at": None,
+            }
+        ]
+    )
+    data = client.get("/sync/ine/operations?include_unclassified=false").json()
+    operation_codes = {item["operation_code"] for item in data["items"]}
+
+    assert "999" not in operation_codes
+    assert data["metadata"]["configured_operations_total"] == 10
+
+
+def test_sync_ine_operations_supports_pagination():
+    client = _make_client()
+    data = client.get("/sync/ine/operations?page=2&page_size=3").json()
+
+    assert data["pagination"]["page"] == 2
+    assert data["pagination"]["page_size"] == 3
+    assert data["pagination"]["has_previous"] is True
+    assert len(data["items"]) == 3
+
+
 def test_sync_status_sadei_source():
     client = _make_client()
     data = client.get("/sync/status").json()
@@ -231,4 +341,39 @@ def test_sync_status_accessible_in_local_env_without_key():
     )
     client = TestClient(app)  # no API key header
     response = client.get("/sync/status")
+    assert response.status_code == 200
+
+
+def test_sync_ine_operations_requires_api_key_in_staging():
+    settings = Settings(
+        API_KEY="a-valid-staging-key-123456789",
+        APP_ENV="staging",
+        POSTGRES_DSN=(
+            "postgresql+asyncpg://postgres:super-secure-db-pass-1234@db:5432/ine_asturias"
+        ),
+    )
+    app = create_app()
+    app.dependency_overrides[get_settings] = lambda: settings
+    app.dependency_overrides[get_job_store] = lambda: InMemoryJobStore()
+    app.dependency_overrides[get_ine_operation_governance_repository] = (
+        lambda: DummyGovernanceRepository()
+    )
+    client = TestClient(app)
+
+    response = client.get("/sync/ine/operations")
+    assert response.status_code == 401
+
+
+def test_sync_ine_operations_accessible_in_local_env_without_key():
+    settings = Settings(API_KEY="secret", APP_ENV="local")
+    app = create_app()
+    store = InMemoryJobStore()
+    app.dependency_overrides[get_settings] = lambda: settings
+    app.dependency_overrides[get_job_store] = lambda: store
+    app.dependency_overrides[get_ine_operation_governance_repository] = (
+        lambda: DummyGovernanceRepository()
+    )
+    client = TestClient(app)
+
+    response = client.get("/sync/ine/operations")
     assert response.status_code == 200

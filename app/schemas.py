@@ -101,6 +101,64 @@ class BackgroundJobStatusResponse(BaseModel):
     error: Any = None
 
 
+class INESyncOperationCatalogItemResponse(BaseModel):
+    operation_code: str
+    execution_profile: Literal["scheduled", "background_only", "manual_only", "discarded"]
+    schedule_enabled: bool
+    background_required: bool = False
+    decision_reason: str
+    decision_source: str
+    last_job_id: str | None = None
+    last_run_status: Literal["queued", "running", "completed", "failed"] | None = None
+    last_trigger_mode: str | None = None
+    last_background_forced: bool = False
+    last_background_reason: str | None = None
+    last_run_started_at: datetime | None = None
+    last_run_finished_at: datetime | None = None
+    last_duration_ms: int | None = None
+    last_tables_found: int | None = None
+    last_tables_selected: int | None = None
+    last_tables_succeeded: int | None = None
+    last_tables_failed: int | None = None
+    last_tables_skipped_catalog: int | None = None
+    last_normalized_rows: int | None = None
+    last_warning_count: int | None = None
+    last_error_message: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class INESyncOperationCatalogFiltersResponse(BaseModel):
+    operation_code: str | None = None
+    execution_profile: Literal["scheduled", "background_only", "manual_only", "discarded"] | None = (
+        None
+    )
+    last_run_status: Literal["queued", "running", "completed", "failed"] | None = None
+    schedule_enabled: bool | None = None
+    include_unclassified: bool = True
+    page: int
+    page_size: int
+
+
+class INESyncOperationCatalogSummaryResponse(BaseModel):
+    operations_total: int
+    scheduled_total: int
+    background_only_total: int
+    manual_only_total: int
+    discarded_total: int
+    schedule_enabled_total: int
+    with_last_run_total: int
+
+
+class INESyncOperationCatalogResponse(BaseModel):
+    source: Literal["internal.sync.ine_operation_catalog"] = "internal.sync.ine_operation_catalog"
+    generated_at: datetime
+    summary: INESyncOperationCatalogSummaryResponse
+    items: list[INESyncOperationCatalogItemResponse] = Field(default_factory=list)
+    filters: INESyncOperationCatalogFiltersResponse
+    pagination: AnalyticalPaginationResponse
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class CatalogTableItemResponse(BaseModel):
     id: int
     operation_code: str
