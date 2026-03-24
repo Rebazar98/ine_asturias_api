@@ -574,3 +574,36 @@ class INEOperationGovernance(Base):
         server_default=func.now(),
         onupdate=func.now(),
     )
+
+
+class INEOperationGovernanceHistory(Base):
+    __tablename__ = "ine_operation_governance_history"
+    __table_args__ = (
+        Index(
+            "ix_ine_op_gov_history_operation_occurred",
+            "operation_code",
+            "occurred_at",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    operation_code: Mapped[str] = mapped_column(String(64), index=True)
+    event_type: Mapped[str] = mapped_column(String(32), index=True)
+    effective_execution_profile_before: Mapped[str | None] = mapped_column(
+        String(32), nullable=True
+    )
+    effective_execution_profile_after: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    schedule_enabled_before: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    schedule_enabled_after: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    background_required_before: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    background_required_after: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    override_active_before: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    override_active_after: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    decision_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    decision_source: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    override_decision_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    override_decision_source: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, default=dict)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )

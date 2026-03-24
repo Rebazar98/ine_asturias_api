@@ -14,6 +14,9 @@ INE_EXECUTION_PROFILE_DISCARDED = "discarded"
 INE_PROFILE_ORIGIN_BASELINE = "baseline"
 INE_PROFILE_ORIGIN_OVERRIDE = "override"
 INE_MANUAL_OVERRIDE_DECISION_SOURCE = "manual_override_api"
+INE_HISTORY_EVENT_OVERRIDE_SET = "override_set"
+INE_HISTORY_EVENT_OVERRIDE_UPDATED = "override_updated"
+INE_HISTORY_EVENT_OVERRIDE_CLEARED = "override_cleared"
 
 INE_EXECUTION_PROFILE_ORDER = {
     INE_EXECUTION_PROFILE_SCHEDULED: 0,
@@ -200,6 +203,52 @@ def list_effective_scheduled_ine_operation_codes(
     ]
 
 
+def build_ine_operation_history_event(
+    operation_code: str,
+    before_profile: dict[str, Any],
+    after_profile: dict[str, Any],
+) -> dict[str, Any]:
+    before_override_active = bool(before_profile.get("override_active"))
+    after_override_active = bool(after_profile.get("override_active"))
+    if not before_override_active and after_override_active:
+        event_type = INE_HISTORY_EVENT_OVERRIDE_SET
+    elif before_override_active and after_override_active:
+        event_type = INE_HISTORY_EVENT_OVERRIDE_UPDATED
+    else:
+        event_type = INE_HISTORY_EVENT_OVERRIDE_CLEARED
+
+    return {
+        "operation_code": operation_code,
+        "event_type": event_type,
+        "effective_execution_profile_before": before_profile.get("execution_profile"),
+        "effective_execution_profile_after": after_profile.get("execution_profile"),
+        "schedule_enabled_before": before_profile.get("schedule_enabled"),
+        "schedule_enabled_after": after_profile.get("schedule_enabled"),
+        "background_required_before": before_profile.get("background_required"),
+        "background_required_after": after_profile.get("background_required"),
+        "override_active_before": before_override_active,
+        "override_active_after": after_override_active,
+        "decision_reason": after_profile.get("decision_reason"),
+        "decision_source": after_profile.get("decision_source"),
+        "override_decision_reason": (
+            after_profile.get("override_decision_reason")
+            if after_override_active
+            else before_profile.get("override_decision_reason")
+        ),
+        "override_decision_source": (
+            after_profile.get("override_decision_source")
+            if after_override_active
+            else before_profile.get("override_decision_source")
+        ),
+        "metadata": {
+            "profile_origin_before": before_profile.get("profile_origin"),
+            "profile_origin_after": after_profile.get("profile_origin"),
+            "baseline_execution_profile": after_profile.get("baseline_execution_profile"),
+            "baseline_schedule_enabled": after_profile.get("baseline_schedule_enabled"),
+        },
+    }
+
+
 def filter_ine_operation_profiles(
     profiles: list[dict[str, Any]],
     *,
@@ -273,6 +322,43 @@ def paginate_ine_operation_profiles(
         "has_previous": page > 1 and total > 0,
     }
     return items, pagination
+
+
+def summarize_ine_operation_history_events(
+    events: list[dict[str, Any]],
+    *,
+    events_total: int | None = None,
+) -> dict[str, int]:
+    total = len(events) if events_total is None else events_total
+    return {
+        "events_total": total,
+        "override_set_total": sum(
+            1 for item in events if item.get("event_type") == INE_HISTORY_EVENT_OVERRIDE_SET
+        ),
+        "override_updated_total": sum(
+            1 for item in events if item.get("event_type") == INE_HISTORY_EVENT_OVERRIDE_UPDATED
+        ),
+        "override_cleared_total": sum(
+            1 for item in events if item.get("event_type") == INE_HISTORY_EVENT_OVERRIDE_CLEARED
+        ),
+    }
+
+
+def paginate_ine_operation_history_events(
+    *,
+    total: int,
+    page: int,
+    page_size: int,
+) -> dict[str, int | bool]:
+    pages = ceil(total / page_size) if total else 0
+    return {
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "pages": pages,
+        "has_next": page < pages,
+        "has_previous": page > 1 and total > 0,
+    }
 
 
 def sort_ine_operation_profiles(profiles: list[dict[str, Any]]) -> list[dict[str, Any]]:

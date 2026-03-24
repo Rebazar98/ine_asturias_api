@@ -74,6 +74,7 @@ class INEOperationGovernanceRepository:
         schedule_enabled: bool,
         decision_reason: str,
         decision_source: str,
+        commit: bool = True,
     ) -> dict[str, Any]:
         session = self._require_session()
         now = func_now_utc()
@@ -101,10 +102,12 @@ class INEOperationGovernanceRepository:
             row.override_decision_source = decision_source
             row.override_applied_at = now
             row.updated_at = now
-            await session.commit()
-            await session.refresh(row)
+            if commit:
+                await session.commit()
+                await session.refresh(row)
         except SQLAlchemyError:
-            await session.rollback()
+            if commit:
+                await session.rollback()
             self.logger.exception(
                 "ine_operation_governance_set_override_failed",
                 extra={"operation_code": operation_code},
@@ -112,12 +115,19 @@ class INEOperationGovernanceRepository:
             raise
         return self._serialize(row)
 
-    async def clear_override(self, operation_code: str) -> dict[str, Any] | None:
+    async def clear_override(
+        self,
+        operation_code: str,
+        *,
+        commit: bool = True,
+    ) -> dict[str, Any] | None:
         session = self._require_session()
         try:
             row = await self._get_row(operation_code)
             if row is None:
                 return None
+            if not row.override_active:
+                return self._serialize(row)
             row.override_active = False
             row.override_execution_profile = None
             row.override_schedule_enabled = None
@@ -125,10 +135,12 @@ class INEOperationGovernanceRepository:
             row.override_decision_source = None
             row.override_applied_at = None
             row.updated_at = func_now_utc()
-            await session.commit()
-            await session.refresh(row)
+            if commit:
+                await session.commit()
+                await session.refresh(row)
         except SQLAlchemyError:
-            await session.rollback()
+            if commit:
+                await session.rollback()
             self.logger.exception(
                 "ine_operation_governance_clear_override_failed",
                 extra={"operation_code": operation_code},

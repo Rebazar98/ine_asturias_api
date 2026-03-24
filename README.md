@@ -263,6 +263,7 @@ Observabilidad operativa disponible:
 - `GET /sync/status` mantiene la vista general de worker y fuentes programadas.
 - `GET /sync/ine/operations` expone el catalogo operativo INE con filtros por `execution_profile`, `last_run_status`, `schedule_enabled` y `operation_code`, incluyendo el ultimo estado observado por operacion.
 - `POST /sync/ine/operations/{operation_code}/override` y `DELETE /sync/ine/operations/{operation_code}/override` permiten promover, degradar o revertir el perfil operativo efectivo sin tocar `settings.py`.
+- `GET /sync/ine/operations/{operation_code}/history` expone el historial append-only de cambios de override para auditar promociones, degradaciones y limpiezas operativas.
 
 ### Dominio semantico
 

@@ -9,26 +9,36 @@ from app.core.logging import get_logger
 from app.core.jobs import BaseJobStore
 from app.dependencies import (
     get_ine_operation_governance_repository,
+    get_ine_operation_governance_history_repository,
     get_job_store,
     get_settings,
     require_api_key,
 )
 from app.repositories.ine_operation_governance import INEOperationGovernanceRepository
+from app.repositories.ine_operation_governance_history import (
+    INEOperationGovernanceHistoryRepository,
+)
 from app.schemas import (
     INESyncOperationCatalogFiltersResponse,
     INESyncOperationCatalogItemResponse,
     INESyncOperationCatalogResponse,
     INESyncOperationCatalogSummaryResponse,
+    INESyncOperationHistoryItemResponse,
+    INESyncOperationHistoryResponse,
+    INESyncOperationHistorySummaryResponse,
     INESyncOperationOverrideRequest,
 )
 from app.services.ine_operation_governance import (
     INE_EXECUTION_PROFILE_SCHEDULED,
     INE_MANUAL_OVERRIDE_DECISION_SOURCE,
+    build_ine_operation_history_event,
     derive_schedule_enabled_for_profile,
     filter_ine_operation_profiles,
     merge_ine_operation_profiles,
+    paginate_ine_operation_history_events,
     paginate_ine_operation_profiles,
     resolve_effective_ine_operation_profile,
+    summarize_ine_operation_history_events,
     summarize_ine_operation_profiles,
 )
 from app.settings import Settings
@@ -69,6 +79,17 @@ async def _load_ine_operation_profile_item(
         operation_code,
         persisted_profile,
     )
+
+
+async def _commit_repo_session_or_rollback(repo: Any) -> None:
+    session = getattr(repo, "session", None)
+    if session is None:
+        return
+    try:
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        raise
 
 
 @router.get(
@@ -216,7 +237,16 @@ async def set_ine_operation_override(
     ine_governance_repo: INEOperationGovernanceRepository = Depends(
         get_ine_operation_governance_repository
     ),
+    ine_governance_history_repo: INEOperationGovernanceHistoryRepository = Depends(
+        get_ine_operation_governance_history_repository
+    ),
 ) -> INESyncOperationCatalogItemResponse:
+    before_item = await _load_ine_operation_profile_item(
+        settings,
+        ine_governance_repo,
+        operation_code=operation_code,
+        log_event="sync_ine_override_before_lookup_failed",
+    )
     decision_reason = request.decision_reason.strip()
     if not decision_reason:
         raise HTTPException(
@@ -251,14 +281,26 @@ async def set_ine_operation_override(
                 "operation_code": operation_code,
             },
         )
-    persisted = await ine_governance_repo.set_override(
-        operation_code=operation_code,
-        execution_profile=request.execution_profile,
-        schedule_enabled=effective_schedule_enabled,
-        decision_reason=decision_reason,
-        decision_source=INE_MANUAL_OVERRIDE_DECISION_SOURCE,
-    )
-    item = resolve_effective_ine_operation_profile(settings, operation_code, persisted)
+    try:
+        persisted = await ine_governance_repo.set_override(
+            operation_code=operation_code,
+            execution_profile=request.execution_profile,
+            schedule_enabled=effective_schedule_enabled,
+            decision_reason=decision_reason,
+            decision_source=INE_MANUAL_OVERRIDE_DECISION_SOURCE,
+            commit=False,
+        )
+        item = resolve_effective_ine_operation_profile(settings, operation_code, persisted)
+        await ine_governance_history_repo.append_event(
+            **build_ine_operation_history_event(operation_code, before_item, item),
+            commit=False,
+        )
+        await _commit_repo_session_or_rollback(ine_governance_repo)
+    except Exception:
+        session = getattr(ine_governance_repo, "session", None)
+        if session is not None:
+            await session.rollback()
+        raise
     return INESyncOperationCatalogItemResponse(**item)
 
 
@@ -273,15 +315,77 @@ async def clear_ine_operation_override(
     ine_governance_repo: INEOperationGovernanceRepository = Depends(
         get_ine_operation_governance_repository
     ),
+    ine_governance_history_repo: INEOperationGovernanceHistoryRepository = Depends(
+        get_ine_operation_governance_history_repository
+    ),
 ) -> INESyncOperationCatalogItemResponse:
-    persisted = await ine_governance_repo.clear_override(operation_code)
+    before_item = await _load_ine_operation_profile_item(
+        settings,
+        ine_governance_repo,
+        operation_code=operation_code,
+        log_event="sync_ine_override_before_clear_lookup_failed",
+    )
+    try:
+        persisted = await ine_governance_repo.clear_override(operation_code, commit=False)
+        if persisted is None:
+            item = before_item
+        else:
+            item = resolve_effective_ine_operation_profile(settings, operation_code, persisted)
+            if before_item.get("override_active"):
+                await ine_governance_history_repo.append_event(
+                    **build_ine_operation_history_event(operation_code, before_item, item),
+                    commit=False,
+                )
+                await _commit_repo_session_or_rollback(ine_governance_repo)
+    except Exception:
+        session = getattr(ine_governance_repo, "session", None)
+        if session is not None:
+            await session.rollback()
+        raise
     if persisted is None:
-        item = await _load_ine_operation_profile_item(
-            settings,
-            ine_governance_repo,
-            operation_code=operation_code,
-            log_event="sync_ine_override_clear_lookup_failed",
-        )
-    else:
-        item = resolve_effective_ine_operation_profile(settings, operation_code, persisted)
+        item = before_item
     return INESyncOperationCatalogItemResponse(**item)
+
+
+@router.get(
+    "/sync/ine/operations/{operation_code}/history",
+    response_model=INESyncOperationHistoryResponse,
+    summary="Get override history for a governed INE operation",
+)
+async def get_ine_operation_history(
+    operation_code: str,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+    ine_governance_history_repo: INEOperationGovernanceHistoryRepository = Depends(
+        get_ine_operation_governance_history_repository
+    ),
+) -> INESyncOperationHistoryResponse:
+    events = await ine_governance_history_repo.list_by_operation_code(
+        operation_code,
+        page=page,
+        page_size=page_size,
+    )
+    summary_data = await ine_governance_history_repo.summarize_by_operation_code(operation_code)
+    pagination = paginate_ine_operation_history_events(
+        total=summary_data["events_total"],
+        page=page,
+        page_size=page_size,
+    )
+    return INESyncOperationHistoryResponse(
+        generated_at=datetime.now(UTC),
+        operation_code=operation_code,
+        summary=INESyncOperationHistorySummaryResponse(
+            **summarize_ine_operation_history_events(
+                events,
+                events_total=summary_data["events_total"],
+            )
+            | {
+                "override_set_total": summary_data["override_set_total"],
+                "override_updated_total": summary_data["override_updated_total"],
+                "override_cleared_total": summary_data["override_cleared_total"],
+            }
+        ),
+        items=[INESyncOperationHistoryItemResponse(**item) for item in events],
+        pagination=pagination,
+        metadata={"returned_events": len(events)},
+    )

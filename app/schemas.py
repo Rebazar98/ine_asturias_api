@@ -176,6 +176,47 @@ class INESyncOperationOverrideRequest(BaseModel):
     schedule_enabled: bool | None = None
 
 
+class INESyncOperationHistoryItemResponse(BaseModel):
+    event_id: int | None = None
+    event_type: Literal["override_set", "override_updated", "override_cleared"]
+    operation_code: str
+    effective_execution_profile_before: (
+        Literal["scheduled", "background_only", "manual_only", "discarded"] | None
+    ) = None
+    effective_execution_profile_after: (
+        Literal["scheduled", "background_only", "manual_only", "discarded"] | None
+    ) = None
+    schedule_enabled_before: bool | None = None
+    schedule_enabled_after: bool | None = None
+    background_required_before: bool | None = None
+    background_required_after: bool | None = None
+    override_active_before: bool | None = None
+    override_active_after: bool | None = None
+    decision_reason: str | None = None
+    decision_source: str | None = None
+    override_decision_reason: str | None = None
+    override_decision_source: str | None = None
+    occurred_at: datetime | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class INESyncOperationHistorySummaryResponse(BaseModel):
+    events_total: int
+    override_set_total: int
+    override_updated_total: int
+    override_cleared_total: int
+
+
+class INESyncOperationHistoryResponse(BaseModel):
+    source: Literal["internal.sync.ine_operation_history"] = "internal.sync.ine_operation_history"
+    generated_at: datetime
+    operation_code: str
+    summary: INESyncOperationHistorySummaryResponse
+    items: list[INESyncOperationHistoryItemResponse] = Field(default_factory=list)
+    pagination: AnalyticalPaginationResponse
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class CatalogTableItemResponse(BaseModel):
     id: int
     operation_code: str

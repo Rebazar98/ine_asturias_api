@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from fastapi.testclient import TestClient
 
 from app.core.jobs import InMemoryJobStore
 from app.dependencies import (
     get_ine_operation_governance_repository,
+    get_ine_operation_governance_history_repository,
     get_job_store,
     get_settings,
 )
@@ -33,6 +36,7 @@ class DummyGovernanceRepository:
         schedule_enabled: bool,
         decision_reason: str,
         decision_source: str,
+        commit: bool = True,
     ) -> dict:
         row = dict(self._rows.get(operation_code, {"operation_code": operation_code}))
         row.update(
@@ -53,7 +57,7 @@ class DummyGovernanceRepository:
         self._rows[operation_code] = row
         return dict(row)
 
-    async def clear_override(self, operation_code: str) -> dict | None:
+    async def clear_override(self, operation_code: str, *, commit: bool = True) -> dict | None:
         row = self._rows.get(operation_code)
         if row is None:
             return None
@@ -70,6 +74,45 @@ class DummyGovernanceRepository:
         )
         self._rows[operation_code] = row
         return dict(row)
+
+
+class DummyGovernanceHistoryRepository:
+    def __init__(self) -> None:
+        self._events: list[dict] = []
+        self._next_id = 1
+
+    async def append_event(self, **kwargs) -> dict:
+        event = dict(kwargs)
+        event.setdefault("occurred_at", datetime(2026, 3, 24, tzinfo=UTC))
+        event["event_id"] = self._next_id
+        self._next_id += 1
+        self._events.append(event)
+        return dict(event)
+
+    async def list_by_operation_code(
+        self, operation_code: str, *, page: int, page_size: int
+    ) -> list[dict]:
+        items = [e for e in self._events if e["operation_code"] == operation_code]
+        items = list(reversed(items))
+        start = (page - 1) * page_size
+        end = start + page_size
+        return [dict(item) for item in items[start:end]]
+
+    async def count_by_operation_code(self, operation_code: str) -> int:
+        return len([e for e in self._events if e["operation_code"] == operation_code])
+
+    async def summarize_by_operation_code(self, operation_code: str) -> dict[str, int]:
+        items = [e for e in self._events if e["operation_code"] == operation_code]
+        return {
+            "events_total": len(items),
+            "override_set_total": len([e for e in items if e["event_type"] == "override_set"]),
+            "override_updated_total": len(
+                [e for e in items if e["event_type"] == "override_updated"]
+            ),
+            "override_cleared_total": len(
+                [e for e in items if e["event_type"] == "override_cleared"]
+            ),
+        }
 
 
 def _make_client(
@@ -106,9 +149,11 @@ def _make_client(
     app = create_app()
     store = DummyJobStore(heartbeat=worker_heartbeat)
     governance_repo = DummyGovernanceRepository(rows=governance_rows)
+    history_repo = DummyGovernanceHistoryRepository()
     app.dependency_overrides[get_settings] = lambda: settings
     app.dependency_overrides[get_job_store] = lambda: store
     app.dependency_overrides[get_ine_operation_governance_repository] = lambda: governance_repo
+    app.dependency_overrides[get_ine_operation_governance_history_repository] = lambda: history_repo
     return TestClient(app, headers={"X-API-Key": "test-key"})
 
 
@@ -404,6 +449,47 @@ def test_sync_ine_operations_clear_override_restores_baseline():
     assert data["execution_profile"] == "manual_only"
     assert data["profile_origin"] == "baseline"
     assert data["override_active"] is False
+
+
+def test_sync_ine_operation_history_returns_events_for_override_lifecycle():
+    client = _make_client()
+
+    first = client.post(
+        "/sync/ine/operations/353/override",
+        json={
+            "execution_profile": "scheduled",
+            "decision_reason": "promoted_temporarily",
+        },
+    )
+    assert first.status_code == 200
+
+    second = client.post(
+        "/sync/ine/operations/353/override",
+        json={
+            "execution_profile": "background_only",
+            "decision_reason": "downgraded_to_background",
+        },
+    )
+    assert second.status_code == 200
+
+    third = client.delete("/sync/ine/operations/353/override")
+    assert third.status_code == 200
+
+    response = client.get("/sync/ine/operations/353/history")
+    assert response.status_code == 200
+    data = response.json()
+
+    assert data["source"] == "internal.sync.ine_operation_history"
+    assert data["operation_code"] == "353"
+    assert data["summary"]["events_total"] == 3
+    assert data["summary"]["override_set_total"] == 1
+    assert data["summary"]["override_updated_total"] == 1
+    assert data["summary"]["override_cleared_total"] == 1
+    assert [item["event_type"] for item in data["items"]] == [
+        "override_cleared",
+        "override_updated",
+        "override_set",
+    ]
 
 
 def test_sync_status_sadei_source():

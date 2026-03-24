@@ -23,6 +23,9 @@ from app.repositories.catalog import TableCatalogRepository
 from app.repositories.geocoding import GeocodingCacheRepository
 from app.repositories.ingestion import IngestionRepository
 from app.repositories.ine_operation_governance import INEOperationGovernanceRepository
+from app.repositories.ine_operation_governance_history import (
+    INEOperationGovernanceHistoryRepository,
+)
 from app.repositories.series import SeriesRepository
 from app.repositories.territorial_export_artifacts import TerritorialExportArtifactRepository
 from app.repositories.territorial import TerritorialRepository
@@ -115,6 +118,12 @@ def get_ine_operation_governance_repository(
     session: AsyncSession | None = Depends(get_db_session),
 ) -> INEOperationGovernanceRepository:
     return INEOperationGovernanceRepository(session=session)
+
+
+def get_ine_operation_governance_history_repository(
+    session: AsyncSession | None = Depends(get_db_session),
+) -> INEOperationGovernanceHistoryRepository:
+    return INEOperationGovernanceHistoryRepository(session=session)
 
 
 def get_table_catalog_repository(
