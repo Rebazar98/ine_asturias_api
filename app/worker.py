@@ -95,6 +95,11 @@ async def run_operation_asturias_job(
                 catalog_repo=catalog_repo,
                 default_geography_code=settings.default_geography_code,
                 default_geography_name=settings.default_geography_name,
+                series_direct_max_series=settings.ine_series_direct_max_series,
+                series_direct_max_errors_to_persist=settings.ine_series_direct_max_errors_to_persist,
+                raw_payload_max_bytes=settings.ine_raw_payload_max_bytes,
+                table_abort_threshold=settings.ine_table_abort_threshold,
+                table_background_only_threshold=settings.ine_table_background_only_threshold,
             )
             result = await ingestion_service.ingest_asturias_operation(
                 op_code=op_code,
@@ -111,6 +116,7 @@ async def run_operation_asturias_job(
                 progress_reporter=report_progress,
                 max_series=payload.get("max_series"),
                 max_concurrent_series_fetches=settings.max_concurrent_series_fetches,
+                background_mode=True,
             )
 
         await job_store.complete_job(job_id, result)

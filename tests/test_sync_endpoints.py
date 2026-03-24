@@ -29,7 +29,7 @@ def _make_client(worker_heartbeat: dict | None = None):
 
     settings = Settings(
         API_KEY="test-key",
-        SCHEDULED_INE_OPERATIONS=["22", "33"],
+        SCHEDULED_INE_OPERATIONS=["71", "22", "33"],
         SADEI_SYNC_DATASETS=["padron_municipal"],
         IDEAS_SYNC_LAYERS=["limites_parroquiales"],
         SCHEDULED_TERRITORIAL_SYNC_ENABLED=True,
@@ -75,6 +75,7 @@ def test_sync_status_ine_source():
     data = client.get("/sync/status").json()
     ine = next(s for s in data["sources"] if s["source"] == "ine")
     assert ine["enabled"] is True
+    assert "71" in ine["operations"]
     assert "22" in ine["operations"]
     assert "33" in ine["operations"]
     assert "03:00" in ine["schedule"]

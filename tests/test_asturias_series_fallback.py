@@ -6,6 +6,7 @@ Cubre:
 - AsturiasResolver: name_based_fallback cuando VALORES_VARIABLEOPERACION devuelve [].
 - INEClientService: get_operation_series, get_serie_data, get_variable_values con body vacío.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -16,6 +17,8 @@ import httpx
 import pytest
 
 from app.core.cache import InMemoryTTLCache
+from app.dependencies import get_operation_ingestion_service
+from app.main import app
 from app.schemas import AsturiasResolutionResult
 from app.services.asturias_resolver import AsturiasResolutionError, AsturiasResolver
 from app.services.ine_client import INEClientService
@@ -74,11 +77,13 @@ _SERIE_DATA_103 = {
 # Helper: construye la instancia de servicio con repos dummy
 # ---------------------------------------------------------------------------
 
-def _build_service(ingestion_repo=None, series_repo=None, catalog_repo=None):
+
+def _build_service(ingestion_repo=None, series_repo=None, catalog_repo=None, **overrides):
     return INEOperationIngestionService(
         ingestion_repo=ingestion_repo or DummyIngestionRepository(),
         series_repo=series_repo or DummySeriesRepository(),
         catalog_repo=catalog_repo or DummyTableCatalogRepository(),
+        **overrides,
     )
 
 
@@ -228,9 +233,7 @@ def test_via_series_one_fetch_fails_partial_success():
         return _SERIE_DATA_102
 
     client = MagicMock()
-    client.get_operation_series = _mock_client(
-        [_SERIE_META_PAGE1, []], {}
-    ).get_operation_series
+    client.get_operation_series = _mock_client([_SERIE_META_PAGE1, []], {}).get_operation_series
     client.get_serie_data = failing_get_serie_data
 
     async def run():
@@ -648,6 +651,45 @@ def test_asturias_endpoint_series_fallback_empty_series_returns_error(
     assert response.status_code == 404
     body = response.json()
     assert "No series found" in body["detail"]["message"]
+
+
+def test_asturias_endpoint_series_fallback_blocks_when_series_index_is_too_large(
+    client, dummy_ingestion_repo, dummy_series_repo
+):
+    custom_service = _build_service(
+        ingestion_repo=dummy_ingestion_repo,
+        series_repo=dummy_series_repo,
+        series_direct_max_series=2,
+    )
+    app.dependency_overrides[get_operation_ingestion_service] = lambda: custom_service
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/VARIABLES_OPERACION/OP_HEAVY":
+            return httpx.Response(200, json=[{"Id": "115", "Nombre": "Comunidad autonoma"}])
+        if path == "/VALORES_VARIABLEOPERACION/115/OP_HEAVY":
+            return httpx.Response(200, json=[{"Id": "33", "Nombre": "Principado de Asturias"}])
+        if path == "/TABLAS_OPERACION/OP_HEAVY":
+            return httpx.Response(200, json=[])
+        if path == "/SERIES_OPERACION/OP_HEAVY":
+            return httpx.Response(
+                200,
+                json=[
+                    {"Id": 101, "COD": "S101", "Nombre": "Asturias. Serie 1"},
+                    {"Id": 102, "COD": "S102", "Nombre": "Asturias. Serie 2"},
+                    {"Id": 103, "COD": "S103", "Nombre": "Asturias. Serie 3"},
+                ],
+            )
+        raise AssertionError(f"Unexpected path: {path}")
+
+    override_ine_service(handler)
+
+    response = client.get("/ine/operation/OP_HEAVY/asturias?background=false")
+
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert detail["series_direct_max_series"] == 2
+    assert "blocked by configured cardinality limit" in detail["message"]
 
 
 def test_asturias_endpoint_name_based_fallback_via_tables(

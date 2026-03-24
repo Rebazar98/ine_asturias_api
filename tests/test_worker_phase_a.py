@@ -65,10 +65,11 @@ def test_redis_job_store_is_default_in_api(monkeypatch):
 
 
 def test_settings_scheduled_ine_operations_default():
-    """Default scheduled_ine_operations must include operations 22 and 33."""
+    """Default scheduled_ine_operations must include operations 71, 22 and 33."""
     from app.settings import Settings
 
     s = Settings(app_env="local", job_store_backend="memory", _env_file=None)
+    assert "71" in s.scheduled_ine_operations
     assert "22" in s.scheduled_ine_operations
     assert "33" in s.scheduled_ine_operations
 

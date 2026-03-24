@@ -26,11 +26,12 @@ from tests.conftest import (
 )
 
 
-def _make_service() -> INEOperationIngestionService:
+def _make_service(**overrides) -> INEOperationIngestionService:
     return INEOperationIngestionService(
         ingestion_repo=DummyIngestionRepository(),
         series_repo=DummySeriesRepository(),
         catalog_repo=DummyTableCatalogRepository(),
+        **overrides,
     )
 
 
@@ -627,6 +628,7 @@ class TestPrepareAsturiasTableLargeTable:
             table_params={},
             ine_client=ine_client,
             progress_reporter=None,
+            background_mode=False,
         )
 
         assert prepared.large_warning is not None
@@ -651,9 +653,106 @@ class TestPrepareAsturiasTableLargeTable:
             table_params={},
             ine_client=ine_client,
             progress_reporter=None,
+            background_mode=False,
         )
 
         assert prepared.large_warning is None
+
+    @pytest.mark.anyio
+    async def test_background_recommended_warning_is_added_for_heavy_foreground_table(self):
+        service = _make_service(
+            table_background_only_threshold=3,
+            table_abort_threshold=50,
+        )
+        semaphore = asyncio.Semaphore(1)
+        payload = [
+            {
+                "Nombre": "Principado de Asturias",
+                "MetaData": [{"Id": "33", "Nombre": "Principado de Asturias"}],
+                "Data": [{"Periodo": str(index), "Valor": str(index)} for index in range(1, 5)],
+            }
+        ]
+        ine_client = _make_ine_client(get_table=AsyncMock(return_value=payload))
+        table = {"table_id": "T1", "table_name": "Tabla pesada", "metadata": {}}
+
+        prepared = await service._prepare_asturias_table(
+            semaphore=semaphore,
+            op_code="22",
+            resolution=_make_resolution(),
+            table=table,
+            table_index=1,
+            tables_total=1,
+            table_params={},
+            ine_client=ine_client,
+            progress_reporter=None,
+            background_mode=False,
+        )
+
+        assert prepared.aborted_by_threshold is False
+        assert prepared.background_recommended is True
+        assert prepared.last_warning == "background_recommended_for_heavy_table"
+        assert any(
+            warning["warning"] == "background_recommended_for_heavy_table"
+            for warning in prepared.additional_warnings
+        )
+
+    @pytest.mark.anyio
+    async def test_table_abort_threshold_stops_processing_before_normalization(self):
+        catalog_repo = DummyTableCatalogRepository()
+        ingestion_repo = DummyIngestionRepository()
+        service = INEOperationIngestionService(
+            ingestion_repo=ingestion_repo,
+            series_repo=DummySeriesRepository(),
+            catalog_repo=catalog_repo,
+            table_background_only_threshold=2,
+            table_abort_threshold=3,
+            raw_payload_max_bytes=256,
+        )
+        ine_client = _make_ine_client(
+            get_operation_tables=AsyncMock(return_value=_one_table_payload()),
+            get_table=AsyncMock(
+                return_value=[
+                    {
+                        "Nombre": "Principado de Asturias",
+                        "MetaData": [{"Id": "33", "Nombre": "Principado de Asturias"}],
+                        "Data": [
+                            {"Periodo": "2020", "Valor": "1"},
+                            {"Periodo": "2021", "Valor": "2"},
+                            {"Periodo": "2022", "Valor": "3"},
+                            {"Periodo": "2023", "Valor": "4"},
+                        ],
+                    }
+                ]
+            ),
+        )
+
+        with pytest.raises(AsturiasResolutionError) as exc_info:
+            await service.ingest_asturias_operation(
+                op_code="22",
+                resolution=_make_resolution(),
+                nult=None,
+                det=None,
+                tip=None,
+                periodicidad=None,
+                max_tables=None,
+                skip_known_no_data=False,
+                skip_known_processed=False,
+                ine_client=ine_client,
+                max_concurrent_table_fetches=1,
+                background_mode=False,
+            )
+
+        assert exc_info.value.status_code == 502
+        assert any(
+            warning["warning"] == "table_processing_aborted_by_threshold"
+            for warning in exc_info.value.detail["warnings"]
+        )
+        row = catalog_repo.rows[("22", "T1")]
+        assert row["validation_status"] == "failed"
+        assert row["metadata"]["aborted_by_threshold"] is True
+        assert row["metadata"]["background_recommended"] is True
+        assert row["last_warning"] == "table_processing_aborted_by_threshold"
+        assert ingestion_repo.records[-1]["payload"]["payload_aborted_by_threshold"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -771,6 +870,37 @@ class TestIngestAsturiasOperationViaSeriesCoverage:
         assert ine_client.get_operation_series.call_count == 1
 
     @pytest.mark.anyio
+    async def test_series_direct_blocks_when_index_exceeds_configured_limit(self):
+        service = _make_service(series_direct_max_series=2)
+        ine_client = _make_ine_client(
+            get_operation_series=AsyncMock(
+                side_effect=[
+                    [
+                        {"Id": 1, "COD": "S001"},
+                        {"Id": 2, "COD": "S002"},
+                        {"Id": 3, "COD": "S003"},
+                    ]
+                ]
+            ),
+        )
+        progress_reporter = AsyncMock()
+
+        with pytest.raises(AsturiasResolutionError) as exc_info:
+            await service.ingest_asturias_operation_via_series(
+                op_code="22",
+                nult=None,
+                max_series=None,
+                max_concurrent_series_fetches=1,
+                progress_reporter=progress_reporter,
+                ine_client=ine_client,
+            )
+
+        assert exc_info.value.status_code == 422
+        assert exc_info.value.detail["series_direct_max_series"] == 2
+        stages = [call.args[0]["stage"] for call in progress_reporter.call_args_list]
+        assert "series_fallback_blocked" in stages
+
+    @pytest.mark.anyio
     async def test_serie_fetch_error_is_recorded_and_does_not_propagate(self):
         """Lines 260-264: get_serie_data raises → error appended, result returned with series_failed>0.
 
@@ -799,6 +929,43 @@ class TestIngestAsturiasOperationViaSeriesCoverage:
         assert isinstance(result, dict)
         assert result["series_failed"] == 1
         assert result["normalized_rows"] == 0
+
+    @pytest.mark.anyio
+    async def test_series_direct_truncates_persisted_errors_and_sets_payload_limit(self):
+        ingestion_repo = DummyIngestionRepository()
+        service = INEOperationIngestionService(
+            ingestion_repo=ingestion_repo,
+            series_repo=DummySeriesRepository(),
+            catalog_repo=DummyTableCatalogRepository(),
+            series_direct_max_errors_to_persist=1,
+            raw_payload_max_bytes=512,
+        )
+        ine_client = _make_ine_client(
+            get_operation_series=AsyncMock(
+                side_effect=[
+                    [{"Id": 10, "COD": "S010"}, {"Id": 11, "COD": "S011"}],
+                    [],
+                ]
+            ),
+            get_serie_data=AsyncMock(side_effect=[RuntimeError("boom-1"), RuntimeError("boom-2")]),
+        )
+
+        result = await service.ingest_asturias_operation_via_series(
+            op_code="22",
+            nult=None,
+            max_series=None,
+            max_concurrent_series_fetches=1,
+            progress_reporter=None,
+            ine_client=ine_client,
+        )
+
+        assert result["series_failed"] == 2
+        assert len(result["errors"]) == 1
+        aggregated_record = ingestion_repo.records[-1]
+        assert aggregated_record["source_type"] == "operation_series_direct"
+        assert aggregated_record["max_payload_bytes"] == 512
+        assert aggregated_record["payload"]["metadata"]["errors_total"] == 2
+        assert aggregated_record["payload"]["metadata"]["errors_truncated"] == 1
 
     @pytest.mark.anyio
     async def test_successful_series_ingestion_returns_payload_and_calls_reporter(self):

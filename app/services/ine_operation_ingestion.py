@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from collections.abc import Awaitable, Callable
 from typing import Any, Literal
 
@@ -40,7 +40,10 @@ class PreparedAsturiasTable:
     normalized_items: list[NormalizedSeriesItem] | None = None
     raw_rows_retrieved: int = 0
     large_warning: dict[str, Any] | None = None
+    additional_warnings: list[dict[str, Any]] = field(default_factory=list)
     last_warning: str = ""
+    aborted_by_threshold: bool = False
+    background_recommended: bool = False
     error_detail: dict[str, Any] | None = None
 
 
@@ -52,12 +55,22 @@ class INEOperationIngestionService:
         catalog_repo: TableCatalogRepository,
         default_geography_code: str = "33",
         default_geography_name: str = "Principado de Asturias",
+        series_direct_max_series: int = 5000,
+        series_direct_max_errors_to_persist: int = 100,
+        raw_payload_max_bytes: int = 1048576,
+        table_abort_threshold: int = 250000,
+        table_background_only_threshold: int = 100000,
     ) -> None:
         self.ingestion_repo = ingestion_repo
         self.series_repo = series_repo
         self.catalog_repo = catalog_repo
         self.default_geography_code = default_geography_code
         self.default_geography_name = default_geography_name
+        self.series_direct_max_series = max(series_direct_max_series, 1)
+        self.series_direct_max_errors_to_persist = max(series_direct_max_errors_to_persist, 0)
+        self.raw_payload_max_bytes = max(raw_payload_max_bytes, 0)
+        self.table_abort_threshold = max(table_abort_threshold, 1)
+        self.table_background_only_threshold = max(table_background_only_threshold, 1)
         self.logger = get_logger("app.services.ine_operation_ingestion")
 
     async def normalize_and_store_table(
@@ -224,6 +237,11 @@ class INEOperationIngestionService:
         # 1. Paginar el índice de series
         series_index: list[dict[str, Any]] = []
         page = 1
+        effective_max_series = (
+            min(max_series, self.series_direct_max_series)
+            if max_series is not None
+            else self.series_direct_max_series
+        )
         while True:
             page_payload = await ine_client.get_operation_series(op_code, page=page)
             await self.ingestion_repo.save_raw(
@@ -237,9 +255,35 @@ class INEOperationIngestionService:
             if not records:
                 break
             series_index.extend(records)
-            if max_series is not None and len(series_index) >= max_series:
-                series_index = series_index[:max_series]
+            if max_series is not None and len(series_index) >= effective_max_series:
+                series_index = series_index[:effective_max_series]
                 break
+            if max_series is None and len(series_index) > self.series_direct_max_series:
+                blocked_detail = {
+                    "message": "Series direct fallback blocked by configured cardinality limit.",
+                    "operation_code": op_code,
+                    "series_index_total": len(series_index),
+                    "series_direct_max_series": self.series_direct_max_series,
+                }
+                self.logger.warning(
+                    "asturias_series_direct_blocked_by_limit",
+                    extra={
+                        "operation_code": op_code,
+                        "series_index_total": len(series_index),
+                        "series_direct_max_series": self.series_direct_max_series,
+                        "detail_message": blocked_detail["message"],
+                    },
+                )
+                if progress_reporter is not None:
+                    await progress_reporter(
+                        {
+                            "stage": "series_fallback_blocked",
+                            "operation_code": op_code,
+                            "series_index_total": len(series_index),
+                            "series_direct_max_series": self.series_direct_max_series,
+                        }
+                    )
+                raise AsturiasResolutionError(detail=blocked_detail)
             page += 1
 
         if not series_index:
@@ -253,7 +297,11 @@ class INEOperationIngestionService:
 
         self.logger.info(
             "asturias_series_index_ready",
-            extra={"operation_code": op_code, "series_total": len(series_index)},
+            extra={
+                "operation_code": op_code,
+                "series_total": len(series_index),
+                "effective_max_series": effective_max_series,
+            },
         )
         if progress_reporter is not None:
             await progress_reporter(
@@ -318,6 +366,19 @@ class INEOperationIngestionService:
             },
         )
 
+        persisted_errors = errors[: self.series_direct_max_errors_to_persist]
+        errors_truncated = max(len(errors) - len(persisted_errors), 0)
+        if errors_truncated > 0:
+            self.logger.warning(
+                "asturias_series_direct_errors_truncated",
+                extra={
+                    "operation_code": op_code,
+                    "errors_total": len(errors),
+                    "errors_persisted": len(persisted_errors),
+                    "errors_truncated": errors_truncated,
+                },
+            )
+
         aggregated_payload: dict[str, Any] = {
             "operation_code": op_code,
             "ingestion_mode": "series_direct",
@@ -325,14 +386,20 @@ class INEOperationIngestionService:
             "series_fetched": len(series_index) - len(errors),
             "series_failed": len(errors),
             "normalized_rows": normalized_rows,
-            "errors": errors,
+            "errors": persisted_errors,
             "summary": {
                 "series_index_total": len(series_index),
                 "series_fetched": len(series_index) - len(errors),
                 "series_failed": len(errors),
                 "normalized_rows": normalized_rows,
-                "max_series_effective": max_series,
+                "max_series_effective": effective_max_series if max_series is not None else None,
                 "nult": nult,
+            },
+            "metadata": {
+                "errors_total": len(errors),
+                "errors_persisted": len(persisted_errors),
+                "errors_truncated": errors_truncated,
+                "payload_truncated": errors_truncated > 0,
             },
         }
 
@@ -342,6 +409,7 @@ class INEOperationIngestionService:
             request_path=f"SERIES_OPERACION/{op_code} -> DATOS_SERIE/*",
             request_params={"nult": nult} if nult is not None else {},
             payload=aggregated_payload,
+            max_payload_bytes=self.raw_payload_max_bytes,
         )
 
         if normalized_rows == 0 and not errors:
@@ -372,6 +440,7 @@ class INEOperationIngestionService:
         progress_reporter: ProgressReporter | None = None,
         max_series: int | None = None,
         max_concurrent_series_fetches: int = 5,
+        background_mode: bool = False,
     ) -> dict[str, Any]:
         tables_payload = await ine_client.get_operation_tables(op_code)
         await self.ingestion_repo.save_raw(
@@ -530,6 +599,7 @@ class INEOperationIngestionService:
             ine_client=ine_client,
             max_concurrent_table_fetches=max_concurrent_table_fetches,
             progress_reporter=progress_reporter,
+            background_mode=background_mode,
         )
 
         for prepared in prepared_tables:
@@ -580,12 +650,52 @@ class INEOperationIngestionService:
 
             if prepared.large_warning is not None:
                 warnings.append(prepared.large_warning)
+            if prepared.additional_warnings:
+                warnings.extend(prepared.additional_warnings)
 
             filtered_stats = prepared.filtered_stats or {
                 "rows_kept": 0,
                 "series_kept": 0,
                 "series_discarded": 0,
             }
+
+            if prepared.aborted_by_threshold:
+                catalog_metadata = {
+                    **prepared.table_metadata,
+                    "aborted_by_threshold": True,
+                    "background_recommended": prepared.background_recommended,
+                    "raw_rows_retrieved": prepared.raw_rows_retrieved,
+                    "table_abort_threshold": self.table_abort_threshold,
+                    "table_background_only_threshold": self.table_background_only_threshold,
+                }
+                await self.catalog_repo.update_table_status(
+                    operation_code=op_code,
+                    table_id=prepared.table_id,
+                    table_name=prepared.table_name,
+                    request_path=prepared.request_path,
+                    resolution_context=resolution_context,
+                    has_asturias_data=None,
+                    validation_status="failed",
+                    normalized_rows=0,
+                    raw_rows_retrieved=prepared.raw_rows_retrieved,
+                    filtered_rows_retrieved=0,
+                    series_kept=0,
+                    series_discarded=0,
+                    metadata=catalog_metadata,
+                    notes="Table processing aborted by configured threshold.",
+                    last_warning=prepared.last_warning,
+                )
+                if progress_reporter is not None:
+                    await progress_reporter(
+                        {
+                            "stage": "table_aborted_by_threshold",
+                            "table_index": prepared.table_index,
+                            "tables_total": len(table_candidates),
+                            "table_id": prepared.table_id,
+                            "warnings": len(warnings),
+                        }
+                    )
+                continue
 
             if filtered_stats["series_kept"] == 0:
                 warning_detail = {
@@ -608,7 +718,10 @@ class INEOperationIngestionService:
                     filtered_rows_retrieved=filtered_stats["rows_kept"],
                     series_kept=filtered_stats["series_kept"],
                     series_discarded=filtered_stats["series_discarded"],
-                    metadata=prepared.table_metadata,
+                    metadata={
+                        **prepared.table_metadata,
+                        "background_recommended": prepared.background_recommended,
+                    },
                     notes="Table does not contain rows valid for Asturias after validation.",
                     last_warning="no_asturias_rows_after_validation",
                 )
@@ -642,7 +755,10 @@ class INEOperationIngestionService:
                 filtered_rows_retrieved=filtered_stats["rows_kept"],
                 series_kept=filtered_stats["series_kept"],
                 series_discarded=filtered_stats["series_discarded"],
-                metadata=prepared.table_metadata,
+                metadata={
+                    **prepared.table_metadata,
+                    "background_recommended": prepared.background_recommended,
+                },
                 notes="Table produced Asturias rows.",
                 last_warning=prepared.last_warning,
             )
@@ -719,6 +835,7 @@ class INEOperationIngestionService:
             request_path=f"TABLAS_OPERACION/{op_code} -> DATOS_TABLA/*",
             request_params=table_params,
             payload=aggregated_payload,
+            max_payload_bytes=self.raw_payload_max_bytes,
         )
         self.logger.info(
             "asturias_operation_lookup_completed",
@@ -743,6 +860,7 @@ class INEOperationIngestionService:
         ine_client: Any,
         max_concurrent_table_fetches: int,
         progress_reporter: ProgressReporter | None,
+        background_mode: bool,
     ) -> list[PreparedAsturiasTable]:
         semaphore = asyncio.Semaphore(max(max_concurrent_table_fetches, 1))
         prepared_tasks = [
@@ -757,6 +875,7 @@ class INEOperationIngestionService:
                     table_params=table_params,
                     ine_client=ine_client,
                     progress_reporter=progress_reporter,
+                    background_mode=background_mode,
                 )
             )
             for table_index, table in enumerate(table_candidates, start=1)
@@ -775,6 +894,7 @@ class INEOperationIngestionService:
         table_params: dict[str, Any],
         ine_client: Any,
         progress_reporter: ProgressReporter | None,
+        background_mode: bool,
     ) -> PreparedAsturiasTable:
         table_id = table["table_id"]
         table_name = table["table_name"]
@@ -824,6 +944,7 @@ class INEOperationIngestionService:
 
             raw_rows_retrieved = self._count_retrieved_rows(table_payload)
             large_warning = None
+            additional_warnings: list[dict[str, Any]] = []
             last_warning = ""
             if raw_rows_retrieved > LARGE_TABLE_WARNING_THRESHOLD:
                 large_warning = {
@@ -840,6 +961,81 @@ class INEOperationIngestionService:
                         "table_id": table_id,
                         "raw_rows_retrieved": raw_rows_retrieved,
                     },
+                )
+
+            background_recommended = (
+                raw_rows_retrieved > self.table_background_only_threshold and not background_mode
+            )
+            if background_recommended:
+                additional_warnings.append(
+                    {
+                        "table_id": table_id,
+                        "table_name": table_name,
+                        "warning": "background_recommended_for_heavy_table",
+                        "raw_rows_retrieved": raw_rows_retrieved,
+                        "table_background_only_threshold": self.table_background_only_threshold,
+                    }
+                )
+                if not last_warning:
+                    last_warning = "background_recommended_for_heavy_table"
+                self.logger.warning(
+                    "asturias_table_background_recommended",
+                    extra={
+                        "operation_code": op_code,
+                        "table_id": table_id,
+                        "raw_rows_retrieved": raw_rows_retrieved,
+                        "table_background_only_threshold": self.table_background_only_threshold,
+                    },
+                )
+
+            if raw_rows_retrieved > self.table_abort_threshold:
+                additional_warnings.append(
+                    {
+                        "table_id": table_id,
+                        "table_name": table_name,
+                        "warning": "table_processing_aborted_by_threshold",
+                        "raw_rows_retrieved": raw_rows_retrieved,
+                        "table_abort_threshold": self.table_abort_threshold,
+                    }
+                )
+                last_warning = "table_processing_aborted_by_threshold"
+                self.logger.warning(
+                    "asturias_table_processing_aborted_by_threshold",
+                    extra={
+                        "operation_code": op_code,
+                        "table_id": table_id,
+                        "raw_rows_retrieved": raw_rows_retrieved,
+                        "table_abort_threshold": self.table_abort_threshold,
+                    },
+                )
+                return PreparedAsturiasTable(
+                    table_index=table_index,
+                    table_id=table_id,
+                    table_name=table_name,
+                    request_path=request_path,
+                    request_params=dict(table_params),
+                    table_metadata=dict(table["metadata"]),
+                    table_payload={
+                        "operation_code": op_code,
+                        "table_id": table_id,
+                        "table_name": table_name,
+                        "raw_rows_retrieved": raw_rows_retrieved,
+                        "table_abort_threshold": self.table_abort_threshold,
+                        "background_recommended": background_recommended,
+                        "payload_aborted_by_threshold": True,
+                    },
+                    filtered_payload=[],
+                    filtered_stats={
+                        "rows_kept": 0,
+                        "series_kept": 0,
+                        "series_discarded": 0,
+                    },
+                    raw_rows_retrieved=raw_rows_retrieved,
+                    large_warning=large_warning,
+                    additional_warnings=additional_warnings,
+                    last_warning=last_warning,
+                    aborted_by_threshold=True,
+                    background_recommended=background_recommended,
                 )
 
             filtered_payload, filtered_stats = await asyncio.to_thread(
@@ -883,7 +1079,9 @@ class INEOperationIngestionService:
                 normalized_items=normalized_items,
                 raw_rows_retrieved=raw_rows_retrieved,
                 large_warning=large_warning,
+                additional_warnings=additional_warnings,
                 last_warning=last_warning,
+                background_recommended=background_recommended,
             )
 
     @staticmethod

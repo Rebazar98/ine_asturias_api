@@ -170,6 +170,11 @@ def get_operation_ingestion_service(
         catalog_repo=catalog_repo,
         default_geography_code=settings.default_geography_code,
         default_geography_name=settings.default_geography_name,
+        series_direct_max_series=settings.ine_series_direct_max_series,
+        series_direct_max_errors_to_persist=settings.ine_series_direct_max_errors_to_persist,
+        raw_payload_max_bytes=settings.ine_raw_payload_max_bytes,
+        table_abort_threshold=settings.ine_table_abort_threshold,
+        table_background_only_threshold=settings.ine_table_background_only_threshold,
     )
 
 
