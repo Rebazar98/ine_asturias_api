@@ -79,6 +79,8 @@ class BackgroundJobAcceptedResponse(BaseModel):
     job_type: str
     status: Literal["queued", "running", "completed", "failed"]
     background: Literal[True] = True
+    background_forced: bool = False
+    background_reason: Literal["heavy_operation_requires_background"] | None = None
     operation_code: str
     status_path: str
     params: dict[str, Any] = Field(default_factory=dict)
@@ -91,6 +93,8 @@ class BackgroundJobStatusResponse(BaseModel):
     created_at: str
     started_at: str | None = None
     finished_at: str | None = None
+    background_forced: bool = False
+    background_reason: Literal["heavy_operation_requires_background"] | None = None
     params: dict[str, Any] = Field(default_factory=dict)
     progress: dict[str, Any] = Field(default_factory=dict)
     result: dict[str, Any] | list[Any] | None = None

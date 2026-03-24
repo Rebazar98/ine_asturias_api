@@ -197,7 +197,12 @@ async def get_job_status(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"message": "Job not found.", "job_id": job_id},
         )
-    return BackgroundJobStatusResponse(**job)
+    params = dict(job.get("params", {}))
+    payload = dict(job)
+    payload["params"] = params
+    payload["background_forced"] = bool(params.get("background_forced", False))
+    payload["background_reason"] = params.get("background_reason")
+    return BackgroundJobStatusResponse(**payload)
 
 
 @router.get(
@@ -320,6 +325,10 @@ async def get_asturias_operation_data(
 ) -> JSONPayload | JSONResponse:
     effective_max_tables = _resolve_max_tables(q.max_tables, settings)
     background_mode = _resolve_background_mode(q.background, settings)
+    forced_background = _requires_background_only(op_code, settings)
+    background_reason = _background_force_reason(forced_background)
+    if forced_background:
+        background_mode = True
     logger.info(
         "asturias_operation_lookup_started",
         extra={
@@ -327,11 +336,23 @@ async def get_asturias_operation_data(
             "max_tables_requested": q.max_tables,
             "max_tables_effective": effective_max_tables,
             "background": background_mode,
+            "background_forced": forced_background,
+            "background_reason": background_reason,
             "skip_known_processed": q.skip_known_processed,
             "skip_known_no_data": q.skip_known_no_data,
             "app_env": settings.app_env,
         },
     )
+    if forced_background:
+        logger.info(
+            "heavy_ine_operation_forced_to_background",
+            extra={
+                "operation_code": op_code,
+                "requested_background": q.background,
+                "background_reason": background_reason,
+                "app_env": settings.app_env,
+            },
+        )
 
     job_params = _build_job_params(
         operation_code=op_code,
@@ -345,6 +366,9 @@ async def get_asturias_operation_data(
         max_series=q.max_series,
         skip_known_no_data=q.skip_known_no_data,
         skip_known_processed=q.skip_known_processed,
+        background=background_mode,
+        background_forced=forced_background,
+        background_reason=background_reason,
     )
     job_params["_request_id"] = request_id_var.get()
 
@@ -406,13 +430,21 @@ async def get_asturias_operation_data(
             job_id=job_id,
             job_type=BACKGROUND_JOB_TYPE,
             status=job["status"],
+            background_forced=forced_background,
+            background_reason=background_reason,
             operation_code=op_code,
             status_path=f"/ine/jobs/{job_id}",
             params=job_params,
         )
         logger.info(
             "asturias_background_job_queued",
-            extra={"operation_code": op_code, "job_id": job_id, "max_tables": effective_max_tables},
+            extra={
+                "operation_code": op_code,
+                "job_id": job_id,
+                "max_tables": effective_max_tables,
+                "background_forced": forced_background,
+                "background_reason": background_reason,
+            },
         )
         return JSONResponse(status_code=status.HTTP_202_ACCEPTED, content=accepted.model_dump())
 
@@ -447,6 +479,7 @@ async def get_asturias_operation_data(
         max_concurrent_table_fetches=settings.max_concurrent_table_fetches,
         max_series=q.max_series,
         max_concurrent_series_fetches=settings.max_concurrent_series_fetches,
+        background_mode=background_mode,
     )
     return JSONPayload(root=payload)
 
@@ -508,6 +541,7 @@ async def _run_asturias_operation_job_inline(
             progress_reporter=report_progress,
             max_series=max_series,
             max_concurrent_series_fetches=get_settings().max_concurrent_series_fetches,
+            background_mode=True,
         )
         await job_store.complete_job(job_id, payload)
         record_job_duration(BACKGROUND_JOB_TYPE, "completed", time.perf_counter() - started_at)
@@ -542,6 +576,16 @@ def _resolve_background_mode(background: bool | None, settings: Settings) -> boo
     if background is not None:
         return background
     return True
+
+
+def _requires_background_only(op_code: str, settings: Settings) -> bool:
+    return op_code in settings.heavy_ine_operations
+
+
+def _background_force_reason(forced_background: bool) -> str | None:
+    if forced_background:
+        return "heavy_operation_requires_background"
+    return None
 
 
 def _build_job_params(**kwargs: Any) -> dict[str, Any]:

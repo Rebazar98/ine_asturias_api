@@ -61,7 +61,11 @@ OP33_TABLE_WITH_ASTURIAS = [
     {
         "Nombre": "Asturias. Nacidos vivos por municipio",
         "MetaData": [
-            {"Variable": "Comunidades y Ciudades AutÃ³nomas", "Nombre": "Principado de Asturias", "Id": "33"},
+            {
+                "Variable": "Comunidades y Ciudades AutÃ³nomas",
+                "Nombre": "Principado de Asturias",
+                "Id": "33",
+            },
             {"Variable": "Indicador", "Nombre": "Nacidos vivos", "Id": "NV"},
         ],
         "Data": [{"Periodo": "2022", "Valor": "4521", "Unidad": "personas"}],
@@ -114,7 +118,10 @@ def test_asturias_endpoint_fixes_mojibake_in_op33_table_names(
             return httpx.Response(
                 200,
                 json=[
-                    {"IdTabla": "2852", "Nombre": "Tasa Bruta de InmigraciÃ³n procedente del extranjero"},
+                    {
+                        "IdTabla": "2852",
+                        "Nombre": "Tasa Bruta de InmigraciÃ³n procedente del extranjero",
+                    },
                     {"IdTabla": "2901", "Nombre": "Nacidos vivos segÃºn edad de la madre"},
                 ],
             )
@@ -148,7 +155,9 @@ def test_asturias_endpoint_op33_national_tables_produce_warnings(
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/VARIABLES_OPERACION/33":
-            return httpx.Response(200, json=[{"Id": "70", "Nombre": "Comunidades y Ciudades Autonomas"}])
+            return httpx.Response(
+                200, json=[{"Id": "70", "Nombre": "Comunidades y Ciudades Autonomas"}]
+            )
         if request.url.path == "/VALORES_VARIABLEOPERACION/70/33":
             return httpx.Response(
                 200,
@@ -218,6 +227,51 @@ def test_asturias_endpoint_can_run_in_background_and_report_status(
     assert job_payload is not None
     assert job_payload["status"] == "completed"
     assert job_payload["progress"]["stage"] in {"table_completed", "tables_selected"}
+    assert job_payload["result"]["summary"]["tables_succeeded"] == 1
+
+
+def test_heavy_asturias_operation_is_forced_to_background_even_when_requested_foreground(
+    client, dummy_ingestion_repo, dummy_series_repo
+):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/VARIABLES_OPERACION/23":
+            return httpx.Response(200, json=[{"Id": "70", "Nombre": "Comunidad autonoma"}])
+        if request.url.path == "/VALORES_VARIABLEOPERACION/70/23":
+            return httpx.Response(200, json=[{"Id": "8999", "Nombre": "Asturias, Principado de"}])
+        if request.url.path == "/TABLAS_OPERACION/23":
+            return httpx.Response(200, json=[{"IdTabla": "501", "Nombre": "Tabla pesada util"}])
+        if request.url.path == "/DATOS_TABLA/501":
+            return httpx.Response(200, json=TABLE_1_PAYLOAD)
+        raise AssertionError(f"Unexpected path: {request.url.path}")
+
+    override_ine_service(handler)
+
+    response = client.get("/ine/operation/23/asturias?background=false&max_tables=1")
+
+    assert response.status_code == 202
+    accepted = response.json()
+    assert accepted["job_type"] == "operation_asturias_ingestion"
+    assert accepted["status"] in {"queued", "running"}
+    assert accepted["background"] is True
+    assert accepted["background_forced"] is True
+    assert accepted["background_reason"] == "heavy_operation_requires_background"
+    assert accepted["params"]["background"] is True
+    assert accepted["params"]["background_forced"] is True
+    assert accepted["params"]["background_reason"] == "heavy_operation_requires_background"
+
+    job_payload = None
+    for _ in range(50):
+        status_response = client.get(accepted["status_path"])
+        assert status_response.status_code == 200
+        job_payload = status_response.json()
+        assert job_payload["background_forced"] is True
+        assert job_payload["background_reason"] == "heavy_operation_requires_background"
+        if job_payload["status"] == "completed":
+            break
+        time.sleep(0.02)
+
+    assert job_payload is not None
+    assert job_payload["status"] == "completed"
     assert job_payload["result"]["summary"]["tables_succeeded"] == 1
 
 
