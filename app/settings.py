@@ -67,6 +67,18 @@ class Settings(BaseSettings):
     max_concurrent_series_fetches: int = Field(
         default=5, alias="MAX_CONCURRENT_SERIES_FETCHES", ge=1, le=20
     )
+    ine_series_direct_max_series: int = Field(
+        default=5000, alias="INE_SERIES_DIRECT_MAX_SERIES", ge=1
+    )
+    ine_series_direct_max_errors_to_persist: int = Field(
+        default=100, alias="INE_SERIES_DIRECT_MAX_ERRORS_TO_PERSIST", ge=0
+    )
+    ine_raw_payload_max_bytes: int = Field(default=1048576, alias="INE_RAW_PAYLOAD_MAX_BYTES", ge=1)
+    ine_table_abort_threshold: int = Field(default=250000, alias="INE_TABLE_ABORT_THRESHOLD", ge=1)
+    ine_table_background_only_threshold: int = Field(
+        default=100000, alias="INE_TABLE_BACKGROUND_ONLY_THRESHOLD", ge=1
+    )
+    heavy_ine_operations: list[str] = Field(default=["23"], alias="HEAVY_INE_OPERATIONS")
     rate_limit_enabled: bool = Field(default=True, alias="RATE_LIMIT_ENABLED")
     provider_circuit_breaker_failures: int = Field(
         default=5, alias="PROVIDER_CIRCUIT_BREAKER_FAILURES", ge=1, le=20
@@ -84,7 +96,7 @@ class Settings(BaseSettings):
     worker_metrics_port: int = Field(default=9001, alias="WORKER_METRICS_PORT")
     worker_metrics_url: str | None = Field(default=None, alias="WORKER_METRICS_URL")
     scheduled_ine_operations: list[str] = Field(
-        default=["22", "33"], alias="SCHEDULED_INE_OPERATIONS"
+        default=["71", "22", "33"], alias="SCHEDULED_INE_OPERATIONS"
     )
     scheduled_territorial_sync_enabled: bool = Field(
         default=True, alias="SCHEDULED_TERRITORIAL_SYNC_ENABLED"
@@ -158,6 +170,12 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_runtime_security(self) -> "Settings":
+        if self.ine_table_background_only_threshold > self.ine_table_abort_threshold:
+            raise ValueError(
+                "INE_TABLE_BACKGROUND_ONLY_THRESHOLD cannot be greater than "
+                "INE_TABLE_ABORT_THRESHOLD."
+            )
+
         if self.is_local_env:
             return self
 
