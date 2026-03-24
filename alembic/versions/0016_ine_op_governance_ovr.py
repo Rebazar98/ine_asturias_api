@@ -1,6 +1,6 @@
 """add override fields to ine_operation_governance
 
-Revision ID: 0016_ine_operation_governance_overrides
+Revision ID: 0016_ine_op_governance_ovr
 Revises: 0015_ine_operation_governance
 Create Date: 2026-03-24 00:00:00
 """
@@ -11,7 +11,7 @@ import sqlalchemy as sa
 from alembic import op
 
 
-revision: str = "0016_ine_operation_governance_overrides"
+revision: str = "0016_ine_op_governance_ovr"
 down_revision: str | None = "0015_ine_operation_governance"
 branch_labels: Sequence[str] | None = None
 depends_on: Sequence[str] | None = None
