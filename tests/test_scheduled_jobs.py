@@ -104,6 +104,7 @@ def test_scheduled_ine_update_enqueues_one_job_per_operation() -> None:
         op_codes = {e["payload"]["operation_code"] for e in arq_pool.enqueued}
         assert op_codes == {"2081", "2074"}
         assert all(e["payload"]["skip_known_processed"] is True for e in arq_pool.enqueued)
+        assert all(e["payload"]["_trigger_mode"] == "scheduled" for e in arq_pool.enqueued)
 
     asyncio.run(scenario())
 

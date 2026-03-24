@@ -121,6 +121,17 @@ JOB_DURATION_SECONDS = Histogram(
     ["job_type", "outcome"],
     buckets=(0.1, 0.25, 0.5, 1, 2, 5, 10, 30, 60, 120, 300),
 )
+INE_OPERATION_EXECUTIONS_TOTAL = Counter(
+    "ine_asturias_ine_operation_executions_total",
+    "INE Asturias operation execution outcomes.",
+    ["operation_code", "trigger_mode", "outcome"],
+)
+INE_OPERATION_EXECUTION_DURATION_SECONDS = Histogram(
+    "ine_asturias_ine_operation_execution_duration_seconds",
+    "INE Asturias operation execution duration.",
+    ["operation_code", "trigger_mode", "outcome"],
+    buckets=(0.1, 0.25, 0.5, 1, 2, 5, 10, 30, 60, 120, 300),
+)
 WORKER_HEARTBEAT_TIMESTAMP = Gauge(
     "ine_asturias_worker_heartbeat_timestamp",
     "Latest worker heartbeat timestamp.",
@@ -303,6 +314,25 @@ def record_job_event(job_type: str, status: str) -> None:
 def record_job_duration(job_type: str, outcome: str, duration_seconds: float) -> None:
     if duration_seconds >= 0:
         JOB_DURATION_SECONDS.labels(job_type=job_type, outcome=outcome).observe(duration_seconds)
+
+
+def record_ine_operation_execution(
+    operation_code: str,
+    trigger_mode: str,
+    outcome: str,
+    duration_seconds: float,
+) -> None:
+    INE_OPERATION_EXECUTIONS_TOTAL.labels(
+        operation_code=operation_code,
+        trigger_mode=trigger_mode,
+        outcome=outcome,
+    ).inc()
+    if duration_seconds >= 0:
+        INE_OPERATION_EXECUTION_DURATION_SECONDS.labels(
+            operation_code=operation_code,
+            trigger_mode=trigger_mode,
+            outcome=outcome,
+        ).observe(duration_seconds)
 
 
 def record_worker_heartbeat(queue_name: str) -> None:

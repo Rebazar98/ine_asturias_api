@@ -512,3 +512,57 @@ class SyncSchedule(Base):
         server_default=func.now(),
         onupdate=func.now(),
     )
+
+
+class INEOperationGovernance(Base):
+    __tablename__ = "ine_operation_governance"
+    __table_args__ = (
+        UniqueConstraint(
+            "operation_code",
+            name="uq_ine_operation_governance_operation_code",
+        ),
+        Index(
+            "ix_ine_operation_governance_profile_status",
+            "execution_profile",
+            "schedule_enabled",
+            "last_run_status",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    operation_code: Mapped[str] = mapped_column(String(64), index=True)
+    execution_profile: Mapped[str] = mapped_column(String(32), index=True)
+    schedule_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    decision_reason: Mapped[str] = mapped_column(Text, default="", server_default="")
+    decision_source: Mapped[str] = mapped_column(
+        String(64), default="runtime_settings", server_default="runtime_settings"
+    )
+    metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, default=dict)
+    last_job_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    last_run_status: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    last_trigger_mode: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    last_background_forced: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false"
+    )
+    last_background_reason: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    last_run_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_run_finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_tables_found: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_tables_selected: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_tables_succeeded: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_tables_failed: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_tables_skipped_catalog: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_normalized_rows: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_warning_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )

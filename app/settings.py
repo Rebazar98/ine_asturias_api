@@ -79,6 +79,13 @@ class Settings(BaseSettings):
         default=100000, alias="INE_TABLE_BACKGROUND_ONLY_THRESHOLD", ge=1
     )
     heavy_ine_operations: list[str] = Field(default=["23"], alias="HEAVY_INE_OPERATIONS")
+    manual_only_ine_operations: list[str] = Field(
+        default=["353"], alias="MANUAL_ONLY_INE_OPERATIONS"
+    )
+    discarded_ine_operations: list[str] = Field(
+        default=["10", "21", "30", "72", "293"],
+        alias="DISCARDED_INE_OPERATIONS",
+    )
     rate_limit_enabled: bool = Field(default=True, alias="RATE_LIMIT_ENABLED")
     provider_circuit_breaker_failures: int = Field(
         default=5, alias="PROVIDER_CIRCUIT_BREAKER_FAILURES", ge=1, le=20
@@ -175,6 +182,18 @@ class Settings(BaseSettings):
                 "INE_TABLE_BACKGROUND_ONLY_THRESHOLD cannot be greater than "
                 "INE_TABLE_ABORT_THRESHOLD."
             )
+        operation_profile_sets = {
+            "SCHEDULED_INE_OPERATIONS": set(self.scheduled_ine_operations),
+            "HEAVY_INE_OPERATIONS": set(self.heavy_ine_operations),
+            "MANUAL_ONLY_INE_OPERATIONS": set(self.manual_only_ine_operations),
+            "DISCARDED_INE_OPERATIONS": set(self.discarded_ine_operations),
+        }
+        names = list(operation_profile_sets)
+        for index, name in enumerate(names):
+            for other_name in names[index + 1 :]:
+                overlap = operation_profile_sets[name] & operation_profile_sets[other_name]
+                if overlap:
+                    raise ValueError(f"{name} and {other_name} cannot overlap: {sorted(overlap)!r}")
 
         if self.is_local_env:
             return self

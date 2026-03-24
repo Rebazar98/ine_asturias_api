@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import socket
+from datetime import UTC, datetime
 from time import perf_counter
 from typing import Any
 
@@ -15,7 +16,7 @@ from redis.asyncio import Redis
 from app.core.cache import InMemoryTTLCache, LayeredCache, RedisTTLCache
 from app.core.jobs import RedisJobStore
 from app.core.logging import configure_logging, get_logger, request_id_var
-from app.core.metrics import record_job_duration
+from app.core.metrics import record_ine_operation_execution, record_job_duration
 from app.core.redis import redis_settings_from_url
 from app.core.resilience import AsyncCircuitBreaker
 from app.db import dispose_db, init_db, session_scope
@@ -26,6 +27,7 @@ from app.repositories.catastro_cache import (
 )
 from app.repositories.catalog import TableCatalogRepository
 from app.repositories.ingestion import IngestionRepository
+from app.repositories.ine_operation_governance import INEOperationGovernanceRepository
 from app.repositories.series import SeriesRepository
 from app.repositories.territorial_export_artifacts import TerritorialExportArtifactRepository
 from app.repositories.territorial import TerritorialRepository
@@ -33,6 +35,7 @@ from app.services.asturias_resolver import AsturiasResolutionError, AsturiasReso
 from app.services.catastro_client import CatastroClientError, CatastroClientService
 from app.services.ideas_wfs_client import IDEASWFSClientError, IDEASWFSClientService
 from app.services.ine_client import INEClientError, INEClientService
+from app.services.ine_operation_governance import resolve_ine_operation_profile
 from app.services.ine_operation_ingestion import INEOperationIngestionService
 from app.services.sadei_client import SADEIClientError, SADEIClientService
 from app.services.sadei_normalizers import normalize_sadei_dataset
@@ -47,6 +50,172 @@ from app.settings import get_settings
 logger = get_logger("app.worker")
 
 
+def _ine_trigger_mode(payload: dict[str, Any]) -> str:
+    return str(payload.get("_trigger_mode") or "background")
+
+
+def _ine_governance_context(settings, op_code: str) -> dict[str, Any]:
+    return resolve_ine_operation_profile(settings, op_code)
+
+
+def _extract_error_message(error: Any) -> str:
+    if isinstance(error, dict):
+        message = error.get("message")
+        if message:
+            return str(message)
+        return json.dumps(error, default=str)
+    if error is None:
+        return ""
+    return str(error)
+
+
+async def _mark_ine_governance_running(
+    *,
+    settings,
+    op_code: str,
+    job_id: str,
+    trigger_mode: str,
+    background_forced: bool,
+    background_reason: str | None,
+) -> None:
+    try:
+        governance = _ine_governance_context(settings, op_code)
+        async with session_scope() as session:
+            if session is None:
+                return
+            repo = INEOperationGovernanceRepository(session=session)
+            await repo.mark_running(
+                operation_code=op_code,
+                execution_profile=governance["execution_profile"],
+                schedule_enabled=governance["schedule_enabled"],
+                decision_reason=governance["decision_reason"],
+                decision_source=governance["decision_source"],
+                metadata=governance["metadata"],
+                job_id=job_id,
+                trigger_mode=trigger_mode,
+                background_forced=background_forced,
+                background_reason=background_reason,
+                started_at=datetime.now(UTC),
+            )
+    except Exception:
+        logger.warning(
+            "ine_operation_governance_running_failed",
+            extra={"operation_code": op_code, "job_id": job_id},
+        )
+
+
+async def _mark_ine_governance_queued(
+    *,
+    settings,
+    op_code: str,
+    job_id: str,
+    trigger_mode: str,
+    background_forced: bool,
+    background_reason: str | None,
+) -> None:
+    try:
+        governance = _ine_governance_context(settings, op_code)
+        async with session_scope() as session:
+            if session is None:
+                return
+            repo = INEOperationGovernanceRepository(session=session)
+            await repo.mark_queued(
+                operation_code=op_code,
+                execution_profile=governance["execution_profile"],
+                schedule_enabled=governance["schedule_enabled"],
+                decision_reason=governance["decision_reason"],
+                decision_source=governance["decision_source"],
+                metadata=governance["metadata"],
+                job_id=job_id,
+                trigger_mode=trigger_mode,
+                background_forced=background_forced,
+                background_reason=background_reason,
+            )
+    except Exception:
+        logger.warning(
+            "ine_operation_governance_queued_failed",
+            extra={"operation_code": op_code, "job_id": job_id},
+        )
+
+
+async def _mark_ine_governance_completed(
+    *,
+    settings,
+    op_code: str,
+    job_id: str,
+    trigger_mode: str,
+    background_forced: bool,
+    background_reason: str | None,
+    duration_ms: int,
+    summary: dict[str, Any],
+) -> None:
+    try:
+        governance = _ine_governance_context(settings, op_code)
+        async with session_scope() as session:
+            if session is None:
+                return
+            repo = INEOperationGovernanceRepository(session=session)
+            await repo.mark_completed(
+                operation_code=op_code,
+                execution_profile=governance["execution_profile"],
+                schedule_enabled=governance["schedule_enabled"],
+                decision_reason=governance["decision_reason"],
+                decision_source=governance["decision_source"],
+                metadata=governance["metadata"],
+                job_id=job_id,
+                trigger_mode=trigger_mode,
+                background_forced=background_forced,
+                background_reason=background_reason,
+                finished_at=datetime.now(UTC),
+                duration_ms=duration_ms,
+                summary=summary,
+            )
+    except Exception:
+        logger.warning(
+            "ine_operation_governance_completed_failed",
+            extra={"operation_code": op_code, "job_id": job_id},
+        )
+
+
+async def _mark_ine_governance_failed(
+    *,
+    settings,
+    op_code: str,
+    job_id: str,
+    trigger_mode: str,
+    background_forced: bool,
+    background_reason: str | None,
+    duration_ms: int,
+    error: Any,
+) -> None:
+    try:
+        governance = _ine_governance_context(settings, op_code)
+        async with session_scope() as session:
+            if session is None:
+                return
+            repo = INEOperationGovernanceRepository(session=session)
+            await repo.mark_failed(
+                operation_code=op_code,
+                execution_profile=governance["execution_profile"],
+                schedule_enabled=governance["schedule_enabled"],
+                decision_reason=governance["decision_reason"],
+                decision_source=governance["decision_source"],
+                metadata=governance["metadata"],
+                job_id=job_id,
+                trigger_mode=trigger_mode,
+                background_forced=background_forced,
+                background_reason=background_reason,
+                finished_at=datetime.now(UTC),
+                duration_ms=duration_ms,
+                error_message=_extract_error_message(error),
+            )
+    except Exception:
+        logger.warning(
+            "ine_operation_governance_failed_recording_failed",
+            extra={"operation_code": op_code, "job_id": job_id},
+        )
+
+
 async def run_operation_asturias_job(
     ctx: dict[str, Any], job_id: str, payload: dict[str, Any]
 ) -> dict[str, Any] | None:
@@ -58,12 +227,23 @@ async def run_operation_asturias_job(
     _rid_token = request_id_var.set(payload.get("_request_id"))
     op_code = payload["operation_code"]
     started_at = perf_counter()
+    trigger_mode = _ine_trigger_mode(payload)
+    background_forced = bool(payload.get("background_forced", False))
+    background_reason = payload.get("background_reason")
 
     async def report_progress(progress: dict[str, Any]) -> None:
         await job_store.update_progress(job_id, **progress)
 
     try:
         await job_store.mark_running(job_id)
+        await _mark_ine_governance_running(
+            settings=settings,
+            op_code=op_code,
+            job_id=job_id,
+            trigger_mode=trigger_mode,
+            background_forced=background_forced,
+            background_reason=background_reason,
+        )
         await report_progress({"stage": "resolving_asturias", "operation_code": op_code})
         resolution: Any = None
         try:
@@ -120,10 +300,27 @@ async def run_operation_asturias_job(
             )
 
         await job_store.complete_job(job_id, result)
+        duration_seconds = perf_counter() - started_at
+        await _mark_ine_governance_completed(
+            settings=settings,
+            op_code=op_code,
+            job_id=job_id,
+            trigger_mode=trigger_mode,
+            background_forced=background_forced,
+            background_reason=background_reason,
+            duration_ms=round(duration_seconds * 1000),
+            summary=result.get("summary", {}),
+        )
+        record_ine_operation_execution(
+            op_code,
+            trigger_mode,
+            "completed",
+            duration_seconds,
+        )
         record_job_duration(
             "operation_asturias_ingestion",
             "completed",
-            perf_counter() - started_at,
+            duration_seconds,
         )
         logger.info(
             "asturias_worker_job_completed",
@@ -132,10 +329,27 @@ async def run_operation_asturias_job(
         return result
     except (AsturiasResolutionError, INEClientError) as exc:
         await job_store.fail_job(job_id, exc.detail)
+        duration_seconds = perf_counter() - started_at
+        await _mark_ine_governance_failed(
+            settings=settings,
+            op_code=op_code,
+            job_id=job_id,
+            trigger_mode=trigger_mode,
+            background_forced=background_forced,
+            background_reason=background_reason,
+            duration_ms=round(duration_seconds * 1000),
+            error=exc.detail,
+        )
+        record_ine_operation_execution(
+            op_code,
+            trigger_mode,
+            "failed",
+            duration_seconds,
+        )
         record_job_duration(
             "operation_asturias_ingestion",
             "failed",
-            perf_counter() - started_at,
+            duration_seconds,
         )
         logger.warning(
             "asturias_worker_job_failed",
@@ -156,10 +370,27 @@ async def run_operation_asturias_job(
             }
         )
         await job_store.fail_job(job_id, detail)
+        duration_seconds = perf_counter() - started_at
+        await _mark_ine_governance_failed(
+            settings=settings,
+            op_code=op_code,
+            job_id=job_id,
+            trigger_mode=trigger_mode,
+            background_forced=background_forced,
+            background_reason=background_reason,
+            duration_ms=round(duration_seconds * 1000),
+            error=detail,
+        )
+        record_ine_operation_execution(
+            op_code,
+            trigger_mode,
+            "failed",
+            duration_seconds,
+        )
         record_job_duration(
             "operation_asturias_ingestion",
             "failed",
-            perf_counter() - started_at,
+            duration_seconds,
         )
     finally:
         request_id_var.reset(_rid_token)
@@ -547,10 +778,22 @@ async def scheduled_ine_update(ctx: dict[str, Any]) -> None:
                 {"operation_code": op_code, "skip_known_processed": True},
             )
             job_id = job_record["job_id"]
+            await _mark_ine_governance_queued(
+                settings=settings,
+                op_code=op_code,
+                job_id=job_id,
+                trigger_mode="scheduled",
+                background_forced=False,
+                background_reason=None,
+            )
             await arq_pool.enqueue_job(
                 "run_operation_asturias_job",
                 job_id=job_id,
-                payload={"operation_code": op_code, "skip_known_processed": True},
+                payload={
+                    "operation_code": op_code,
+                    "skip_known_processed": True,
+                    "_trigger_mode": "scheduled",
+                },
             )
             logger.info(
                 "scheduled_ine_update_enqueued",

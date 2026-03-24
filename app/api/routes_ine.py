@@ -380,7 +380,7 @@ async def get_asturias_operation_data(
                 await arq_pool.enqueue_job(
                     "run_operation_asturias_job",
                     job_id,
-                    job_params,
+                    {**job_params, "_trigger_mode": "background"},
                     _job_id=job_id,
                     _queue_name=settings.job_queue_name,
                 )
