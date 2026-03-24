@@ -87,6 +87,22 @@ class Settings(BaseSettings):
     ine_incident_warning_count_threshold: int = Field(
         default=5, alias="INE_INCIDENT_WARNING_COUNT_THRESHOLD", ge=1
     )
+    enable_slack_notifications: bool = Field(default=False, alias="ENABLE_SLACK_NOTIFICATIONS")
+    slack_webhook_url: str | None = Field(default=None, alias="SLACK_WEBHOOK_URL")
+    enable_pagerduty: bool = Field(default=False, alias="ENABLE_PAGERDUTY")
+    pagerduty_key: str | None = Field(default=None, alias="PAGERDUTY_KEY")
+    ine_incident_notify_severities: list[str] = Field(
+        default=["high", "medium"],
+        alias="INE_INCIDENT_NOTIFY_SEVERITIES",
+    )
+    ine_incident_notify_on_resolved: bool = Field(
+        default=True,
+        alias="INE_INCIDENT_NOTIFY_ON_RESOLVED",
+    )
+    ine_incident_pagerduty_severities: list[str] = Field(
+        default=["high"],
+        alias="INE_INCIDENT_PAGERDUTY_SEVERITIES",
+    )
     heavy_ine_operations: list[str] = Field(default=["23"], alias="HEAVY_INE_OPERATIONS")
     manual_only_ine_operations: list[str] = Field(
         default=["353"], alias="MANUAL_ONLY_INE_OPERATIONS"
@@ -158,6 +174,8 @@ class Settings(BaseSettings):
         "worker_metrics_url",
         "ign_admin_snapshot_url",
         "catastro_urbano_year",
+        "slack_webhook_url",
+        "pagerduty_key",
         mode="before",
     )
     @classmethod
@@ -191,6 +209,15 @@ class Settings(BaseSettings):
                 "INE_TABLE_BACKGROUND_ONLY_THRESHOLD cannot be greater than "
                 "INE_TABLE_ABORT_THRESHOLD."
             )
+        valid_incident_severities = {"low", "medium", "high"}
+        if not set(self.ine_incident_notify_severities).issubset(valid_incident_severities):
+            raise ValueError("INE_INCIDENT_NOTIFY_SEVERITIES contains unsupported severities.")
+        if not set(self.ine_incident_pagerduty_severities).issubset(valid_incident_severities):
+            raise ValueError("INE_INCIDENT_PAGERDUTY_SEVERITIES contains unsupported severities.")
+        if self.enable_slack_notifications and not self.slack_webhook_url:
+            raise ValueError("SLACK_WEBHOOK_URL is required when ENABLE_SLACK_NOTIFICATIONS=true.")
+        if self.enable_pagerduty and not self.pagerduty_key:
+            raise ValueError("PAGERDUTY_KEY is required when ENABLE_PAGERDUTY=true.")
         operation_profile_sets = {
             "SCHEDULED_INE_OPERATIONS": set(self.scheduled_ine_operations),
             "HEAVY_INE_OPERATIONS": set(self.heavy_ine_operations),

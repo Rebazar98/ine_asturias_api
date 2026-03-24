@@ -104,6 +104,13 @@ Este script SOLO esta pensado para desarrollo local. Elimina la base persistente
 | `WORKER_HEARTBEAT_TTL_SECONDS` | TTL del heartbeat del worker | `60` |
 | `WORKER_METRICS_PORT` | Puerto HTTP interno del worker para metricas | `9001` |
 | `WORKER_METRICS_URL` | URL interna que usa el API para agregar metricas del worker | `http://worker:9001/metrics` |
+| `ENABLE_SLACK_NOTIFICATIONS` | Activa notificaciones operativas de incidencias INE hacia Slack | `false` |
+| `SLACK_WEBHOOK_URL` | Webhook de Slack para incidencias INE notificables | `https://hooks.slack.com/...` |
+| `ENABLE_PAGERDUTY` | Activa notificaciones de incidencias INE hacia PagerDuty | `false` |
+| `PAGERDUTY_KEY` | Routing key de PagerDuty Events API v2 | `xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx` |
+| `INE_INCIDENT_NOTIFY_SEVERITIES` | Severidades que disparan notificacion operativa | `["high","medium"]` |
+| `INE_INCIDENT_NOTIFY_ON_RESOLVED` | Notifica tambien resoluciones automaticas de incidencias | `true` |
+| `INE_INCIDENT_PAGERDUTY_SEVERITIES` | Severidades que pueden escalarse a PagerDuty | `["high"]` |
 
 Usa `.env.example` como plantilla local y `.env.staging.example` como base de una configuracion de staging ejecutable, siempre sin secretos reales en repositorio.
 
@@ -263,6 +270,7 @@ Observabilidad operativa disponible:
 - `GET /sync/status` mantiene la vista general de worker y fuentes programadas.
 - `GET /sync/ine/operations` expone el catalogo operativo INE con filtros por `execution_profile`, `last_run_status`, `schedule_enabled` y `operation_code`, incluyendo el ultimo estado observado por operacion.
 - `GET /sync/ine/incidents` expone incidencias operativas abiertas o resueltas por operacion, con severidad, sugerencia de accion y perfil efectivo actual.
+- las incidencias INE abiertas o resueltas pueden notificar a Slack y, para severidad `high`, a PagerDuty cuando la configuracion del entorno lo habilita.
 - `POST /sync/ine/operations/{operation_code}/override` y `DELETE /sync/ine/operations/{operation_code}/override` permiten promover, degradar o revertir el perfil operativo efectivo sin tocar `settings.py`.
 - `GET /sync/ine/operations/{operation_code}/history` expone el historial append-only de cambios de override para auditar promociones, degradaciones y limpiezas operativas.
 

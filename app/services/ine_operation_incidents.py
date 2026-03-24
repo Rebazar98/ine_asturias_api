@@ -4,6 +4,11 @@ from math import ceil
 from typing import Any
 
 from app.repositories.ine_operation_incidents import INEOperationIncidentRepository
+from app.services.ine_operation_governance import (
+    INE_EXECUTION_PROFILE_BACKGROUND_ONLY,
+    INE_EXECUTION_PROFILE_DISCARDED,
+    INE_EXECUTION_PROFILE_MANUAL_ONLY,
+)
 
 
 INE_INCIDENT_STATUS_OPEN = "open"
@@ -34,6 +39,81 @@ INE_INCIDENT_TYPES = {
     INE_INCIDENT_TYPE_BACKGROUND_FORCED_HEAVY_OPERATION,
     INE_INCIDENT_TYPE_HIGH_WARNING_RATE,
 }
+
+
+def _incident_recommended_reason(
+    *,
+    incident_type: str,
+    incident: dict[str, Any],
+    execution_profile: str | None,
+) -> str:
+    operation_code = str(incident.get("operation_code") or "")
+    if incident_type == INE_INCIDENT_TYPE_REPEATED_FAILURES:
+        return (
+            f"Operation {operation_code} is failing repeatedly while profile "
+            f"{execution_profile or 'unknown'} remains active."
+        )
+    if incident_type == INE_INCIDENT_TYPE_REPEATED_NO_DATA:
+        return (
+            f"Operation {operation_code} is completing without useful Asturias rows and may not "
+            "justify scheduled execution."
+        )
+    if incident_type == INE_INCIDENT_TYPE_HEAVY_TABLE_THRESHOLD_ABORT:
+        return (
+            f"Operation {operation_code} is hitting configured table size guardrails and should "
+            "avoid foreground or scheduled pressure."
+        )
+    if incident_type == INE_INCIDENT_TYPE_SERIES_DIRECT_BLOCKED:
+        return (
+            f"Operation {operation_code} hit the series_direct cardinality guardrail and needs "
+            "manual review before broader automation."
+        )
+    if incident_type == INE_INCIDENT_TYPE_BACKGROUND_FORCED_HEAVY_OPERATION:
+        return (
+            f"Operation {operation_code} already required forced background execution and may "
+            "need a stricter profile."
+        )
+    return (
+        f"Operation {operation_code} is accumulating warnings with limited value and should be "
+        "reviewed before promoting heavier execution."
+    )
+
+
+def derive_ine_incident_recommendation(
+    incident: dict[str, Any],
+    effective_profile: dict[str, Any],
+) -> dict[str, Any]:
+    incident_type = str(incident.get("incident_type") or "")
+    execution_profile = effective_profile.get("execution_profile")
+    suggested_action = str(
+        incident.get("suggested_action")
+        or _incident_suggested_action(
+            incident_type=incident_type,
+            effective_profile=effective_profile,
+        )
+    )
+    suggested_override_profile = None
+    if suggested_action == INE_INCIDENT_ACTION_DOWNGRADE_TO_BACKGROUND:
+        suggested_override_profile = INE_EXECUTION_PROFILE_BACKGROUND_ONLY
+    elif suggested_action == INE_INCIDENT_ACTION_CONSIDER_DISCARDING:
+        suggested_override_profile = INE_EXECUTION_PROFILE_MANUAL_ONLY
+        if execution_profile == INE_EXECUTION_PROFILE_MANUAL_ONLY:
+            suggested_override_profile = INE_EXECUTION_PROFILE_DISCARDED
+    elif suggested_action == INE_INCIDENT_ACTION_REVIEW_MANUAL:
+        if incident_type == INE_INCIDENT_TYPE_SERIES_DIRECT_BLOCKED:
+            suggested_override_profile = INE_EXECUTION_PROFILE_MANUAL_ONLY
+        elif execution_profile == "scheduled":
+            suggested_override_profile = INE_EXECUTION_PROFILE_BACKGROUND_ONLY
+    return {
+        "suggested_action": suggested_action or None,
+        "suggested_override_profile": suggested_override_profile,
+        "recommended_reason": _incident_recommended_reason(
+            incident_type=incident_type,
+            incident=incident,
+            execution_profile=str(execution_profile or ""),
+        ),
+        "requires_manual_confirmation": True,
+    }
 
 
 def _extract_warnings(payload: Any) -> list[dict[str, Any]]:
@@ -280,7 +360,7 @@ async def evaluate_ine_operation_incidents(
     payload: Any,
     background_forced: bool,
     background_reason: str | None,
-) -> None:
+) -> list[dict[str, Any]]:
     signal_map = build_ine_incident_signal_map(
         settings=settings,
         operation_code=operation_code,
@@ -314,8 +394,9 @@ async def evaluate_ine_operation_incidents(
             }
         )
 
+    transitions: list[dict[str, Any]] = []
     for incident_type in should_resolve - set(signal_map):
-        await repo.resolve_open_incident(
+        resolved = await repo.resolve_open_incident(
             operation_code=operation_code,
             incident_type=incident_type,
             last_job_id=job_id,
@@ -325,9 +406,11 @@ async def evaluate_ine_operation_incidents(
                 "execution_profile": effective_profile.get("execution_profile"),
             },
         )
+        if resolved is not None:
+            transitions.append(resolved)
 
     for incident_type, signal in signal_map.items():
-        await repo.open_or_update_incident(
+        opened_or_updated = await repo.open_or_update_incident(
             operation_code=operation_code,
             incident_type=incident_type,
             severity=signal["severity"],
@@ -338,6 +421,9 @@ async def evaluate_ine_operation_incidents(
             suggested_action=signal["suggested_action"],
             metadata=signal["metadata"],
         )
+        if opened_or_updated is not None:
+            transitions.append(opened_or_updated)
+    return transitions
 
 
 def attach_ine_incident_profiles(
@@ -350,12 +436,19 @@ def attach_ine_incident_profiles(
     attached: list[dict[str, Any]] = []
     for item in incidents:
         profile = profiles_by_operation.get(str(item.get("operation_code")), {})
+        recommendation = derive_ine_incident_recommendation(item, profile)
         attached.append(
             {
                 **item,
                 "execution_profile": profile.get("execution_profile"),
                 "schedule_enabled": profile.get("schedule_enabled", False),
                 "background_required": profile.get("background_required", False),
+                "decision_reason": profile.get("decision_reason"),
+                "decision_source": profile.get("decision_source"),
+                "suggested_action": recommendation["suggested_action"],
+                "suggested_override_profile": recommendation["suggested_override_profile"],
+                "recommended_reason": recommendation["recommended_reason"],
+                "requires_manual_confirmation": recommendation["requires_manual_confirmation"],
             }
         )
     return attached

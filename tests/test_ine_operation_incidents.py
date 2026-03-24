@@ -28,7 +28,9 @@ class DummyIncidentRepo:
 
     async def resolve_open_incident(self, **kwargs):
         self.resolved.append(dict(kwargs))
-        return kwargs
+        if kwargs.get("incident_type") == INE_INCIDENT_TYPE_REPEATED_FAILURES:
+            return kwargs
+        return None
 
 
 def _settings(**overrides) -> Settings:
@@ -133,7 +135,7 @@ async def test_evaluate_ine_operation_incidents_resolves_and_opens_expected_sign
     repo = DummyIncidentRepo()
     settings = _settings()
 
-    await evaluate_ine_operation_incidents(
+    transitions = await evaluate_ine_operation_incidents(
         repo=repo,
         settings=settings,
         operation_code="71",
@@ -158,6 +160,7 @@ async def test_evaluate_ine_operation_incidents_resolves_and_opens_expected_sign
     assert any(
         item["incident_type"] == INE_INCIDENT_TYPE_REPEATED_FAILURES for item in repo.resolved
     )
+    assert len(transitions) == 2
 
 
 def test_incident_helpers_attach_filter_paginate_and_summarize() -> None:
@@ -207,3 +210,6 @@ def test_incident_helpers_attach_filter_paginate_and_summarize() -> None:
     assert paginated[0]["operation_code"] == "71"
     assert pagination["total"] == 1
     assert summary["open_total"] == 1
+    assert paginated[0]["suggested_override_profile"] == "background_only"
+    assert paginated[0]["requires_manual_confirmation"] is True
+    assert "failing repeatedly" in paginated[0]["recommended_reason"]

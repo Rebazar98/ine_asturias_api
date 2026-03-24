@@ -36,6 +36,7 @@ from app.services.asturias_resolver import AsturiasResolutionError, AsturiasReso
 from app.services.catastro_client import CatastroClientError, CatastroClientService
 from app.services.ideas_wfs_client import IDEASWFSClientError, IDEASWFSClientService
 from app.services.ine_client import INEClientError, INEClientService
+from app.services.ine_incident_notifications import notify_ine_incident_transitions
 from app.services.ine_operation_incidents import evaluate_ine_operation_incidents
 from app.services.ine_operation_governance import (
     list_effective_scheduled_ine_operation_codes,
@@ -266,20 +267,20 @@ async def _evaluate_ine_operation_incidents_after_run(
     governance_state: dict[str, Any] | None,
     background_forced: bool,
     background_reason: str | None,
-) -> None:
+) -> tuple[list[dict[str, Any]], dict[str, Any]] | None:
     if governance_state is None:
-        return
+        return None
     try:
         async with session_scope() as session:
             if session is None:
-                return
+                return None
             incident_repo = INEOperationIncidentRepository(session=session)
             effective_profile = resolve_effective_ine_operation_profile(
                 settings,
                 op_code,
                 governance_state,
             )
-            await evaluate_ine_operation_incidents(
+            transitions = await evaluate_ine_operation_incidents(
                 repo=incident_repo,
                 settings=settings,
                 operation_code=op_code,
@@ -291,10 +292,49 @@ async def _evaluate_ine_operation_incidents_after_run(
                 background_forced=background_forced,
                 background_reason=background_reason,
             )
+            return transitions or [], effective_profile
     except Exception:
         logger.warning(
             "ine_operation_incident_evaluation_failed",
             extra={"operation_code": op_code, "job_id": job_id, "run_status": run_status},
+        )
+        return None
+
+
+async def _notify_ine_operation_incidents_after_run(
+    *,
+    settings,
+    http_client: Any,
+    transitions: list[dict[str, Any]],
+    effective_profile: dict[str, Any],
+    op_code: str,
+    job_id: str,
+) -> None:
+    if not transitions:
+        return
+    try:
+        reports = await notify_ine_incident_transitions(
+            settings=settings,
+            http_client=http_client,
+            transitions=transitions,
+            effective_profile=effective_profile,
+            logger=logger,
+        )
+        if not reports:
+            return
+        async with session_scope() as session:
+            if session is None:
+                return
+            incident_repo = INEOperationIncidentRepository(session=session)
+            for report in reports:
+                await incident_repo.merge_metadata(
+                    incident_id=int(report["incident_id"]),
+                    metadata=dict(report["metadata"]),
+                )
+    except Exception:
+        logger.warning(
+            "ine_operation_incident_notification_failed",
+            extra={"operation_code": op_code, "job_id": job_id},
         )
 
 
@@ -393,7 +433,7 @@ async def run_operation_asturias_job(
             duration_ms=round(duration_seconds * 1000),
             summary=result.get("summary", {}),
         )
-        await _evaluate_ine_operation_incidents_after_run(
+        incident_evaluation = await _evaluate_ine_operation_incidents_after_run(
             settings=settings,
             op_code=op_code,
             job_id=job_id,
@@ -403,6 +443,16 @@ async def run_operation_asturias_job(
             background_forced=background_forced,
             background_reason=background_reason,
         )
+        if incident_evaluation is not None:
+            transitions, effective_profile = incident_evaluation
+            await _notify_ine_operation_incidents_after_run(
+                settings=settings,
+                http_client=ctx.get("http_client"),
+                transitions=transitions,
+                effective_profile=effective_profile,
+                op_code=op_code,
+                job_id=job_id,
+            )
         record_ine_operation_execution(
             op_code,
             trigger_mode,
@@ -433,7 +483,7 @@ async def run_operation_asturias_job(
             error=exc.detail,
             warning_count=_extract_warning_count(exc.detail),
         )
-        await _evaluate_ine_operation_incidents_after_run(
+        incident_evaluation = await _evaluate_ine_operation_incidents_after_run(
             settings=settings,
             op_code=op_code,
             job_id=job_id,
@@ -443,6 +493,16 @@ async def run_operation_asturias_job(
             background_forced=background_forced,
             background_reason=background_reason,
         )
+        if incident_evaluation is not None:
+            transitions, effective_profile = incident_evaluation
+            await _notify_ine_operation_incidents_after_run(
+                settings=settings,
+                http_client=ctx.get("http_client"),
+                transitions=transitions,
+                effective_profile=effective_profile,
+                op_code=op_code,
+                job_id=job_id,
+            )
         record_ine_operation_execution(
             op_code,
             trigger_mode,
@@ -485,7 +545,7 @@ async def run_operation_asturias_job(
             error=detail,
             warning_count=_extract_warning_count(detail),
         )
-        await _evaluate_ine_operation_incidents_after_run(
+        incident_evaluation = await _evaluate_ine_operation_incidents_after_run(
             settings=settings,
             op_code=op_code,
             job_id=job_id,
@@ -495,6 +555,16 @@ async def run_operation_asturias_job(
             background_forced=background_forced,
             background_reason=background_reason,
         )
+        if incident_evaluation is not None:
+            transitions, effective_profile = incident_evaluation
+            await _notify_ine_operation_incidents_after_run(
+                settings=settings,
+                http_client=ctx.get("http_client"),
+                transitions=transitions,
+                effective_profile=effective_profile,
+                op_code=op_code,
+                job_id=job_id,
+            )
         record_ine_operation_execution(
             op_code,
             trigger_mode,

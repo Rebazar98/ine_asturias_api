@@ -582,6 +582,9 @@ def test_sync_ine_incidents_returns_filtered_items_with_profile_context():
     assert data["items"][0]["execution_profile"] == "scheduled"
     assert data["items"][0]["schedule_enabled"] is True
     assert data["items"][0]["background_required"] is False
+    assert data["items"][0]["suggested_override_profile"] == "background_only"
+    assert data["items"][0]["requires_manual_confirmation"] is True
+    assert "failing repeatedly" in data["items"][0]["recommended_reason"]
 
 
 def test_sync_status_sadei_source():

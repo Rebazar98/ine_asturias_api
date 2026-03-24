@@ -79,6 +79,7 @@ async def test_open_or_update_incident_creates_new_row() -> None:
 
     assert result["operation_code"] == "71"
     assert result["incident_type"] == "repeated_failures"
+    assert result["notification_event"] == "opened"
     session.add.assert_called_once()
     session.commit.assert_awaited()
 
@@ -106,6 +107,33 @@ async def test_open_or_update_incident_updates_existing_open_row() -> None:
 
     assert result["occurrence_count"] == 2
     assert row.last_job_id == "job-72"
+    assert result["notification_event"] == "updated"
+
+
+@pytest.mark.anyio
+async def test_open_or_update_incident_marks_severity_escalation() -> None:
+    row = _make_row()
+    row.severity = "medium"
+    session = AsyncMock()
+    fake_result = MagicMock()
+    fake_result.scalars.return_value.first.return_value = row
+    session.execute = AsyncMock(return_value=fake_result)
+    session.refresh = AsyncMock()
+
+    repo = INEOperationIncidentRepository(session=session)
+    result = await repo.open_or_update_incident(
+        operation_code="71",
+        incident_type="repeated_failures",
+        severity="high",
+        title="Operation 71 is failing repeatedly",
+        message="failure streak",
+        last_job_id="job-72",
+        last_run_status="failed",
+        suggested_action="review_manual",
+    )
+
+    assert result["notification_event"] == "severity_escalated"
+    assert result["previous_severity"] == "medium"
 
 
 @pytest.mark.anyio
@@ -128,6 +156,25 @@ async def test_resolve_open_incident_marks_row_resolved() -> None:
     assert result is not None
     assert result["status"] == "resolved"
     assert row.last_run_status == "completed"
+    assert result["notification_event"] == "resolved"
+
+
+@pytest.mark.anyio
+async def test_merge_metadata_updates_existing_incident_metadata() -> None:
+    row = _make_row()
+    session = AsyncMock()
+    session.get = AsyncMock(return_value=row)
+    session.refresh = AsyncMock()
+
+    repo = INEOperationIncidentRepository(session=session)
+    result = await repo.merge_metadata(
+        incident_id=1,
+        metadata={"last_notified_at": "2026-03-24T03:00:00Z", "notification_channels": ["slack"]},
+    )
+
+    assert result is not None
+    assert result["metadata"]["last_notified_at"] == "2026-03-24T03:00:00Z"
+    assert result["metadata"]["notification_channels"] == ["slack"]
 
 
 @pytest.mark.anyio

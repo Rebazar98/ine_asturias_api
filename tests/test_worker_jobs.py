@@ -620,6 +620,100 @@ def test_operation_asturias_job_success_evaluates_incidents() -> None:
     asyncio.run(scenario())
 
 
+def test_operation_asturias_job_success_notifies_incident_transitions() -> None:
+    notify_calls: list[dict[str, Any]] = []
+
+    class OkResolver:
+        async def resolve(self, **kwargs):
+            return SimpleNamespace(geo_variable_id="v1", asturias_value_id="a1")
+
+    class OkIngestionService:
+        def __init__(self, **kwargs):
+            pass
+
+        async def ingest_asturias_operation(self, **kwargs):
+            return {
+                "warnings": [],
+                "summary": {
+                    "tables_succeeded": 2,
+                    "tables_failed": 0,
+                    "normalized_rows": 10,
+                    "warnings": 0,
+                },
+            }
+
+    async def fake_mark_completed(**kwargs):
+        return {
+            "operation_code": "22",
+            "execution_profile": "scheduled",
+            "schedule_enabled": True,
+            "decision_reason": "scheduled_shortlist_campaign_v2",
+            "decision_source": "runtime_settings",
+            "metadata": {"configured": True},
+            "failure_streak": 0,
+            "no_data_streak": 0,
+            "last_tables_succeeded": 2,
+            "last_normalized_rows": 10,
+            "last_warning_count": 0,
+        }
+
+    async def fake_evaluate_after_run(**kwargs):
+        return (
+            [
+                {
+                    "incident_id": 1,
+                    "operation_code": "22",
+                    "incident_type": "repeated_failures",
+                    "severity": "high",
+                    "status": "open",
+                    "title": "x",
+                    "message": "x",
+                    "notification_event": "opened",
+                    "suggested_action": "review_manual",
+                    "metadata": {},
+                }
+            ],
+            {
+                "operation_code": "22",
+                "execution_profile": "scheduled",
+                "schedule_enabled": True,
+                "background_required": False,
+            },
+        )
+
+    async def fake_notify_after_run(**kwargs):
+        notify_calls.append(kwargs)
+
+    async def scenario():
+        job_store = InMemoryJobStore()
+        ctx = _base_ctx(job_store)
+        ctx["resolver"] = OkResolver()
+        ctx["ine_client"] = None
+        ctx["http_client"] = object()
+
+        job = await job_store.create_job("test", {"operation_code": "22"})
+        with (
+            patch("app.worker.session_scope", new=_ok_session_scope),
+            patch("app.worker.INEOperationIngestionService", new=OkIngestionService),
+            patch("app.worker._mark_ine_governance_completed", new=fake_mark_completed),
+            patch(
+                "app.worker._evaluate_ine_operation_incidents_after_run",
+                new=fake_evaluate_after_run,
+            ),
+            patch(
+                "app.worker._notify_ine_operation_incidents_after_run",
+                new=fake_notify_after_run,
+            ),
+        ):
+            await run_operation_asturias_job(ctx, job["job_id"], {"operation_code": "22"})
+
+        assert notify_calls
+        assert notify_calls[0]["op_code"] == "22"
+        assert notify_calls[0]["transitions"][0]["incident_id"] == 1
+
+    asyncio.run(scenario())
+
+
 def test_operation_asturias_job_failure_evaluates_incidents() -> None:
     incident_calls: list[dict[str, Any]] = []
 

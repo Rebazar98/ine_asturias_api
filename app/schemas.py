@@ -253,6 +253,11 @@ class INESyncIncidentItemResponse(BaseModel):
         ]
         | None
     ) = None
+    suggested_override_profile: (
+        Literal["scheduled", "background_only", "manual_only", "discarded"] | None
+    ) = None
+    requires_manual_confirmation: bool = True
+    recommended_reason: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

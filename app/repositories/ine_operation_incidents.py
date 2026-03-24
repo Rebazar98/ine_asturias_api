@@ -11,6 +11,13 @@ from app.core.logging import get_logger
 from app.models import INEOperationIncident
 
 
+INCIDENT_SEVERITY_ORDER = {
+    "low": 0,
+    "medium": 1,
+    "high": 2,
+}
+
+
 class INEOperationIncidentRepository:
     def __init__(self, session: AsyncSession | None) -> None:
         self.session = session
@@ -33,6 +40,8 @@ class INEOperationIncidentRepository:
         now = func_now_utc()
         try:
             row = await self._get_open_incident(operation_code, incident_type)
+            notification_event = "opened"
+            previous_severity = None
             if row is None:
                 row = INEOperationIncident(
                     operation_code=operation_code,
@@ -52,6 +61,12 @@ class INEOperationIncidentRepository:
                 )
                 session.add(row)
             else:
+                previous_severity = row.severity
+                previous_rank = INCIDENT_SEVERITY_ORDER.get(str(previous_severity), -1)
+                current_rank = INCIDENT_SEVERITY_ORDER.get(str(severity), -1)
+                notification_event = (
+                    "severity_escalated" if current_rank > previous_rank else "updated"
+                )
                 row.severity = severity
                 row.title = title
                 row.message = message
@@ -74,7 +89,10 @@ class INEOperationIncidentRepository:
                 },
             )
             raise
-        return self._serialize(row)
+        result = self._serialize(row)
+        result["notification_event"] = notification_event
+        result["previous_severity"] = previous_severity
+        return result
 
     async def resolve_open_incident(
         self,
@@ -108,6 +126,32 @@ class INEOperationIncidentRepository:
                     "operation_code": operation_code,
                     "incident_type": incident_type,
                 },
+            )
+            raise
+        result = self._serialize(row)
+        result["notification_event"] = "resolved"
+        return result
+
+    async def merge_metadata(
+        self,
+        *,
+        incident_id: int,
+        metadata: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        session = self._require_session()
+        try:
+            row = await session.get(INEOperationIncident, incident_id)
+            if row is None:
+                return None
+            row.metadata_json = {**(row.metadata_json or {}), **metadata}
+            row.updated_at = func_now_utc()
+            await session.commit()
+            await session.refresh(row)
+        except SQLAlchemyError:
+            await session.rollback()
+            self.logger.exception(
+                "ine_operation_incident_metadata_merge_failed",
+                extra={"incident_id": incident_id},
             )
             raise
         return self._serialize(row)
