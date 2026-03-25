@@ -26,6 +26,7 @@ IGN_ADMIN_BOUNDARY_SOURCE = "ign_administrative_boundaries"
 IGN_ADMIN_PROVIDER_SOURCE_SYSTEM = "ign_admin"
 IGN_ADMIN_SCOPE_ASTURIAS_CODE = "03"
 IGN_ADMIN_CATALOG_RESOURCE_KEY = "territorial.ign_administrative_boundaries.catalog"
+IGN_ADMIN_BOUNDARY_LOAD_JOB_TYPE = "territorial_admin_boundaries_load"
 
 IGN_ADMIN_SNAPSHOT_SOURCE_TYPE = "ign_admin_boundaries_snapshot"
 IGN_ADMIN_LEVEL_SOURCE_TYPES = {
@@ -41,6 +42,7 @@ IGN_ADMIN_LEVEL_ORDER = {
     TERRITORIAL_UNIT_LEVEL_MUNICIPALITY: 3,
 }
 IGN_ADMIN_ALLOWED_UNIT_LEVELS = tuple(IGN_ADMIN_LEVEL_ORDER.keys())
+IGN_ADMIN_MOJIBAKE_MARKERS = ("Ã", "Â", "â", "ð", "€", "™", "œ", "ž", "�")
 
 
 @dataclass(frozen=True, slots=True)
@@ -774,6 +776,35 @@ def extract_ine_code(natcode: str | None) -> str | None:
     return candidate
 
 
+def _mojibake_score(value: str) -> int:
+    return sum(value.count(marker) for marker in IGN_ADMIN_MOJIBAKE_MARKERS)
+
+
+def _repair_ign_text(value: str) -> str:
+    current = value
+    for _ in range(3):
+        if _mojibake_score(current) == 0:
+            break
+
+        candidates = [current]
+        for source_encoding in ("cp1252", "latin-1"):
+            try:
+                candidate = current.encode(source_encoding).decode("utf-8")
+            except (UnicodeEncodeError, UnicodeDecodeError):
+                continue
+            if candidate != current:
+                candidates.append(candidate)
+
+        best_candidate = min(candidates, key=_mojibake_score)
+        if best_candidate == current:
+            break
+        if _mojibake_score(best_candidate) > _mojibake_score(current):
+            break
+        current = best_candidate
+
+    return current
+
+
 def _first_non_empty_string(properties: dict[str, Any], *keys: str) -> str | None:
     for key in keys:
         value = properties.get(key)
@@ -781,5 +812,5 @@ def _first_non_empty_string(properties: dict[str, Any], *keys: str) -> str | Non
             continue
         normalized = str(value).strip()
         if normalized:
-            return normalized
+            return _repair_ign_text(normalized)
     return None

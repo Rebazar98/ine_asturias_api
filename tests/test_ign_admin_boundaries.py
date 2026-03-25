@@ -7,6 +7,7 @@ import pytest
 from app.services.ign_admin_boundaries import (
     IGNAdministrativeBoundariesLoaderService,
     IGN_ADMIN_BOUNDARY_SOURCE,
+    _repair_ign_text,
     normalize_ign_admin_snapshot,
 )
 
@@ -21,8 +22,8 @@ def build_snapshot_payload() -> dict:
                 "properties": {
                     "unit_level": "country",
                     "country_code": "ES",
-                    "canonical_name": "Espana",
-                    "display_name": "Espana",
+                    "canonical_name": "Espa\u00c3\u00b1a",
+                    "display_name": "Espa\u00c3\u00b1a",
                 },
                 "geometry": {
                     "type": "Polygon",
@@ -64,7 +65,7 @@ def build_snapshot_payload() -> dict:
                     "province_code": "33",
                     "canonical_name": "Oviedo",
                     "display_name": "Oviedo",
-                    "provider_name": "Uviéu",
+                    "provider_name": "Uvi\u00c3\u0192\u00c2\u00a9u",
                 },
                 "geometry": {
                     "type": "Polygon",
@@ -151,8 +152,16 @@ def test_normalize_ign_admin_snapshot_selects_asturias_hierarchy_and_wraps_polyg
         "municipality",
     ]
     assert result["features"][0].geometry_geojson["type"] == "MultiPolygon"
-    assert result["features"][3].provider_alias == "Uviéu"
+    assert result["features"][0].canonical_name == "Espa\u00f1a"
+    assert result["features"][0].display_name == "Espa\u00f1a"
+    assert result["features"][3].provider_alias == "Uvi\u00e9u"
     assert result["incidents"][0]["reason"] == "invalid_feature"
+
+
+def test_repair_ign_text_corrects_single_and_double_mojibake():
+    assert _repair_ign_text("Espa\u00c3\u00b1a") == "Espa\u00f1a"
+    assert _repair_ign_text("Uvi\u00c3\u0192\u00c2\u00a9u") == "Uvi\u00e9u"
+    assert _repair_ign_text("Asturias") == "Asturias"
 
 
 @pytest.mark.anyio
@@ -191,6 +200,7 @@ async def test_loader_persists_raw_groups_and_upserts_selected_hierarchy() -> No
         "municipality",
     ]
     municipality_call = territorial_repo.upsert_calls[-1]
+    assert territorial_repo.upsert_calls[0]["canonical_name"] == "Espa\u00f1a"
     assert municipality_call["canonical_code"] == "33044"
-    assert municipality_call["provider_alias"] == "Uviéu"
+    assert municipality_call["provider_alias"] == "Uvi\u00e9u"
     assert municipality_call["boundary_metadata"]["dataset_version"] == "ign-asturias-v1"
