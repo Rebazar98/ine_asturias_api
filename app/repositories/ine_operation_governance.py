@@ -54,14 +54,14 @@ class INEOperationGovernanceRepository:
                 "schedule_enabled": schedule_enabled,
                 "decision_reason": decision_reason,
                 "decision_source": decision_source,
-                "metadata": metadata or {},
+                INEOperationGovernance.__table__.c.metadata: metadata or {},
             },
             update_fields={
                 "execution_profile": execution_profile,
                 "schedule_enabled": schedule_enabled,
                 "decision_reason": decision_reason,
                 "decision_source": decision_source,
-                "metadata": metadata or {},
+                INEOperationGovernance.__table__.c.metadata: metadata or {},
                 "updated_at": func_now_utc(),
             },
         )
@@ -119,6 +119,11 @@ class INEOperationGovernanceRepository:
         self,
         operation_code: str,
         *,
+        execution_profile: str,
+        schedule_enabled: bool,
+        decision_reason: str,
+        decision_source: str,
+        metadata: dict[str, Any] | None = None,
         commit: bool = True,
     ) -> dict[str, Any] | None:
         session = self._require_session()
@@ -126,8 +131,11 @@ class INEOperationGovernanceRepository:
             row = await self._get_row(operation_code)
             if row is None:
                 return None
-            if not row.override_active:
-                return self._serialize(row)
+            row.execution_profile = execution_profile
+            row.schedule_enabled = schedule_enabled
+            row.decision_reason = decision_reason
+            row.decision_source = decision_source
+            row.metadata_json = metadata or {}
             row.override_active = False
             row.override_execution_profile = None
             row.override_schedule_enabled = None
@@ -169,7 +177,7 @@ class INEOperationGovernanceRepository:
                 "schedule_enabled": schedule_enabled,
                 "decision_reason": decision_reason,
                 "decision_source": decision_source,
-                "metadata": metadata or {},
+                INEOperationGovernance.__table__.c.metadata: metadata or {},
                 "last_job_id": job_id,
                 "last_run_status": "queued",
                 "last_trigger_mode": trigger_mode,
@@ -184,7 +192,7 @@ class INEOperationGovernanceRepository:
                 "schedule_enabled": schedule_enabled,
                 "decision_reason": decision_reason,
                 "decision_source": decision_source,
-                "metadata": metadata or {},
+                INEOperationGovernance.__table__.c.metadata: metadata or {},
                 "last_job_id": job_id,
                 "last_run_status": "queued",
                 "last_trigger_mode": trigger_mode,
@@ -220,7 +228,7 @@ class INEOperationGovernanceRepository:
                 "schedule_enabled": schedule_enabled,
                 "decision_reason": decision_reason,
                 "decision_source": decision_source,
-                "metadata": metadata or {},
+                INEOperationGovernance.__table__.c.metadata: metadata or {},
                 "last_job_id": job_id,
                 "last_run_status": "running",
                 "last_trigger_mode": trigger_mode,
@@ -235,7 +243,7 @@ class INEOperationGovernanceRepository:
                 "schedule_enabled": schedule_enabled,
                 "decision_reason": decision_reason,
                 "decision_source": decision_source,
-                "metadata": metadata or {},
+                INEOperationGovernance.__table__.c.metadata: metadata or {},
                 "last_job_id": job_id,
                 "last_run_status": "running",
                 "last_trigger_mode": trigger_mode,
@@ -279,7 +287,7 @@ class INEOperationGovernanceRepository:
                 "schedule_enabled": schedule_enabled,
                 "decision_reason": decision_reason,
                 "decision_source": decision_source,
-                "metadata": metadata or {},
+                INEOperationGovernance.__table__.c.metadata: metadata or {},
                 "last_job_id": job_id,
                 "last_run_status": "completed",
                 "last_trigger_mode": trigger_mode,
@@ -303,7 +311,7 @@ class INEOperationGovernanceRepository:
                 "schedule_enabled": schedule_enabled,
                 "decision_reason": decision_reason,
                 "decision_source": decision_source,
-                "metadata": metadata or {},
+                INEOperationGovernance.__table__.c.metadata: metadata or {},
                 "last_job_id": job_id,
                 "last_run_status": "completed",
                 "last_trigger_mode": trigger_mode,
@@ -355,7 +363,7 @@ class INEOperationGovernanceRepository:
                 "schedule_enabled": schedule_enabled,
                 "decision_reason": decision_reason,
                 "decision_source": decision_source,
-                "metadata": metadata or {},
+                INEOperationGovernance.__table__.c.metadata: metadata or {},
                 "last_job_id": job_id,
                 "last_run_status": "failed",
                 "last_trigger_mode": trigger_mode,
@@ -373,7 +381,7 @@ class INEOperationGovernanceRepository:
                 "schedule_enabled": schedule_enabled,
                 "decision_reason": decision_reason,
                 "decision_source": decision_source,
-                "metadata": metadata or {},
+                INEOperationGovernance.__table__.c.metadata: metadata or {},
                 "last_job_id": job_id,
                 "last_run_status": "failed",
                 "last_trigger_mode": trigger_mode,
@@ -398,7 +406,7 @@ class INEOperationGovernanceRepository:
         session = self._require_session()
         stmt = (
             insert(INEOperationGovernance)
-            .values(**values)
+            .values(values)
             .on_conflict_do_update(
                 constraint="uq_ine_operation_governance_operation_code",
                 set_=update_fields,

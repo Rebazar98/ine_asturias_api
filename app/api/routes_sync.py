@@ -50,6 +50,7 @@ from app.services.ine_operation_governance import (
     paginate_ine_operation_history_events,
     paginate_ine_operation_profiles,
     resolve_effective_ine_operation_profile,
+    resolve_ine_operation_profile,
     summarize_ine_operation_history_events,
     summarize_ine_operation_profiles,
 )
@@ -410,8 +411,17 @@ async def clear_ine_operation_override(
         operation_code=operation_code,
         log_event="sync_ine_override_before_clear_lookup_failed",
     )
+    baseline_item = resolve_ine_operation_profile(settings, operation_code)
     try:
-        persisted = await ine_governance_repo.clear_override(operation_code, commit=False)
+        persisted = await ine_governance_repo.clear_override(
+            operation_code,
+            execution_profile=baseline_item["execution_profile"],
+            schedule_enabled=baseline_item["schedule_enabled"],
+            decision_reason=baseline_item["decision_reason"],
+            decision_source=baseline_item["decision_source"],
+            metadata=baseline_item["metadata"],
+            commit=False,
+        )
         if persisted is None:
             item = before_item
         else:
@@ -421,7 +431,7 @@ async def clear_ine_operation_override(
                     **build_ine_operation_history_event(operation_code, before_item, item),
                     commit=False,
                 )
-                await _commit_repo_session_or_rollback(ine_governance_repo)
+            await _commit_repo_session_or_rollback(ine_governance_repo)
     except Exception:
         session = getattr(ine_governance_repo, "session", None)
         if session is not None:

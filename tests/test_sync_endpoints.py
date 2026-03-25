@@ -58,13 +58,28 @@ class DummyGovernanceRepository:
         self._rows[operation_code] = row
         return dict(row)
 
-    async def clear_override(self, operation_code: str, *, commit: bool = True) -> dict | None:
+    async def clear_override(
+        self,
+        operation_code: str,
+        *,
+        execution_profile: str,
+        schedule_enabled: bool,
+        decision_reason: str,
+        decision_source: str,
+        metadata: dict | None = None,
+        commit: bool = True,
+    ) -> dict | None:
         row = self._rows.get(operation_code)
         if row is None:
             return None
         row = dict(row)
         row.update(
             {
+                "execution_profile": execution_profile,
+                "schedule_enabled": schedule_enabled,
+                "decision_reason": decision_reason,
+                "decision_source": decision_source,
+                "metadata": metadata or {},
                 "override_active": False,
                 "override_execution_profile": None,
                 "override_schedule_enabled": None,
@@ -477,6 +492,13 @@ def test_sync_ine_operations_clear_override_restores_baseline():
     assert data["execution_profile"] == "manual_only"
     assert data["profile_origin"] == "baseline"
     assert data["override_active"] is False
+
+    follow_up = client.get("/sync/ine/operations?operation_code=353")
+    assert follow_up.status_code == 200
+    follow_up_item = follow_up.json()["items"][0]
+    assert follow_up_item["execution_profile"] == "manual_only"
+    assert follow_up_item["profile_origin"] == "baseline"
+    assert follow_up_item["override_active"] is False
 
 
 def test_sync_ine_operation_history_returns_events_for_override_lifecycle():

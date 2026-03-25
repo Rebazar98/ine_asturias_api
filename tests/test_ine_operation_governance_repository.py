@@ -87,7 +87,14 @@ async def test_set_override_raises_without_session() -> None:
 async def test_clear_override_raises_without_session() -> None:
     repo = INEOperationGovernanceRepository(session=None)
     with pytest.raises(RuntimeError, match="No database session"):
-        await repo.clear_override("353")
+        await repo.clear_override(
+            "353",
+            execution_profile="manual_only",
+            schedule_enabled=False,
+            decision_reason="manual_exploration_only",
+            decision_source="runtime_settings",
+            metadata={"configured": True},
+        )
 
 
 @pytest.mark.anyio
@@ -147,6 +154,11 @@ async def test_set_override_persists_override_fields() -> None:
 @pytest.mark.anyio
 async def test_clear_override_clears_override_fields() -> None:
     row = _make_row(operation_code="353")
+    row.execution_profile = "scheduled"
+    row.schedule_enabled = True
+    row.decision_reason = "promoted_temporarily"
+    row.decision_source = "manual_override_api"
+    row.metadata_json = {"configured": True, "override_active": True}
     row.override_active = True
     row.override_execution_profile = "scheduled"
     row.override_schedule_enabled = True
@@ -159,9 +171,49 @@ async def test_clear_override_clears_override_fields() -> None:
     session.refresh = AsyncMock()
 
     repo = INEOperationGovernanceRepository(session=session)
-    result = await repo.clear_override("353")
+    result = await repo.clear_override(
+        "353",
+        execution_profile="manual_only",
+        schedule_enabled=False,
+        decision_reason="manual_exploration_only",
+        decision_source="runtime_settings",
+        metadata={"configured": True, "override_active": False},
+    )
 
     assert result is not None
+    assert result["execution_profile"] == "manual_only"
+    assert result["schedule_enabled"] is False
+    assert result["decision_reason"] == "manual_exploration_only"
+    assert result["decision_source"] == "runtime_settings"
+    assert result["metadata"] == {"configured": True, "override_active": False}
     assert result["override_active"] is False
     assert result["override_execution_profile"] is None
     assert result["override_schedule_enabled"] is None
+
+
+@pytest.mark.anyio
+async def test_mark_running_uses_metadata_json_mapping() -> None:
+    repo = INEOperationGovernanceRepository(session=AsyncMock())
+    repo._upsert = AsyncMock(return_value={"operation_code": "23"})
+
+    await repo.mark_running(
+        operation_code="23",
+        execution_profile="background_only",
+        schedule_enabled=False,
+        decision_reason="heavy_operation_requires_background",
+        decision_source="runtime_settings",
+        metadata={"configured": True},
+        job_id="job-23",
+        trigger_mode="manual",
+        background_forced=True,
+        background_reason="heavy_operation_requires_background",
+    )
+
+    call = repo._upsert.await_args.kwargs
+    metadata_column = INEOperationGovernance.__table__.c.metadata
+    assert call["values"][metadata_column] == {"configured": True}
+    assert "metadata" not in call["values"]
+    assert "metadata_json" not in call["values"]
+    assert call["update_fields"][metadata_column] == {"configured": True}
+    assert "metadata" not in call["update_fields"]
+    assert "metadata_json" not in call["update_fields"]
