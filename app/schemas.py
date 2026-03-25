@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from fastapi import Query
@@ -560,6 +560,35 @@ class TerritorialReportJobAcceptedResponse(BaseModel):
     params: dict[str, Any] = Field(default_factory=dict)
 
 
+class TerritorialAdminBoundariesLoadRequest(BaseModel):
+    snapshot_url: str | None = Field(default=None, min_length=1, max_length=2048)
+    dataset_version: str | None = Field(default=None, min_length=1, max_length=128)
+    country_code: str = Field(default="ES", min_length=2, max_length=8)
+    autonomous_community_code: str = Field(default="03", min_length=1, max_length=16)
+
+    @field_validator("snapshot_url", "dataset_version", mode="before")
+    @classmethod
+    def strip_optional_strings(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized or None
+
+    @field_validator("country_code", "autonomous_community_code", mode="before")
+    @classmethod
+    def strip_required_codes(cls, value: str) -> str:
+        return str(value).strip()
+
+
+class TerritorialAdminBoundariesLoadJobAcceptedResponse(BaseModel):
+    job_id: str
+    job_type: Literal["territorial_admin_boundaries_load"] = "territorial_admin_boundaries_load"
+    status: Literal["queued", "running", "completed", "failed"]
+    background: Literal[True] = True
+    status_path: str
+    params: TerritorialAdminBoundariesLoadRequest
+
+
 class TerritorialExportRequest(BaseModel):
     unit_level: Literal["municipality", "province", "autonomous_community"]
     code_value: str = Field(min_length=1, max_length=128)
@@ -729,7 +758,31 @@ class GeocodingCoordinatesResponse(BaseModel):
 class TerritorialPointResolutionCoverageResponse(BaseModel):
     boundary_source: str | None = None
     levels_considered: list[str] = Field(default_factory=list)
+    levels_loaded: list[str] = Field(default_factory=list)
+    levels_missing_geometry: list[str] = Field(default_factory=list)
     levels_matched: list[str] = Field(default_factory=list)
+    coverage_status: Literal["none", "partial", "full"] = "none"
+
+
+class TerritorialPointResolutionDetailsResponse(BaseModel):
+    strategy: Literal["spatial_cover"] = "spatial_cover"
+    boundary_source: str | None = None
+    coverage_status: Literal["none", "partial", "full"] = "none"
+    levels_considered: list[str] = Field(default_factory=list)
+    levels_loaded: list[str] = Field(default_factory=list)
+    levels_missing_geometry: list[str] = Field(default_factory=list)
+    levels_matched: list[str] = Field(default_factory=list)
+    missing_levels: list[str] = Field(default_factory=list)
+    partial_resolution: bool = False
+
+
+class TerritorialPointResolutionSummaryResponse(BaseModel):
+    matched: bool = False
+    boundary_coverage_loaded: bool = False
+    coverage_status: Literal["none", "partial", "full"] = "none"
+    levels_loaded_total: int = 0
+    levels_matched_total: int = 0
+    partial_resolution: bool = False
 
 
 class TerritorialPointResolutionResultResponse(BaseModel):
@@ -743,8 +796,30 @@ class TerritorialPointResolutionResponse(BaseModel):
     source: Literal["internal.territorial.point_resolution"] = (
         "internal.territorial.point_resolution"
     )
+    generated_at: datetime
     query_coordinates: GeocodingCoordinatesResponse
+    territorial_context: TerritorialUnitSummaryResponse | None = None
+    territorial_resolution: TerritorialPointResolutionDetailsResponse
+    summary: TerritorialPointResolutionSummaryResponse
     result: TerritorialPointResolutionResultResponse | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class TerritorialGeometrySummaryResponse(BaseModel):
+    has_geometry: bool
+    has_centroid: bool
+    geometry_type: str | None = None
+    srid: int | None = None
+    boundary_source: str | None = None
+
+
+class TerritorialGeometryResponse(BaseModel):
+    source: Literal["internal.territorial.geometry"] = "internal.territorial.geometry"
+    generated_at: datetime
+    territorial_context: TerritorialUnitSummaryResponse
+    summary: TerritorialGeometrySummaryResponse
+    geometry: dict[str, Any] | None = None
+    centroid: dict[str, Any] | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -781,10 +856,24 @@ class GeocodeResultResponse(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class GeocodeSummaryResponse(BaseModel):
+    resolved: bool = False
+    provider_hit: bool = False
+    territorial_match: bool = False
+    cached: bool = False
+    partial_resolution: bool = False
+
+
 class GeocodeResponse(BaseModel):
     source: str
+    generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     query: str
     cached: bool = False
+    territorial_context: GeocodingTerritorialContextResponse = Field(
+        default_factory=GeocodingTerritorialContextResponse
+    )
+    territorial_resolution: TerritorialPointResolutionDetailsResponse | None = None
+    summary: GeocodeSummaryResponse = Field(default_factory=GeocodeSummaryResponse)
     result: GeocodeResultResponse | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -802,10 +891,24 @@ class ReverseGeocodeResultResponse(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class ReverseGeocodeSummaryResponse(BaseModel):
+    resolved: bool = False
+    provider_hit: bool = False
+    territorial_match: bool = False
+    cached: bool = False
+    partial_resolution: bool = False
+
+
 class ReverseGeocodeResponse(BaseModel):
     source: str
+    generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     query_coordinates: GeocodingCoordinatesResponse
     cached: bool = False
+    territorial_context: GeocodingTerritorialContextResponse = Field(
+        default_factory=GeocodingTerritorialContextResponse
+    )
+    territorial_resolution: TerritorialPointResolutionDetailsResponse | None = None
+    summary: ReverseGeocodeSummaryResponse = Field(default_factory=ReverseGeocodeSummaryResponse)
     result: ReverseGeocodeResultResponse | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 

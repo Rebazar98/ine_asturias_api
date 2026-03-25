@@ -336,15 +336,21 @@ Contrato actual de `/geocode`:
 - registra tambien la llamada upstream en `ingestion_raw` con `source_type=cartociudad_geocode_find` y parametros saneados;
 - devuelve contrato semantico propio:
   - `source`
+  - `generated_at`
   - `query`
   - `cached`
+  - `territorial_context`
+  - `territorial_resolution`
+  - `summary`
   - `result`
   - `metadata`
 
 La respuesta NO replica el shape crudo del provider. En esta fase:
 
-- `territorial_resolution` se rellena cuando el payload de CartoCiudad puede cruzarse de forma fiable con el modelo territorial interno;
-- si no existe match fiable, `territorial_resolution` queda `null`;
+- cuando CartoCiudad devuelve coordenadas normalizables, `territorial_context` y `territorial_resolution` se enriquecen arriba con la resolucion interna por geometria en PostGIS;
+- el `result` mantiene el mejor payload semantico del provider, mientras que el contexto territorial superior ya no depende solo del match por codigo o nombre del provider;
+- `summary` distingue entre `provider_hit`, `territorial_match`, `cached` y `partial_resolution`;
+- si no existe match espacial fiable, el contrato mantiene `territorial_resolution=null` y `territorial_context` vacio en la capa top-level;
 - `cached=true` indica hit de cache persistente del endpoint.
 - los logs operativos y errores upstream ya no exponen la query completa; usan contexto saneado (`query_fingerprint`, longitud y numero de terminos).
 - el cliente aplica reintentos acotados (`3` intentos maximo, backoff `1s/2s/4s` dentro de un presupuesto total de `30s`) y circuit breaker por provider.
@@ -356,17 +362,23 @@ Contrato actual de `/reverse_geocode`:
 - si no hay hit persistente, hace fallback al adapter del provider;
 - persiste el payload crudo del provider en `reverse_geocode_cache`;
 - registra tambien la llamada upstream en `ingestion_raw` con `source_type=cartociudad_reverse_geocode` y parametros saneados;
-- devuelve contrato semantico consistente con `/geocode`:
+- devuelve contrato semantico propio, enriquecido con contexto territorial interno:
   - `source`
+  - `generated_at`
   - `query_coordinates`
   - `cached`
+  - `territorial_context`
+  - `territorial_resolution`
+  - `summary`
   - `result`
   - `metadata`
 
 En esta fase:
 
-- `territorial_resolution` se rellena cuando el payload puede resolverse contra `territorial_units` y `territorial_unit_codes`;
-- si no existe match fiable, el contrato mantiene `territorial_resolution=null`;
+- `territorial_context` y `territorial_resolution` se resuelven con prioridad contra `territorial_units.geometry` via PostGIS;
+- el `result` mantiene el mejor payload semantico del provider cuando existe, pero el contexto territorial superior ya no depende solo de codigos o nombres del provider;
+- si CartoCiudad falla o devuelve una respuesta inutilizable, el endpoint PUEDE degradar a resolucion territorial interna por coordenada cuando exista cobertura fiable;
+- `summary` distingue entre `provider_hit`, `territorial_match`, `cached` y `partial_resolution`;
 - `cached=true` indica hit de cache persistente del endpoint;
 - `lat` y `lon` se validan en rango geodesico antes de consultar provider o cache.
 - los logs operativos y errores upstream usan una huella de coordenadas saneada en vez del par completo.
@@ -384,12 +396,18 @@ Contrato actual de `/territorios/resolve-point`:
 - NO hace reverse geocoding contra provider externo ni expone `geometry`, `centroid` o GeoJSON publico;
 - devuelve contrato semantico propio:
   - `source`
+  - `generated_at`
   - `query_coordinates`
+  - `territorial_context`
+  - `territorial_resolution`
+  - `summary`
   - `result`
   - `metadata`
 - `result.best_match` devuelve la unidad territorial mas especifica que cubre el punto;
 - `result.hierarchy` devuelve la jerarquia interna contenida (`country -> autonomous_community -> province -> municipality`) segun la cobertura realmente disponible;
-- `result.coverage` expone `boundary_source`, `levels_considered` y `levels_matched`;
+- `result.coverage` expone `boundary_source`, `levels_considered`, `levels_loaded`, `levels_missing_geometry`, `levels_matched` y `coverage_status`;
+- `territorial_resolution` resume la estrategia espacial usada (`spatial_cover`), la cobertura cargada y si la resolucion es parcial;
+- `summary` deja lista para automatizacion una lectura compacta de `matched`, `boundary_coverage_loaded`, `coverage_status`, `levels_loaded_total`, `levels_matched_total` y `partial_resolution`;
 - si el punto cae fuera de la cobertura cargada, el endpoint devuelve `200` con `result=null` y `metadata.reason=outside_loaded_coverage`;
 - si no hay limites administrativos cargados, devuelve `200` con `result=null` y `metadata.reason=no_boundary_coverage_loaded`.
 
