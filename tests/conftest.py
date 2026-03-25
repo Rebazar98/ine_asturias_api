@@ -543,6 +543,7 @@ class DummyTerritorialRepository:
         self.by_name: dict[str, dict] = {}
         self.by_canonical_code: dict[tuple[str, str], dict] = {}
         self.detail_by_canonical_code: dict[tuple[str, str], dict] = {}
+        self.geometry_by_canonical_code: dict[tuple[str, str], dict] = {}
         self.detail_by_id: dict[int, dict] = {}
         self.hierarchy_by_unit_id: dict[int, list[dict]] = {}
         self.units_by_level: dict[str, list[dict]] = {}
@@ -562,6 +563,9 @@ class DummyTerritorialRepository:
 
     async def get_unit_detail_by_canonical_code(self, *, unit_level: str, code_value: str):
         return self.detail_by_canonical_code.get((unit_level, code_value))
+
+    async def get_unit_geometry_by_canonical_code(self, *, unit_level: str, code_value: str):
+        return deepcopy(self.geometry_by_canonical_code.get((unit_level, code_value)))
 
     async def get_unit_detail_by_id(self, territorial_unit_id: int):
         return self.detail_by_id.get(territorial_unit_id)
@@ -724,7 +728,15 @@ class DummyTerritorialRepository:
                         "province",
                         "municipality",
                     ],
+                    "levels_loaded": [],
+                    "levels_missing_geometry": [
+                        "country",
+                        "autonomous_community",
+                        "province",
+                        "municipality",
+                    ],
                     "levels_matched": [],
+                    "coverage_status": "none",
                 },
                 "ambiguity_detected": False,
                 "ambiguity_by_level": {},

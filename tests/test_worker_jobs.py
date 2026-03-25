@@ -15,6 +15,8 @@ from app.schemas import AnalyticalResponse
 from app.schemas import AnalyticalTerritorialContextResponse, TerritorialExportResultResponse
 from app.services.asturias_resolver import AsturiasResolutionError
 from app.services.catastro_client import CatastroUpstreamError
+from app.services.ign_admin_boundaries import IGN_ADMIN_BOUNDARY_LOAD_JOB_TYPE
+from app.services.ign_admin_client import IGNAdministrativeUpstreamError
 from app.services.ine_client import INEUpstreamError
 from app.services.ideas_wfs_client import IDEASWFSClientError
 from app.services.sadei_client import SADEIClientError
@@ -26,7 +28,9 @@ from app.worker import (
     run_ideas_sync_job,
     run_operation_asturias_job,
     run_sadei_sync_job,
+    run_territorial_admin_boundaries_load_job,
     run_territorial_export_job,
+    scheduled_territorial_sync,
 )
 
 
@@ -381,6 +385,133 @@ def test_territorial_export_request_id_set_and_cleared() -> None:
 
     assert captured == ["rid-export"]
     assert request_id_var.get() is None
+
+
+# ---------------------------------------------------------------------------
+# run_territorial_admin_boundaries_load_job / scheduled_territorial_sync
+# ---------------------------------------------------------------------------
+
+
+def test_territorial_admin_boundaries_load_job_client_error_marks_job_failed() -> None:
+    async def scenario() -> None:
+        job_store = InMemoryJobStore()
+        ctx = _base_ctx(job_store)
+        ctx["http_client"] = None
+
+        job = await job_store.create_job(IGN_ADMIN_BOUNDARY_LOAD_JOB_TYPE, {})
+
+        class FailingIGNClient:
+            def __init__(self, **kwargs: Any) -> None:
+                pass
+
+            async def fetch_snapshot(self, snapshot_url=None):
+                raise IGNAdministrativeUpstreamError(
+                    status_code=503,
+                    detail={"message": "IGN unavailable"},
+                )
+
+        with patch("app.worker.IGNAdministrativeSnapshotClient", new=FailingIGNClient):
+            result = await run_territorial_admin_boundaries_load_job(ctx, job["job_id"], {})
+
+        assert result is None
+        record = await job_store.get_job(job["job_id"])
+        assert record is not None
+        assert record["status"] == "failed"
+        assert record["error"]["message"] == "IGN unavailable"
+
+    asyncio.run(scenario())
+
+
+def test_territorial_admin_boundaries_load_job_completes_with_loader_result() -> None:
+    @asynccontextmanager
+    async def _mock_session():
+        yield object()
+
+    class OkIGNClient:
+        def __init__(self, **kwargs: Any) -> None:
+            pass
+
+        async def fetch_snapshot(self, snapshot_url=None):
+            return {"type": "FeatureCollection", "features": [{"type": "Feature"}]}
+
+    class OkLoaderService:
+        def __init__(self, **kwargs: Any) -> None:
+            pass
+
+        async def load_snapshot(self, **kwargs: Any):
+            return {
+                "source": "ign_administrative_boundaries",
+                "features_selected": 1,
+                "features_upserted": 1,
+                "features_rejected": 0,
+            }
+
+    async def scenario() -> None:
+        job_store = InMemoryJobStore()
+        ctx = _base_ctx(job_store)
+        ctx["http_client"] = None
+
+        job = await job_store.create_job(IGN_ADMIN_BOUNDARY_LOAD_JOB_TYPE, {})
+        with (
+            patch("app.worker.session_scope", new=_mock_session),
+            patch("app.worker.IGNAdministrativeSnapshotClient", new=OkIGNClient),
+            patch("app.worker.IGNAdministrativeBoundariesLoaderService", new=OkLoaderService),
+        ):
+            result = await run_territorial_admin_boundaries_load_job(
+                ctx,
+                job["job_id"],
+                {"snapshot_url": "https://mocked.ign/boundaries.geojson"},
+            )
+
+        assert result is not None
+        assert result["features_upserted"] == 1
+        record = await job_store.get_job(job["job_id"])
+        assert record is not None
+        assert record["status"] == "completed"
+        assert record["result"]["source"] == "ign_administrative_boundaries"
+
+    asyncio.run(scenario())
+
+
+def test_scheduled_territorial_sync_enqueues_boundary_load_job() -> None:
+    class DummyArqPool:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        async def enqueue_job(self, function_name: str, *args: Any, **kwargs: Any) -> None:
+            self.calls.append(
+                {
+                    "function_name": function_name,
+                    "args": args,
+                    "kwargs": kwargs,
+                }
+            )
+
+    async def scenario() -> None:
+        job_store = InMemoryJobStore()
+        arq_pool = DummyArqPool()
+        settings = Settings(
+            app_env="local",
+            job_store_backend="memory",
+            scheduled_territorial_sync_enabled=True,
+            ign_admin_snapshot_url="https://mocked.ign/boundaries.geojson",
+        )
+        ctx = {
+            "settings": settings,
+            "job_store": job_store,
+            "arq_pool": arq_pool,
+        }
+
+        await scheduled_territorial_sync(ctx)
+
+        assert len(arq_pool.calls) == 1
+        assert arq_pool.calls[0]["function_name"] == "run_territorial_admin_boundaries_load_job"
+        job_id = next(iter(job_store._jobs))
+        record = await job_store.get_job(job_id)
+        assert record is not None
+        assert record["job_type"] == IGN_ADMIN_BOUNDARY_LOAD_JOB_TYPE
+
+    asyncio.run(scenario())
 
 
 def test_sadei_sync_client_error_marks_job_failed() -> None:

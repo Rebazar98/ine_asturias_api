@@ -21,6 +21,7 @@ from app.core.redis import redis_settings_from_url
 from app.core.resilience import AsyncCircuitBreaker
 from app.db import dispose_db, init_db, session_scope
 from app.repositories.analytics_snapshots import AnalyticalSnapshotRepository
+from app.repositories.cartographic_qa import CartographicQARepository
 from app.repositories.catastro_cache import (
     CatastroMunicipalityAggregateCacheRepository,
     CatastroTerritorialAggregateCacheRepository,
@@ -34,6 +35,14 @@ from app.repositories.territorial_export_artifacts import TerritorialExportArtif
 from app.repositories.territorial import TerritorialRepository
 from app.services.asturias_resolver import AsturiasResolutionError, AsturiasResolver
 from app.services.catastro_client import CatastroClientError, CatastroClientService
+from app.services.ign_admin_boundaries import (
+    IGNAdministrativeBoundariesLoaderService,
+    IGN_ADMIN_BOUNDARY_LOAD_JOB_TYPE,
+)
+from app.services.ign_admin_client import (
+    IGNAdministrativeClientError,
+    IGNAdministrativeSnapshotClient,
+)
 from app.services.ideas_wfs_client import IDEASWFSClientError, IDEASWFSClientService
 from app.services.ine_client import INEClientError, INEClientService
 from app.services.ine_incident_notifications import notify_ine_incident_transitions
@@ -842,6 +851,105 @@ async def run_territorial_export_job(
     return None
 
 
+async def run_territorial_admin_boundaries_load_job(
+    ctx: dict[str, Any], job_id: str, payload: dict[str, Any]
+) -> dict[str, Any] | None:
+    settings = ctx["settings"]
+    job_store: RedisJobStore = ctx["job_store"]
+    _rid_token = request_id_var.set(payload.get("_request_id"))
+    started_at = perf_counter()
+
+    async def report_progress(progress: dict[str, Any]) -> None:
+        await job_store.update_progress(job_id, **progress)
+
+    try:
+        await job_store.mark_running(job_id)
+        await report_progress(
+            {
+                "stage": "fetching_snapshot",
+                "country_code": payload.get("country_code", "ES"),
+                "autonomous_community_code": payload.get("autonomous_community_code", "03"),
+            }
+        )
+
+        ign_client = IGNAdministrativeSnapshotClient(http_client=ctx["http_client"], settings=settings)
+        snapshot_payload = await ign_client.fetch_snapshot(snapshot_url=payload.get("snapshot_url"))
+        await report_progress(
+            {
+                "stage": "loading_boundaries",
+                "features_found": len(snapshot_payload.get("features") or []),
+            }
+        )
+
+        async with session_scope() as session:
+            ingestion_repo = IngestionRepository(session=session)
+            territorial_repo = TerritorialRepository(session=session)
+            qa_repo = CartographicQARepository(session=session)
+            loader_service = IGNAdministrativeBoundariesLoaderService(
+                ingestion_repo=ingestion_repo,
+                territorial_repo=territorial_repo,
+                qa_repo=qa_repo,
+                cartographic_qa_enabled=settings.cartographic_qa_enabled,
+            )
+            result = await loader_service.load_snapshot(
+                payload=snapshot_payload,
+                source_path=payload.get("snapshot_url")
+                or settings.ign_admin_snapshot_url
+                or "ign_admin_snapshot",
+                dataset_version=payload.get("dataset_version"),
+                country_code=payload.get("country_code", "ES"),
+                autonomous_community_code=payload.get("autonomous_community_code", "03"),
+            )
+
+        await job_store.complete_job(job_id, result)
+        record_job_duration(
+            IGN_ADMIN_BOUNDARY_LOAD_JOB_TYPE,
+            "completed",
+            perf_counter() - started_at,
+        )
+        logger.info(
+            "territorial_admin_boundaries_load_worker_job_completed",
+            extra={
+                "job_id": job_id,
+                "features_selected": result.get("features_selected"),
+                "features_upserted": result.get("features_upserted"),
+                "features_rejected": result.get("features_rejected"),
+            },
+        )
+        return result
+    except IGNAdministrativeClientError as exc:
+        await job_store.fail_job(job_id, exc.detail)
+        record_job_duration(
+            IGN_ADMIN_BOUNDARY_LOAD_JOB_TYPE,
+            "failed",
+            perf_counter() - started_at,
+        )
+        logger.warning(
+            "territorial_admin_boundaries_load_worker_job_failed",
+            extra={"job_id": job_id, "error": exc.detail},
+        )
+    except Exception as exc:
+        logger.exception(
+            "territorial_admin_boundaries_load_worker_job_unexpected_error",
+            extra={"job_id": job_id},
+        )
+        await job_store.fail_job(
+            job_id,
+            {
+                "message": "Unexpected error while loading IGN administrative boundaries.",
+                "error": str(exc),
+            },
+        )
+        record_job_duration(
+            IGN_ADMIN_BOUNDARY_LOAD_JOB_TYPE,
+            "failed",
+            perf_counter() - started_at,
+        )
+    finally:
+        request_id_var.reset(_rid_token)
+    return None
+
+
 async def run_sadei_sync_job(
     ctx: dict[str, Any], job_id: str, payload: dict[str, Any]
 ) -> dict[str, Any] | None:
@@ -994,7 +1102,7 @@ async def scheduled_ine_update(ctx: dict[str, Any]) -> None:
             )
 
 
-async def scheduled_territorial_sync(ctx: dict[str, Any]) -> None:
+async def _scheduled_territorial_sync_placeholder(ctx: dict[str, Any]) -> None:
     """Cron job: placeholder for IGN administrative boundaries weekly sync."""
     settings = ctx["settings"]
     if not settings.scheduled_territorial_sync_enabled:
@@ -1004,6 +1112,40 @@ async def scheduled_territorial_sync(ctx: dict[str, Any]) -> None:
         "scheduled_territorial_sync_triggered",
         extra={"note": "IGN sync job not yet implemented — Fase B"},
     )
+
+
+async def scheduled_territorial_sync(ctx: dict[str, Any]) -> None:
+    """Cron job: enqueue the protected IGN administrative boundary refresh."""
+    settings = ctx["settings"]
+    job_store: RedisJobStore = ctx["job_store"]
+    arq_pool = ctx["arq_pool"]
+    if not settings.scheduled_territorial_sync_enabled:
+        logger.info("scheduled_territorial_sync_disabled")
+        return
+    try:
+        params = {
+            "snapshot_url": settings.ign_admin_snapshot_url,
+            "country_code": "ES",
+            "autonomous_community_code": "03",
+        }
+        job_record = await job_store.create_job(IGN_ADMIN_BOUNDARY_LOAD_JOB_TYPE, params)
+        job_id = job_record["job_id"]
+        await arq_pool.enqueue_job(
+            "run_territorial_admin_boundaries_load_job",
+            job_id,
+            params,
+            _job_id=job_id,
+            _queue_name=settings.job_queue_name,
+        )
+        logger.info(
+            "scheduled_territorial_sync_enqueued",
+            extra={
+                "job_id": job_id,
+                "snapshot_url_configured": bool(settings.ign_admin_snapshot_url),
+            },
+        )
+    except Exception:
+        logger.exception("scheduled_territorial_sync_enqueue_failed")
 
 
 async def scheduled_sadei_sync(ctx: dict[str, Any]) -> None:
@@ -1193,6 +1335,7 @@ class WorkerSettings:
         run_operation_asturias_job,
         run_municipality_report_job,
         run_territorial_export_job,
+        run_territorial_admin_boundaries_load_job,
         run_sadei_sync_job,
         run_ideas_sync_job,
     ]

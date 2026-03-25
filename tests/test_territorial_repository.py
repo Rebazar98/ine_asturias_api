@@ -102,6 +102,17 @@ def test_get_unit_by_canonical_code_returns_none_without_database_session():
     assert asyncio.run(result) is None
 
 
+def test_get_unit_geometry_by_canonical_code_returns_none_without_database_session():
+    repository = TerritorialRepository(session=None)
+
+    result = repository.get_unit_geometry_by_canonical_code(
+        unit_level=TERRITORIAL_UNIT_LEVEL_MUNICIPALITY,
+        code_value="33044",
+    )
+
+    assert asyncio.run(result) is None
+
+
 def test_get_catalog_coverage_returns_zero_rows_per_supported_level_without_database_session():
     repository = TerritorialRepository(session=None)
 
@@ -320,6 +331,89 @@ def test_get_unit_by_alias_serializes_lookup_with_alias_and_canonical_code():
         "code_type": INE_MUNICIPALITY_CODE_TYPE,
         "code_value": "33044",
         "is_primary": True,
+    }
+
+
+def test_get_unit_geometry_by_canonical_code_serializes_geojson_summary():
+    unit = SimpleNamespace(
+        id=33044,
+        parent_id=33,
+        unit_level=TERRITORIAL_UNIT_LEVEL_MUNICIPALITY,
+        canonical_name="Oviedo",
+        display_name="Oviedo",
+        country_code="ES",
+        is_active=True,
+        attributes_json={
+            "boundary_source": {
+                "source": "ign_administrative_boundaries",
+                "dataset_version": "ign-admin-v1",
+                "provider_source": "ign_admin",
+            }
+        },
+    )
+    canonical_code = SimpleNamespace(
+        source_system=INE_TERRITORIAL_SOURCE_SYSTEM,
+        code_type=INE_MUNICIPALITY_CODE_TYPE,
+        code_value="33044",
+        is_primary=True,
+    )
+    session = FakeSession(
+        FakeExecuteResult(
+            first_value=(
+                unit,
+                canonical_code,
+                '{"type":"MultiPolygon","coordinates":[[[[0,0],[1,0],[1,1],[0,0]]]]}',
+                '{"type":"Point","coordinates":[0.5,0.5]}',
+                "ST_MultiPolygon",
+                4326,
+            )
+        )
+    )
+    repository = TerritorialRepository(session=session)
+
+    result = asyncio.run(
+        repository.get_unit_geometry_by_canonical_code(
+            unit_level=TERRITORIAL_UNIT_LEVEL_MUNICIPALITY,
+            code_value="33044",
+        )
+    )
+
+    assert result == {
+        "territorial_context": {
+            "id": 33044,
+            "parent_id": 33,
+            "unit_level": TERRITORIAL_UNIT_LEVEL_MUNICIPALITY,
+            "canonical_name": "Oviedo",
+            "display_name": "Oviedo",
+            "country_code": "ES",
+            "is_active": True,
+            "canonical_code_strategy": {
+                "source_system": INE_TERRITORIAL_SOURCE_SYSTEM,
+                "code_type": INE_MUNICIPALITY_CODE_TYPE,
+            },
+            "canonical_code": {
+                "source_system": INE_TERRITORIAL_SOURCE_SYSTEM,
+                "code_type": INE_MUNICIPALITY_CODE_TYPE,
+                "code_value": "33044",
+                "is_primary": True,
+            },
+        },
+        "summary": {
+            "has_geometry": True,
+            "has_centroid": True,
+            "geometry_type": "MultiPolygon",
+            "srid": 4326,
+            "boundary_source": "ign_administrative_boundaries",
+        },
+        "geometry": {
+            "type": "MultiPolygon",
+            "coordinates": [[[[0, 0], [1, 0], [1, 1], [0, 0]]]],
+        },
+        "centroid": {"type": "Point", "coordinates": [0.5, 0.5]},
+        "metadata": {
+            "boundary_dataset_version": "ign-admin-v1",
+            "provider_source": "ign_admin",
+        },
     }
 
 
@@ -740,7 +834,14 @@ def test_resolve_point_returns_hierarchy_and_best_match():
         is_primary=True,
     )
     session = FakeSession(
-        FakeExecuteResult(all_values=[(TERRITORIAL_UNIT_LEVEL_COUNTRY, 1)]),
+        FakeExecuteResult(
+            all_values=[
+                (TERRITORIAL_UNIT_LEVEL_COUNTRY, 1),
+                (TERRITORIAL_UNIT_LEVEL_AUTONOMOUS_COMMUNITY, 1),
+                (TERRITORIAL_UNIT_LEVEL_PROVINCE, 1),
+                (TERRITORIAL_UNIT_LEVEL_MUNICIPALITY, 1),
+            ]
+        ),
         FakeExecuteResult(all_values=[(country, country_code)]),
         FakeExecuteResult(all_values=[(community, community_code)]),
         FakeExecuteResult(all_values=[(province, province_code)]),
@@ -754,7 +855,10 @@ def test_resolve_point_returns_hierarchy_and_best_match():
     assert result["coverage"] == {
         "boundary_source": "ign_administrative_boundaries",
         "levels_considered": ["country", "autonomous_community", "province", "municipality"],
+        "levels_loaded": ["country", "autonomous_community", "province", "municipality"],
+        "levels_missing_geometry": [],
         "levels_matched": ["country", "autonomous_community", "province", "municipality"],
+        "coverage_status": "full",
     }
     assert result["best_match"]["canonical_code"]["code_value"] == "33044"
     assert [item["unit_level"] for item in result["hierarchy"]] == [
@@ -783,7 +887,10 @@ def test_resolve_point_returns_no_coverage_when_no_boundaries_are_loaded():
     assert result["coverage"] == {
         "boundary_source": None,
         "levels_considered": ["country", "autonomous_community", "province", "municipality"],
+        "levels_loaded": [],
+        "levels_missing_geometry": ["country", "autonomous_community", "province", "municipality"],
         "levels_matched": [],
+        "coverage_status": "none",
     }
     assert result["ambiguity_detected"] is False
 
@@ -919,7 +1026,10 @@ def test_resolve_point_returns_deepest_available_match_when_municipality_is_not_
     assert result["coverage"] == {
         "boundary_source": "ign_administrative_boundaries",
         "levels_considered": ["country", "autonomous_community", "province", "municipality"],
+        "levels_loaded": ["country", "autonomous_community", "province"],
+        "levels_missing_geometry": ["municipality"],
         "levels_matched": ["country", "autonomous_community", "province"],
+        "coverage_status": "partial",
     }
     assert [item["unit_level"] for item in result["hierarchy"]] == [
         "country",

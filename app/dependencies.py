@@ -34,6 +34,8 @@ from app.services.asturias_resolver import AsturiasResolver
 from app.services.catastro_client import CatastroClientService
 from app.services.cartociudad_client import CartoCiudadClientService
 from app.services.cartociudad_geocoding import CartoCiudadGeocodingService
+from app.services.ign_admin_boundaries import IGNAdministrativeBoundariesLoaderService
+from app.services.ign_admin_client import IGNAdministrativeSnapshotClient
 from app.services.ine_client import INEClientService
 from app.services.ine_operation_ingestion import INEOperationIngestionService
 from app.services.territorial_analytics import TerritorialAnalyticsService
@@ -87,6 +89,13 @@ def get_catastro_client_service(
 ) -> CatastroClientService:
     circuit_breaker: AsyncCircuitBreaker = request.app.state.catastro_circuit_breaker
     return CatastroClientService(request.app.state.http_client, settings, cache, circuit_breaker)
+
+
+def get_ign_admin_snapshot_client(
+    request: Request,
+    settings: Settings = Depends(get_settings),
+) -> IGNAdministrativeSnapshotClient:
+    return IGNAdministrativeSnapshotClient(request.app.state.http_client, settings)
 
 
 def get_asturias_resolver(
@@ -179,6 +188,20 @@ def get_qa_repository(
     session: AsyncSession | None = Depends(get_db_session),
 ) -> CartographicQARepository:
     return CartographicQARepository(session=session)
+
+
+def get_ign_admin_boundaries_loader_service(
+    ingestion_repo: IngestionRepository = Depends(get_ingestion_repository),
+    territorial_repo: TerritorialRepository = Depends(get_territorial_repository),
+    qa_repo: CartographicQARepository = Depends(get_qa_repository),
+    settings: Settings = Depends(get_settings),
+) -> IGNAdministrativeBoundariesLoaderService:
+    return IGNAdministrativeBoundariesLoaderService(
+        ingestion_repo=ingestion_repo,
+        territorial_repo=territorial_repo,
+        qa_repo=qa_repo,
+        cartographic_qa_enabled=settings.cartographic_qa_enabled,
+    )
 
 
 def get_operation_ingestion_service(

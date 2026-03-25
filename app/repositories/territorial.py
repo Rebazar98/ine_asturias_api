@@ -411,6 +411,69 @@ class TerritorialRepository:
             return None
         return await self._serialize_unit_detail(unit)
 
+    async def get_unit_geometry_by_canonical_code(
+        self,
+        *,
+        unit_level: str,
+        code_value: str,
+    ) -> dict[str, Any] | None:
+        if self.session is None:
+            return None
+
+        strategy = get_canonical_code_strategy(unit_level)
+        if strategy is None:
+            return None
+
+        statement = (
+            select(
+                TerritorialUnit,
+                TerritorialUnitCode,
+                func.ST_AsGeoJSON(TerritorialUnit.geometry),
+                func.ST_AsGeoJSON(TerritorialUnit.centroid),
+                func.ST_GeometryType(TerritorialUnit.geometry),
+                func.ST_SRID(TerritorialUnit.geometry),
+            )
+            .join(TerritorialUnitCode, TerritorialUnitCode.territorial_unit_id == TerritorialUnit.id)
+            .where(
+                TerritorialUnit.unit_level == unit_level,
+                TerritorialUnitCode.source_system == strategy["source_system"],
+                TerritorialUnitCode.code_type == strategy["code_type"],
+                TerritorialUnitCode.code_value == code_value,
+                TerritorialUnitCode.is_primary.is_(True),
+            )
+            .limit(1)
+        )
+        result = await self.session.execute(statement)
+        row = result.first()
+        if row is None:
+            return None
+
+        unit, canonical_code, geometry_json, centroid_json, geometry_type, geometry_srid = row
+        raw_boundary_metadata = (getattr(unit, "attributes_json", {}) or {}).get(
+            "boundary_source", {}
+        )
+        boundary_metadata = (
+            dict(raw_boundary_metadata)
+            if isinstance(raw_boundary_metadata, dict)
+            else {}
+        )
+        return {
+            "territorial_context": self._serialize_unit_summary_payload(unit, canonical_code),
+            "summary": {
+                "has_geometry": geometry_json is not None,
+                "has_centroid": centroid_json is not None,
+                "geometry_type": self._normalize_geometry_type_name(geometry_type),
+                "srid": int(geometry_srid) if geometry_srid is not None else None,
+                "boundary_source": boundary_metadata.get("source"),
+            },
+            "geometry": json.loads(geometry_json) if geometry_json is not None else None,
+            "centroid": json.loads(centroid_json) if centroid_json is not None else None,
+            "metadata": {
+                "boundary_dataset_version": boundary_metadata.get("dataset_version"),
+                "provider_source": boundary_metadata.get("provider_source"),
+            },
+        }
+
     async def list_hierarchy(self, territorial_unit_id: int) -> list[dict[str, Any]]:
         if self.session is None:
             return []
@@ -548,6 +611,15 @@ class TerritorialRepository:
             for unit_level, count in geometry_levels_result.all()
             if int(count or 0) > 0
         }
+        levels_loaded = [level for level in levels_considered if level in levels_with_geometry]
+        levels_missing_geometry = [
+            level for level in levels_considered if level not in levels_with_geometry
+        ]
+        coverage_status = (
+            "none"
+            if not levels_loaded
+            else "full" if len(levels_loaded) == len(levels_considered) else "partial"
+        )
         boundary_source = "ign_administrative_boundaries" if levels_with_geometry else None
         point_expr = func.ST_SetSRID(func.ST_MakePoint(lon, lat), POSTGIS_DEFAULT_SRID)
         matched_units: list[tuple[TerritorialUnit, TerritorialUnitCode | None]] = []
@@ -625,7 +697,10 @@ class TerritorialRepository:
                 "coverage": {
                     "boundary_source": boundary_source,
                     "levels_considered": levels_considered,
+                    "levels_loaded": levels_loaded,
+                    "levels_missing_geometry": levels_missing_geometry,
                     "levels_matched": [],
+                    "coverage_status": coverage_status,
                 },
                 "ambiguity_detected": False,
                 "ambiguity_by_level": {},
@@ -662,7 +737,10 @@ class TerritorialRepository:
             "coverage": {
                 "boundary_source": boundary_source,
                 "levels_considered": levels_considered,
+                "levels_loaded": levels_loaded,
+                "levels_missing_geometry": levels_missing_geometry,
                 "levels_matched": levels_matched,
+                "coverage_status": coverage_status,
             },
             "ambiguity_detected": ambiguity_detected,
             "ambiguity_by_level": ambiguity_by_level,
@@ -1108,6 +1186,15 @@ class TerritorialRepository:
         if include_id:
             payload["id"] = alias.id
         return payload
+
+    @staticmethod
+    def _normalize_geometry_type_name(value: Any) -> str | None:
+        if value is None:
+            return None
+        geometry_type = str(value)
+        if geometry_type.startswith("ST_"):
+            geometry_type = geometry_type[3:]
+        return geometry_type
 
     @staticmethod
     def _serialize_descendant_municipality_payload(

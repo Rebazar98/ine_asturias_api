@@ -6,7 +6,7 @@ from datetime import datetime, UTC
 from time import perf_counter
 
 from arq.connections import ArqRedis
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response, status
 
 from app.core.jobs import BaseJobStore
 from app.core.logging import get_logger
@@ -17,6 +17,8 @@ from app.dependencies import (
     get_arq_pool,
     get_cartociudad_geocoding_service,
     get_job_store,
+    get_ign_admin_boundaries_loader_service,
+    get_ign_admin_snapshot_client,
     get_series_repository,
     get_settings,
     get_territorial_analytics_service,
@@ -43,6 +45,8 @@ from app.schemas import (
     IndicadorSeriesResponse,
     IndicatorSeriesPointResponse,
     IndicatorTerritoryResponse,
+    TerritorialAdminBoundariesLoadJobAcceptedResponse,
+    TerritorialAdminBoundariesLoadRequest,
     ReverseGeocodeResponse,
     TerritorialCatalogLevelCoverageResponse,
     TerritorialCatalogResourceResponse,
@@ -52,10 +56,14 @@ from app.schemas import (
     TerritorialExportJobStatusResponse,
     TerritorialExportRequest,
     TerritorialPointResolutionCoverageResponse,
+    TerritorialPointResolutionDetailsResponse,
     TerritorialPointResolutionResponse,
     TerritorialPointResolutionResultResponse,
+    TerritorialPointResolutionSummaryResponse,
     TerritorialReportJobAcceptedResponse,
     TerritorialMunicipalitySummaryResponse,
+    TerritorialGeometryResponse,
+    TerritorialGeometrySummaryResponse,
     TerritorialUnitDetailResponse,
     TerritorialUnitListFiltersResponse,
     TerritorialUnitListResponse,
@@ -65,7 +73,13 @@ from app.services.cartociudad_geocoding import CartoCiudadGeocodingService
 from app.services.catastro_client import CatastroClientError
 from app.services.ign_admin_boundaries import (
     IGN_ADMIN_BOUNDARY_SOURCE,
+    IGN_ADMIN_BOUNDARY_LOAD_JOB_TYPE,
     IGN_ADMIN_CATALOG_RESOURCE_KEY,
+    IGNAdministrativeBoundariesLoaderService,
+)
+from app.services.ign_admin_client import (
+    IGNAdministrativeClientError,
+    IGNAdministrativeSnapshotClient,
 )
 from app.services.territorial_analytics import (
     MUNICIPALITY_REPORT_TYPE,
@@ -130,6 +144,76 @@ TERRITORIAL_CATALOG_LEVEL_PATHS = {
 }
 
 
+def _build_point_resolution_contract(
+    resolution: dict[str, object] | None,
+) -> tuple[
+    TerritorialPointResolutionDetailsResponse,
+    TerritorialPointResolutionSummaryResponse,
+    TerritorialUnitSummaryResponse | None,
+]:
+    coverage = dict((resolution or {}).get("coverage", {}) or {})
+    levels_considered = list(coverage.get("levels_considered") or [])
+    levels_matched = list(coverage.get("levels_matched") or [])
+    levels_loaded = list(coverage.get("levels_loaded") or [])
+    boundary_source = coverage.get("boundary_source")
+    coverage_status = str(coverage.get("coverage_status") or "").strip().lower()
+
+    if not levels_considered:
+        levels_considered = [
+            TERRITORIAL_UNIT_LEVEL_COUNTRY,
+            TERRITORIAL_UNIT_LEVEL_AUTONOMOUS_COMMUNITY,
+            TERRITORIAL_UNIT_LEVEL_PROVINCE,
+            TERRITORIAL_UNIT_LEVEL_MUNICIPALITY,
+        ]
+    if not levels_loaded and boundary_source is not None:
+        levels_loaded = levels_matched.copy()
+    if coverage_status not in {"none", "partial", "full"}:
+        coverage_status = (
+            "none"
+            if not boundary_source and not levels_loaded
+            else "full"
+            if levels_loaded and len(levels_loaded) == len(levels_considered)
+            else "partial"
+        )
+    levels_missing_geometry = list(coverage.get("levels_missing_geometry") or [])
+    if not levels_missing_geometry:
+        levels_missing_geometry = [
+            level for level in levels_considered if level not in set(levels_loaded)
+        ]
+
+    best_match_payload = (resolution or {}).get("best_match")
+    best_match = (
+        TerritorialUnitSummaryResponse(**best_match_payload)
+        if isinstance(best_match_payload, dict)
+        else None
+    )
+    missing_levels = [level for level in levels_considered if level not in set(levels_matched)]
+    partial_resolution = best_match is not None and bool(missing_levels)
+
+    return (
+        TerritorialPointResolutionDetailsResponse(
+            strategy="spatial_cover",
+            boundary_source=boundary_source,
+            coverage_status=coverage_status,
+            levels_considered=levels_considered,
+            levels_loaded=levels_loaded,
+            levels_missing_geometry=levels_missing_geometry,
+            levels_matched=levels_matched,
+            missing_levels=missing_levels,
+            partial_resolution=partial_resolution,
+        ),
+        TerritorialPointResolutionSummaryResponse(
+            matched=best_match is not None,
+            boundary_coverage_loaded=bool(levels_loaded),
+            coverage_status=coverage_status,
+            levels_loaded_total=len(levels_loaded),
+            levels_matched_total=len(levels_matched),
+            partial_resolution=partial_resolution,
+        ),
+        best_match,
+    )
+
+
 def _build_territorial_catalog_resources() -> list[TerritorialCatalogResourceResponse]:
     return [
         TerritorialCatalogResourceResponse(
@@ -166,6 +250,25 @@ def _build_territorial_catalog_resources() -> list[TerritorialCatalogResourceRes
             unit_levels=[TERRITORIAL_UNIT_LEVEL_MUNICIPALITY],
             path_params=["codigo_ine"],
             response_contract="TerritorialUnitDetailResponse",
+        ),
+        TerritorialCatalogResourceResponse(
+            resource_key="territorial.geometry.detail",
+            title="Territorial geometry detail",
+            category="territorial_read",
+            method="GET",
+            path="/territorios/{unit_level}/{code_value}/geometry",
+            summary=(
+                "Read internal territorial boundary geometry and centroid through a semantic "
+                "contract without exposing provider raw payloads."
+            ),
+            unit_levels=[
+                TERRITORIAL_UNIT_LEVEL_COUNTRY,
+                TERRITORIAL_UNIT_LEVEL_AUTONOMOUS_COMMUNITY,
+                TERRITORIAL_UNIT_LEVEL_PROVINCE,
+                TERRITORIAL_UNIT_LEVEL_MUNICIPALITY,
+            ],
+            path_params=["unit_level", "code_value"],
+            response_contract="TerritorialGeometryResponse",
         ),
         TerritorialCatalogResourceResponse(
             resource_key="territorial.geocode.query",
@@ -303,6 +406,25 @@ def _build_territorial_catalog_resources() -> list[TerritorialCatalogResourceRes
             supports_background_job=True,
         ),
         TerritorialCatalogResourceResponse(
+            resource_key="territorial.admin_boundaries.load_job",
+            title="IGN administrative boundary load job",
+            category="territorial_jobs",
+            method="POST",
+            path="/territorios/admin-boundaries/load",
+            summary=(
+                "Queue a protected job that fetches an IGN/CNIG administrative snapshot, "
+                "persists raw payloads and upserts internal territorial boundaries."
+            ),
+            unit_levels=[
+                TERRITORIAL_UNIT_LEVEL_COUNTRY,
+                TERRITORIAL_UNIT_LEVEL_AUTONOMOUS_COMMUNITY,
+                TERRITORIAL_UNIT_LEVEL_PROVINCE,
+                TERRITORIAL_UNIT_LEVEL_MUNICIPALITY,
+            ],
+            response_contract="TerritorialAdminBoundariesLoadJobAcceptedResponse",
+            supports_background_job=True,
+        ),
+        TerritorialCatalogResourceResponse(
             resource_key="territorial.export.status",
             title="Territorial export status",
             category="territorial_jobs",
@@ -362,6 +484,85 @@ async def get_territorial_job_status(
             detail={"message": "Job not found.", "job_id": job_id},
         )
     return BackgroundJobStatusResponse(**job)
+
+
+@router.post(
+    "/territorios/admin-boundaries/load",
+    response_model=TerritorialAdminBoundariesLoadJobAcceptedResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    tags=["territorial-jobs"],
+    summary="Queue an IGN administrative boundary snapshot load job",
+)
+async def create_territorial_admin_boundaries_load_job(
+    request: Request,
+    load_request: TerritorialAdminBoundariesLoadRequest,
+    job_store: BaseJobStore = Depends(get_job_store),
+    ign_client: IGNAdministrativeSnapshotClient = Depends(get_ign_admin_snapshot_client),
+    loader_service: IGNAdministrativeBoundariesLoaderService = Depends(
+        get_ign_admin_boundaries_loader_service
+    ),
+    arq_pool: ArqRedis | None = Depends(get_arq_pool),
+    settings: Settings = Depends(get_settings),
+) -> TerritorialAdminBoundariesLoadJobAcceptedResponse:
+    job_params = load_request.model_dump(mode="json")
+    job = await job_store.create_job(job_type=IGN_ADMIN_BOUNDARY_LOAD_JOB_TYPE, params=job_params)
+    job_id = job["job_id"]
+
+    try:
+        if arq_pool is not None:
+            await arq_pool.enqueue_job(
+                "run_territorial_admin_boundaries_load_job",
+                job_id,
+                job_params,
+                _job_id=job_id,
+                _queue_name=settings.job_queue_name,
+            )
+        else:
+            task = asyncio.create_task(
+                _run_territorial_admin_boundaries_load_job_inline(
+                    job_store=job_store,
+                    ign_client=ign_client,
+                    loader_service=loader_service,
+                    job_id=job_id,
+                    load_request=load_request,
+                )
+            )
+            request.app.state.inline_job_tasks = getattr(
+                request.app.state, "inline_job_tasks", set()
+            )
+            request.app.state.inline_job_tasks.add(task)
+            task.add_done_callback(
+                lambda completed: request.app.state.inline_job_tasks.discard(completed)
+            )
+    except Exception as exc:
+        await job_store.fail_job(
+            job_id,
+            {
+                "message": "Could not enqueue the administrative boundary load job.",
+                "error": str(exc),
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"message": "Background queue unavailable.", "job_id": job_id},
+        )
+
+    logger.info(
+        "territorial_admin_boundaries_load_job_queued",
+        extra={
+            "job_id": job_id,
+            "snapshot_url_override": bool(load_request.snapshot_url),
+            "dataset_version": load_request.dataset_version,
+            "country_code": load_request.country_code,
+            "autonomous_community_code": load_request.autonomous_community_code,
+        },
+    )
+    return TerritorialAdminBoundariesLoadJobAcceptedResponse(
+        job_id=job_id,
+        status=job["status"],
+        status_path=f"/territorios/jobs/{job_id}",
+        params=load_request,
+    )
 
 
 @router.post(
@@ -573,7 +774,11 @@ async def resolve_territorial_point(
     territorial_repo: TerritorialRepository = Depends(get_territorial_repository),
 ) -> TerritorialPointResolutionResponse:
     started_at = perf_counter()
+    generated_at = datetime.now(UTC)
     resolution = await territorial_repo.resolve_point(lat=lat, lon=lon)
+    territorial_resolution, summary, territorial_context = _build_point_resolution_contract(
+        resolution
+    )
 
     if resolution is None:
         duration_seconds = perf_counter() - started_at
@@ -587,7 +792,11 @@ async def resolve_territorial_point(
             },
         )
         return TerritorialPointResolutionResponse(
+            generated_at=generated_at,
             query_coordinates=GeocodingCoordinatesResponse(lat=lat, lon=lon),
+            territorial_context=territorial_context,
+            territorial_resolution=territorial_resolution,
+            summary=summary,
             result=None,
             metadata={"reason": "no_boundary_coverage_loaded"},
         )
@@ -612,7 +821,11 @@ async def resolve_territorial_point(
             },
         )
         return TerritorialPointResolutionResponse(
+            generated_at=generated_at,
             query_coordinates=GeocodingCoordinatesResponse(lat=lat, lon=lon),
+            territorial_context=territorial_context,
+            territorial_resolution=territorial_resolution,
+            summary=summary,
             result=None,
             metadata={"reason": reason},
         )
@@ -634,7 +847,11 @@ async def resolve_territorial_point(
         },
     )
     return TerritorialPointResolutionResponse(
+        generated_at=generated_at,
         query_coordinates=GeocodingCoordinatesResponse(lat=lat, lon=lon),
+        territorial_context=territorial_context,
+        territorial_resolution=territorial_resolution,
+        summary=summary,
         result=TerritorialPointResolutionResultResponse(
             matched_by="geometry_cover",
             best_match=TerritorialUnitSummaryResponse(**resolution["best_match"]),
@@ -645,6 +862,60 @@ async def resolve_territorial_point(
             "ambiguity_detected": ambiguity_detected,
             "ambiguity_by_level": resolution.get("ambiguity_by_level", {}),
         },
+    )
+
+
+@router.get(
+    "/territorios/{unit_level}/{code_value}/geometry",
+    response_model=TerritorialGeometryResponse,
+    tags=["territorial-read"],
+    summary="Get internal territorial boundary geometry by canonical code",
+    description=(
+        "Semantic boundary geometry endpoint over the internal territorial model. "
+        "It returns validated GeoJSON geometry and centroid without exposing provider raw payloads."
+    ),
+)
+async def get_territorial_geometry(
+    unit_level: str = Path(
+        ...,
+        pattern="^(country|autonomous_community|province|municipality)$",
+    ),
+    code_value: str = Path(..., min_length=1),
+    territorial_repo: TerritorialRepository = Depends(get_territorial_repository),
+) -> TerritorialGeometryResponse:
+    geometry_payload = await territorial_repo.get_unit_geometry_by_canonical_code(
+        unit_level=unit_level,
+        code_value=code_value,
+    )
+    if geometry_payload is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "message": "Territorial unit code was not found.",
+                "unit_level": unit_level,
+                "code_value": code_value,
+            },
+        )
+
+    if not geometry_payload["summary"]["has_geometry"]:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "message": "Territorial unit geometry is not available.",
+                "unit_level": unit_level,
+                "code_value": code_value,
+            },
+        )
+
+    return TerritorialGeometryResponse(
+        generated_at=datetime.now(UTC),
+        territorial_context=TerritorialUnitSummaryResponse(
+            **geometry_payload["territorial_context"]
+        ),
+        summary=TerritorialGeometrySummaryResponse(**geometry_payload["summary"]),
+        geometry=geometry_payload["geometry"],
+        centroid=geometry_payload["centroid"],
+        metadata=geometry_payload["metadata"],
     )
 
 
@@ -1262,26 +1533,86 @@ async def _run_territorial_export_job_inline(
             "failed",
             perf_counter() - started_at,
         )
-    except Exception as exc:
-        logger.exception(
-            "territorial_export_inline_job_unexpected_error",
+
+
+async def _run_territorial_admin_boundaries_load_job_inline(
+    *,
+    job_store: BaseJobStore,
+    ign_client: IGNAdministrativeSnapshotClient,
+    loader_service: IGNAdministrativeBoundariesLoaderService,
+    job_id: str,
+    load_request: TerritorialAdminBoundariesLoadRequest,
+) -> None:
+    started_at = perf_counter()
+
+    async def report_progress(progress: dict[str, object]) -> None:
+        await job_store.update_progress(job_id, **progress)
+
+    try:
+        await job_store.mark_running(job_id)
+        await report_progress(
+            {
+                "stage": "fetching_snapshot",
+                "country_code": load_request.country_code,
+                "autonomous_community_code": load_request.autonomous_community_code,
+            }
+        )
+        payload = await ign_client.fetch_snapshot(snapshot_url=load_request.snapshot_url)
+        await report_progress(
+            {
+                "stage": "loading_boundaries",
+                "features_found": len(payload.get("features") or []),
+            }
+        )
+        result = await loader_service.load_snapshot(
+            payload=payload,
+            source_path=load_request.snapshot_url
+            or ign_client.settings.ign_admin_snapshot_url
+            or "ign_admin_snapshot",
+            dataset_version=load_request.dataset_version,
+            country_code=load_request.country_code,
+            autonomous_community_code=load_request.autonomous_community_code,
+        )
+        await job_store.complete_job(job_id, result)
+        record_job_duration(
+            IGN_ADMIN_BOUNDARY_LOAD_JOB_TYPE,
+            "completed",
+            perf_counter() - started_at,
+        )
+        logger.info(
+            "territorial_admin_boundaries_load_inline_job_completed",
             extra={
                 "job_id": job_id,
-                "unit_level": export_request.unit_level,
-                "code_value": export_request.code_value,
+                "features_selected": result.get("features_selected"),
+                "features_upserted": result.get("features_upserted"),
+                "features_rejected": result.get("features_rejected"),
             },
+        )
+    except IGNAdministrativeClientError as exc:
+        logger.warning(
+            "territorial_admin_boundaries_load_inline_job_failed",
+            extra={"job_id": job_id, "error": exc.detail},
+        )
+        await job_store.fail_job(job_id, exc.detail)
+        record_job_duration(
+            IGN_ADMIN_BOUNDARY_LOAD_JOB_TYPE,
+            "failed",
+            perf_counter() - started_at,
+        )
+    except Exception as exc:
+        logger.exception(
+            "territorial_admin_boundaries_load_inline_job_unexpected_error",
+            extra={"job_id": job_id},
         )
         await job_store.fail_job(
             job_id,
             {
-                "message": "Unexpected error while generating the territorial export.",
-                "unit_level": export_request.unit_level,
-                "code_value": export_request.code_value,
+                "message": "Unexpected error while loading IGN administrative boundaries.",
                 "error": str(exc),
             },
         )
         record_job_duration(
-            TERRITORIAL_EXPORT_JOB_TYPE,
+            IGN_ADMIN_BOUNDARY_LOAD_JOB_TYPE,
             "failed",
             perf_counter() - started_at,
         )

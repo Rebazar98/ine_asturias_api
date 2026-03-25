@@ -3,16 +3,60 @@ import io
 import json
 import time
 from datetime import UTC, datetime
+from copy import deepcopy
 from zipfile import ZipFile
 
-from app.dependencies import get_arq_pool
+from app.dependencies import (
+    get_arq_pool,
+    get_ign_admin_boundaries_loader_service,
+    get_ign_admin_snapshot_client,
+)
 from app.repositories.territorial import (
     TERRITORIAL_UNIT_LEVEL_AUTONOMOUS_COMMUNITY,
     TERRITORIAL_UNIT_LEVEL_MUNICIPALITY,
     TERRITORIAL_UNIT_LEVEL_PROVINCE,
 )
 from app.schemas import NormalizedSeriesItem
+from app.services.ign_admin_boundaries import IGN_ADMIN_BOUNDARY_LOAD_JOB_TYPE
+from app.services.ign_admin_client import IGNAdministrativeUpstreamError
 from app.settings import get_settings
+
+
+class DummyIGNAdministrativeSnapshotClient:
+    def __init__(self) -> None:
+        self.payload = {"type": "FeatureCollection", "features": []}
+        self.calls: list[str | None] = []
+        self.raise_error = None
+        self.settings = get_settings()
+
+    async def fetch_snapshot(self, snapshot_url: str | None = None):
+        self.calls.append(snapshot_url)
+        if self.raise_error is not None:
+            raise self.raise_error
+        return deepcopy(self.payload)
+
+
+class DummyIGNAdministrativeBoundariesLoaderService:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+        self.result = {
+            "source": "ign_administrative_boundaries",
+            "dataset_version": "ign-admin-v1",
+            "scope_country_code": "ES",
+            "scope_autonomous_community_code": "03",
+            "features_found": 1,
+            "features_selected": 1,
+            "features_upserted": 1,
+            "features_rejected": 0,
+            "raw_records_saved": 2,
+            "incidents": [],
+            "levels": {},
+            "duration_ms": 1.0,
+        }
+
+    async def load_snapshot(self, **kwargs):
+        self.calls.append(deepcopy(kwargs))
+        return deepcopy(self.result)
 
 
 def _territorial_summary(
@@ -281,6 +325,40 @@ def _seed_province_export_context(dummy_territorial_repo, dummy_series_repo) -> 
         }
     ]
 
+
+def _seed_municipality_geometry_context(dummy_territorial_repo) -> None:
+    geometry_context = _territorial_summary(
+        unit_id=33044,
+        parent_id=33,
+        unit_level="municipality",
+        canonical_name="Oviedo",
+        display_name="Oviedo",
+        code_type="municipality",
+        code_value="33044",
+    )
+    dummy_territorial_repo.geometry_by_canonical_code[
+        (TERRITORIAL_UNIT_LEVEL_MUNICIPALITY, "33044")
+    ] = {
+        "territorial_context": geometry_context,
+        "summary": {
+            "has_geometry": True,
+            "has_centroid": True,
+            "geometry_type": "MultiPolygon",
+            "srid": 4326,
+            "boundary_source": "ign_administrative_boundaries",
+        },
+        "geometry": {
+            "type": "MultiPolygon",
+            "coordinates": [[[[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 0.0]]]],
+        },
+        "centroid": {"type": "Point", "coordinates": [0.5, 0.5]},
+        "metadata": {
+            "boundary_dataset_version": "ign-admin-v1",
+            "provider_source": "ign_admin",
+        },
+    }
+
+
 def test_list_autonomous_communities_returns_paginated_results(client, dummy_territorial_repo):
     dummy_territorial_repo.units_by_level[TERRITORIAL_UNIT_LEVEL_AUTONOMOUS_COMMUNITY] = [
         {
@@ -522,11 +600,11 @@ def test_get_territorial_catalog_exposes_resources_and_basic_coverage(
     payload = response.json()
     assert payload["source"] == "internal.catalog.territorial"
     assert payload["summary"] == {
-        "resources_total": 13,
+        "resources_total": 15,
         "territorial_levels_total": 3,
-        "read_resources_total": 7,
+        "read_resources_total": 8,
         "analytics_resources_total": 2,
-        "job_resources_total": 4,
+        "job_resources_total": 5,
     }
     assert payload["metadata"] == {
         "default_country_code": "ES",
@@ -564,10 +642,12 @@ def test_get_territorial_catalog_exposes_resources_and_basic_coverage(
     assert resource_keys == {
         "territorial.autonomous_communities.list",
         "territorial.provinces.list",
+        "territorial.geometry.detail",
         "territorial.geocode.query",
         "territorial.reverse_geocode.query",
         "territorial.resolve_point.query",
         "territorial.ign_administrative_boundaries.catalog",
+        "territorial.admin_boundaries.load_job",
         "territorial.export.job",
         "territorial.export.status",
         "territorial.export.download",
@@ -583,6 +663,13 @@ def test_get_territorial_catalog_exposes_resources_and_basic_coverage(
     )
     assert geocode_resource["query_params"] == ["query"]
     assert geocode_resource["response_contract"] == "GeocodeResponse"
+    geometry_resource = next(
+        resource
+        for resource in payload["resources"]
+        if resource["resource_key"] == "territorial.geometry.detail"
+    )
+    assert geometry_resource["path"] == "/territorios/{unit_level}/{code_value}/geometry"
+    assert geometry_resource["response_contract"] == "TerritorialGeometryResponse"
     report_job_resource = next(
         resource
         for resource in payload["resources"]
@@ -609,6 +696,12 @@ def test_get_territorial_catalog_exposes_resources_and_basic_coverage(
         "province",
         "municipality",
     ]
+    ign_load_job_resource = next(
+        resource
+        for resource in payload["resources"]
+        if resource["resource_key"] == "territorial.admin_boundaries.load_job"
+    )
+    assert ign_load_job_resource["supports_background_job"] is True
     export_download_resource = next(
         resource
         for resource in payload["resources"]
@@ -725,12 +818,20 @@ def test_resolve_point_returns_best_match_and_hierarchy(client, dummy_territoria
                 "province",
                 "municipality",
             ],
+            "levels_loaded": [
+                "country",
+                "autonomous_community",
+                "province",
+                "municipality",
+            ],
+            "levels_missing_geometry": [],
             "levels_matched": [
                 "country",
                 "autonomous_community",
                 "province",
                 "municipality",
             ],
+            "coverage_status": "full",
         },
         "ambiguity_detected": False,
         "ambiguity_by_level": {},
@@ -742,6 +843,41 @@ def test_resolve_point_returns_best_match_and_hierarchy(client, dummy_territoria
     payload = response.json()
     assert payload["source"] == "internal.territorial.point_resolution"
     assert payload["query_coordinates"] == {"lat": 43.3614, "lon": -5.8494}
+    assert payload["territorial_context"]["canonical_code"]["code_value"] == "33044"
+    assert payload["summary"] == {
+        "matched": True,
+        "boundary_coverage_loaded": True,
+        "coverage_status": "full",
+        "levels_loaded_total": 4,
+        "levels_matched_total": 4,
+        "partial_resolution": False,
+    }
+    assert payload["territorial_resolution"] == {
+        "strategy": "spatial_cover",
+        "boundary_source": "ign_administrative_boundaries",
+        "coverage_status": "full",
+        "levels_considered": [
+            "country",
+            "autonomous_community",
+            "province",
+            "municipality",
+        ],
+        "levels_loaded": [
+            "country",
+            "autonomous_community",
+            "province",
+            "municipality",
+        ],
+        "levels_missing_geometry": [],
+        "levels_matched": [
+            "country",
+            "autonomous_community",
+            "province",
+            "municipality",
+        ],
+        "missing_levels": [],
+        "partial_resolution": False,
+    }
     assert payload["result"]["matched_by"] == "geometry_cover"
     assert payload["result"]["best_match"]["canonical_code"]["code_value"] == "33044"
     assert payload["result"]["coverage"]["boundary_source"] == "ign_administrative_boundaries"
@@ -765,12 +901,46 @@ def test_resolve_point_returns_no_coverage_when_no_boundaries_are_loaded(
     response = client.get("/territorios/resolve-point?lat=43.3614&lon=-5.8494")
 
     assert response.status_code == 200
-    assert response.json() == {
-        "source": "internal.territorial.point_resolution",
-        "query_coordinates": {"lat": 43.3614, "lon": -5.8494},
-        "result": None,
-        "metadata": {"reason": "no_boundary_coverage_loaded"},
+    payload = response.json()
+    assert payload["source"] == "internal.territorial.point_resolution"
+    assert payload["territorial_context"] is None
+    assert payload["summary"] == {
+        "matched": False,
+        "boundary_coverage_loaded": False,
+        "coverage_status": "none",
+        "levels_loaded_total": 0,
+        "levels_matched_total": 0,
+        "partial_resolution": False,
     }
+    assert payload["territorial_resolution"] == {
+        "strategy": "spatial_cover",
+        "boundary_source": None,
+        "coverage_status": "none",
+        "levels_considered": [
+            "country",
+            "autonomous_community",
+            "province",
+            "municipality",
+        ],
+        "levels_loaded": [],
+        "levels_missing_geometry": [
+            "country",
+            "autonomous_community",
+            "province",
+            "municipality",
+        ],
+        "levels_matched": [],
+        "missing_levels": [
+            "country",
+            "autonomous_community",
+            "province",
+            "municipality",
+        ],
+        "partial_resolution": False,
+    }
+    assert payload["result"] is None
+    assert payload["metadata"] == {"reason": "no_boundary_coverage_loaded"}
+    assert payload["query_coordinates"] == {"lat": 43.3614, "lon": -5.8494}
 
 
 def test_resolve_point_returns_outside_loaded_coverage_when_point_has_no_match(
@@ -788,7 +958,15 @@ def test_resolve_point_returns_outside_loaded_coverage_when_point_has_no_match(
                 "province",
                 "municipality",
             ],
+            "levels_loaded": [
+                "country",
+                "autonomous_community",
+                "province",
+                "municipality",
+            ],
+            "levels_missing_geometry": [],
             "levels_matched": [],
+            "coverage_status": "full",
         },
         "ambiguity_detected": False,
         "ambiguity_by_level": {},
@@ -799,7 +977,194 @@ def test_resolve_point_returns_outside_loaded_coverage_when_point_has_no_match(
     assert response.status_code == 200
     payload = response.json()
     assert payload["result"] is None
+    assert payload["summary"] == {
+        "matched": False,
+        "boundary_coverage_loaded": True,
+        "coverage_status": "full",
+        "levels_loaded_total": 4,
+        "levels_matched_total": 0,
+        "partial_resolution": False,
+    }
+    assert payload["territorial_resolution"] == {
+        "strategy": "spatial_cover",
+        "boundary_source": "ign_administrative_boundaries",
+        "coverage_status": "full",
+        "levels_considered": [
+            "country",
+            "autonomous_community",
+            "province",
+            "municipality",
+        ],
+        "levels_loaded": [
+            "country",
+            "autonomous_community",
+            "province",
+            "municipality",
+        ],
+        "levels_missing_geometry": [],
+        "levels_matched": [],
+        "missing_levels": [
+            "country",
+            "autonomous_community",
+            "province",
+            "municipality",
+        ],
+        "partial_resolution": False,
+    }
     assert payload["metadata"] == {"reason": "outside_loaded_coverage"}
+
+
+def test_resolve_point_reports_partial_resolution_when_municipality_is_not_loaded(
+    client, dummy_territorial_repo
+):
+    dummy_territorial_repo.point_resolution_payload = {
+        "matched_by": "geometry_cover",
+        "best_match": {
+            "id": 33,
+            "parent_id": 3,
+            "unit_level": "province",
+            "canonical_name": "Asturias",
+            "display_name": "Asturias",
+            "country_code": "ES",
+            "is_active": True,
+            "canonical_code_strategy": {
+                "source_system": "ine",
+                "code_type": "province",
+            },
+            "canonical_code": {
+                "source_system": "ine",
+                "code_type": "province",
+                "code_value": "33",
+                "is_primary": True,
+            },
+        },
+        "hierarchy": [
+            {
+                "id": 1,
+                "parent_id": None,
+                "unit_level": "country",
+                "canonical_name": "Espana",
+                "display_name": "Espana",
+                "country_code": "ES",
+                "is_active": True,
+                "canonical_code_strategy": {
+                    "source_system": "iso3166",
+                    "code_type": "alpha2",
+                },
+                "canonical_code": {
+                    "source_system": "iso3166",
+                    "code_type": "alpha2",
+                    "code_value": "ES",
+                    "is_primary": True,
+                },
+            },
+            {
+                "id": 3,
+                "parent_id": 1,
+                "unit_level": "autonomous_community",
+                "canonical_name": "Principado de Asturias",
+                "display_name": "Principado de Asturias",
+                "country_code": "ES",
+                "is_active": True,
+                "canonical_code_strategy": {
+                    "source_system": "ine",
+                    "code_type": "autonomous_community",
+                },
+                "canonical_code": {
+                    "source_system": "ine",
+                    "code_type": "autonomous_community",
+                    "code_value": "03",
+                    "is_primary": True,
+                },
+            },
+            {
+                "id": 33,
+                "parent_id": 3,
+                "unit_level": "province",
+                "canonical_name": "Asturias",
+                "display_name": "Asturias",
+                "country_code": "ES",
+                "is_active": True,
+                "canonical_code_strategy": {
+                    "source_system": "ine",
+                    "code_type": "province",
+                },
+                "canonical_code": {
+                    "source_system": "ine",
+                    "code_type": "province",
+                    "code_value": "33",
+                    "is_primary": True,
+                },
+            },
+        ],
+        "coverage": {
+            "boundary_source": "ign_administrative_boundaries",
+            "levels_considered": [
+                "country",
+                "autonomous_community",
+                "province",
+                "municipality",
+            ],
+            "levels_loaded": [
+                "country",
+                "autonomous_community",
+                "province",
+            ],
+            "levels_missing_geometry": ["municipality"],
+            "levels_matched": [
+                "country",
+                "autonomous_community",
+                "province",
+            ],
+            "coverage_status": "partial",
+        },
+        "ambiguity_detected": False,
+        "ambiguity_by_level": {},
+    }
+
+    response = client.get("/territorios/resolve-point?lat=43.3614&lon=-5.8494")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["territorial_context"]["canonical_code"]["code_value"] == "33"
+    assert payload["summary"] == {
+        "matched": True,
+        "boundary_coverage_loaded": True,
+        "coverage_status": "partial",
+        "levels_loaded_total": 3,
+        "levels_matched_total": 3,
+        "partial_resolution": True,
+    }
+    assert payload["territorial_resolution"] == {
+        "strategy": "spatial_cover",
+        "boundary_source": "ign_administrative_boundaries",
+        "coverage_status": "partial",
+        "levels_considered": [
+            "country",
+            "autonomous_community",
+            "province",
+            "municipality",
+        ],
+        "levels_loaded": [
+            "country",
+            "autonomous_community",
+            "province",
+        ],
+        "levels_missing_geometry": ["municipality"],
+        "levels_matched": [
+            "country",
+            "autonomous_community",
+            "province",
+        ],
+        "missing_levels": ["municipality"],
+        "partial_resolution": True,
+    }
+    assert payload["result"]["best_match"]["canonical_code"]["code_value"] == "33"
+    assert [item["unit_level"] for item in payload["result"]["hierarchy"]] == [
+        "country",
+        "autonomous_community",
+        "province",
+    ]
 
 
 def test_resolve_point_validates_coordinate_ranges(client):
@@ -808,6 +1173,64 @@ def test_resolve_point_validates_coordinate_ranges(client):
 
     response = client.get("/territorios/resolve-point?lat=43.3614&lon=181")
     assert response.status_code == 422
+
+
+def test_get_territorial_geometry_returns_semantic_boundary_payload(
+    client, dummy_territorial_repo
+):
+    _seed_municipality_geometry_context(dummy_territorial_repo)
+
+    response = client.get("/territorios/municipality/33044/geometry")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["source"] == "internal.territorial.geometry"
+    assert payload["territorial_context"]["canonical_code"]["code_value"] == "33044"
+    assert payload["summary"] == {
+        "has_geometry": True,
+        "has_centroid": True,
+        "geometry_type": "MultiPolygon",
+        "srid": 4326,
+        "boundary_source": "ign_administrative_boundaries",
+    }
+    assert payload["geometry"]["type"] == "MultiPolygon"
+    assert payload["centroid"]["type"] == "Point"
+    assert payload["metadata"] == {
+        "boundary_dataset_version": "ign-admin-v1",
+        "provider_source": "ign_admin",
+    }
+
+
+def test_get_territorial_geometry_returns_404_when_unit_is_unknown(client):
+    response = client.get("/territorios/municipality/99999/geometry")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == {
+        "message": "Territorial unit code was not found.",
+        "unit_level": "municipality",
+        "code_value": "99999",
+    }
+
+
+def test_get_territorial_geometry_returns_404_when_geometry_is_not_available(
+    client, dummy_territorial_repo
+):
+    _seed_municipality_geometry_context(dummy_territorial_repo)
+    dummy_territorial_repo.geometry_by_canonical_code[
+        (TERRITORIAL_UNIT_LEVEL_MUNICIPALITY, "33044")
+    ]["summary"]["has_geometry"] = False
+    dummy_territorial_repo.geometry_by_canonical_code[
+        (TERRITORIAL_UNIT_LEVEL_MUNICIPALITY, "33044")
+    ]["geometry"] = None
+
+    response = client.get("/territorios/municipality/33044/geometry")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == {
+        "message": "Territorial unit geometry is not available.",
+        "unit_level": "municipality",
+        "code_value": "33044",
+    }
 
 
 def test_get_municipality_summary_returns_semantic_analytical_response(
@@ -1043,6 +1466,110 @@ def test_get_territorial_job_status_returns_404_when_missing(client):
 
     assert response.status_code == 404
     assert response.json()["detail"]["message"] == "Job not found."
+
+
+def test_create_admin_boundaries_load_job_completes_inline(client):
+    dummy_ign_client = DummyIGNAdministrativeSnapshotClient()
+    dummy_ign_client.payload = {
+        "type": "FeatureCollection",
+        "features": [{"type": "Feature", "properties": {}, "geometry": None}],
+    }
+    dummy_loader = DummyIGNAdministrativeBoundariesLoaderService()
+    client.app.dependency_overrides[get_ign_admin_snapshot_client] = lambda: dummy_ign_client
+    client.app.dependency_overrides[get_ign_admin_boundaries_loader_service] = lambda: dummy_loader
+
+    response = client.post(
+        "/territorios/admin-boundaries/load",
+        json={
+            "snapshot_url": "https://mocked.ign/boundaries.geojson",
+            "dataset_version": "ign-admin-v2",
+            "country_code": "ES",
+            "autonomous_community_code": "03",
+        },
+    )
+
+    assert response.status_code == 202
+    accepted = response.json()
+    assert accepted["job_type"] == IGN_ADMIN_BOUNDARY_LOAD_JOB_TYPE
+    assert accepted["status_path"].startswith("/territorios/jobs/")
+
+    job_payload = None
+    for _ in range(50):
+        status_response = client.get(accepted["status_path"])
+        assert status_response.status_code == 200
+        job_payload = status_response.json()
+        if job_payload["status"] == "completed":
+            break
+        time.sleep(0.02)
+
+    assert job_payload is not None
+    assert job_payload["status"] == "completed"
+    assert job_payload["result"]["source"] == "ign_administrative_boundaries"
+    assert dummy_ign_client.calls == ["https://mocked.ign/boundaries.geojson"]
+    assert dummy_loader.calls[0]["dataset_version"] == "ign-admin-v2"
+    assert dummy_loader.calls[0]["source_path"] == "https://mocked.ign/boundaries.geojson"
+
+
+def test_create_admin_boundaries_load_job_uses_configured_queue_name(client):
+    class DummyArqPool:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        async def enqueue_job(self, function_name: str, *args: object, **kwargs: object) -> None:
+            self.calls.append(
+                {
+                    "function_name": function_name,
+                    "args": args,
+                    "kwargs": kwargs,
+                }
+            )
+
+    arq_pool = DummyArqPool()
+    client.app.dependency_overrides[get_arq_pool] = lambda: arq_pool
+
+    response = client.post("/territorios/admin-boundaries/load", json={})
+
+    assert response.status_code == 202
+    assert len(arq_pool.calls) == 1
+    call = arq_pool.calls[0]
+    assert call["function_name"] == "run_territorial_admin_boundaries_load_job"
+    assert call["kwargs"]["_queue_name"] == get_settings().job_queue_name
+
+
+def test_create_admin_boundaries_load_job_surfaces_upstream_failure(client):
+    dummy_ign_client = DummyIGNAdministrativeSnapshotClient()
+    dummy_ign_client.raise_error = IGNAdministrativeUpstreamError(
+        status_code=503,
+        detail={
+            "message": "The IGN administrative snapshot returned an error.",
+            "snapshot_url": "https://mocked.ign/boundaries.geojson",
+            "retryable": True,
+        },
+    )
+    dummy_loader = DummyIGNAdministrativeBoundariesLoaderService()
+    client.app.dependency_overrides[get_ign_admin_snapshot_client] = lambda: dummy_ign_client
+    client.app.dependency_overrides[get_ign_admin_boundaries_loader_service] = lambda: dummy_loader
+
+    response = client.post(
+        "/territorios/admin-boundaries/load",
+        json={"snapshot_url": "https://mocked.ign/boundaries.geojson"},
+    )
+
+    assert response.status_code == 202
+    accepted = response.json()
+
+    job_payload = None
+    for _ in range(50):
+        status_response = client.get(accepted["status_path"])
+        assert status_response.status_code == 200
+        job_payload = status_response.json()
+        if job_payload["status"] == "failed":
+            break
+        time.sleep(0.02)
+
+    assert job_payload is not None
+    assert job_payload["status"] == "failed"
+    assert job_payload["error"]["message"] == "The IGN administrative snapshot returned an error."
 
 
 def test_create_municipality_report_job_fails_when_municipality_is_unknown(
