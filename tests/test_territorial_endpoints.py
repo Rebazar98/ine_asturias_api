@@ -1,6 +1,8 @@
+import asyncio
 import io
 import json
 import time
+from datetime import UTC, datetime
 from zipfile import ZipFile
 
 from app.dependencies import get_arq_pool
@@ -217,6 +219,67 @@ def _seed_autonomous_community_export_context(dummy_territorial_repo, dummy_seri
         ]
     )
 
+
+def _seed_province_export_context(dummy_territorial_repo, dummy_series_repo) -> None:
+    province_detail = _territorial_detail(
+        unit_id=33,
+        parent_id=2,
+        unit_level="province",
+        canonical_name="Asturias",
+        display_name="Asturias",
+        code_type="province",
+        code_value="33",
+    )
+    dummy_territorial_repo.detail_by_canonical_code[(TERRITORIAL_UNIT_LEVEL_PROVINCE, "33")] = (
+        province_detail
+    )
+    dummy_territorial_repo.detail_by_id[33] = province_detail
+    dummy_territorial_repo.hierarchy_by_unit_id[33] = [
+        _territorial_summary(
+            unit_id=1,
+            parent_id=None,
+            unit_level="country",
+            canonical_name="Espana",
+            display_name="Espana",
+            code_type="alpha2",
+            code_value="ES",
+            source_system="iso3166",
+        ),
+        _territorial_summary(
+            unit_id=2,
+            parent_id=1,
+            unit_level="autonomous_community",
+            canonical_name="Asturias",
+            display_name="Principado de Asturias",
+            code_type="autonomous_community",
+            code_value="03",
+        ),
+        _territorial_summary(
+            unit_id=33,
+            parent_id=2,
+            unit_level="province",
+            canonical_name="Asturias",
+            display_name="Asturias",
+            code_type="province",
+            code_value="33",
+        ),
+    ]
+    dummy_territorial_repo.descendants_by_unit_id[33] = [
+        {
+            "territorial_unit_id": 33044,
+            "municipality_code": "33044",
+            "canonical_name": "Oviedo",
+            "display_name": "Oviedo",
+            "province_territorial_unit_id": 33,
+            "province_code": "33",
+            "province_canonical_name": "Asturias",
+            "province_display_name": "Asturias",
+            "autonomous_community_territorial_unit_id": 2,
+            "autonomous_community_code": "03",
+            "autonomous_community_canonical_name": "Asturias",
+            "autonomous_community_display_name": "Principado de Asturias",
+        }
+    ]
 
 def test_list_autonomous_communities_returns_paginated_results(client, dummy_territorial_repo):
     dummy_territorial_repo.units_by_level[TERRITORIAL_UNIT_LEVEL_AUTONOMOUS_COMMUNITY] = [
@@ -541,6 +604,11 @@ def test_get_territorial_catalog_exposes_resources_and_basic_coverage(
         if resource["resource_key"] == "territorial.export.job"
     )
     assert export_job_resource["supports_background_job"] is True
+    assert export_job_resource["unit_levels"] == [
+        "autonomous_community",
+        "province",
+        "municipality",
+    ]
     export_download_resource = next(
         resource
         for resource in payload["resources"]
@@ -1332,6 +1400,75 @@ def test_create_territorial_export_job_completes_with_catastro_bundle(
     assert len(dummy_ingestion_repo.records) == 1
     assert dummy_catastro_cache_repo.upsert_calls == 1
     assert len(dummy_catastro_client_service.calls) == 1
+
+
+def test_create_territorial_export_job_completes_with_catastro_province_bundle(
+    client,
+    dummy_territorial_repo,
+    dummy_series_repo,
+    dummy_catastro_cache_repo,
+    dummy_catastro_aggregate_cache_repo,
+    dummy_catastro_client_service,
+    dummy_territorial_export_artifact_repo,
+):
+    _seed_province_export_context(dummy_territorial_repo, dummy_series_repo)
+    seeded_at = datetime.now(UTC)
+    asyncio.run(
+        dummy_catastro_cache_repo.upsert_payload(
+            provider_family="catastro_urbano_municipality_aggregates",
+            municipality_code="33044",
+            reference_year="2025",
+            payload={
+                "reference_year": "2025",
+                "province_file_code": "04133",
+                "province_label": "Asturias",
+                "municipality_option_value": "0043",
+                "municipality_label": "Oviedo",
+                "indicators": dummy_catastro_client_service.payload["indicators"],
+            },
+            ttl_seconds=7200,
+            metadata=dummy_catastro_client_service.payload["metadata"],
+            now=seeded_at,
+        )
+    )
+
+    response = client.post(
+        "/territorios/export",
+        json={
+            "unit_level": "province",
+            "code_value": "33",
+            "format": "zip",
+            "include_providers": ["territorial", "catastro"],
+        },
+    )
+
+    assert response.status_code == 202
+    accepted = response.json()
+    job_payload = None
+    for _ in range(50):
+        status_response = client.get(accepted["status_path"])
+        assert status_response.status_code == 200
+        job_payload = status_response.json()
+        if job_payload["status"] == "completed":
+            break
+        time.sleep(0.02)
+
+    assert job_payload is not None
+    assert job_payload["status"] == "completed"
+    download_response = client.get(job_payload["result"]["download_path"])
+    assert download_response.status_code == 200
+    with ZipFile(io.BytesIO(download_response.content)) as archive:
+        catastro_payload = json.loads(
+            archive.read("datasets/catastro_province_aggregates.json").decode("utf-8")
+        )
+        assert catastro_payload["source"] == "catastro.province.aggregates"
+        assert catastro_payload["filters"]["unit_level"] == "province"
+        assert catastro_payload["summary"]["municipalities_expected"] == 1
+        assert catastro_payload["summary"]["municipalities_included"] == 1
+        assert catastro_payload["metadata"]["coverage_status"] == "complete"
+
+    assert dummy_catastro_client_service.calls == []
+    assert dummy_catastro_aggregate_cache_repo.upsert_calls == 1
 
 
 def test_create_territorial_export_job_fails_when_catastro_provider_fails(

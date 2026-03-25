@@ -4,6 +4,8 @@ import json
 from datetime import datetime, UTC
 from zipfile import ZipFile
 
+import pytest
+
 from app.repositories.territorial import (
     TERRITORIAL_UNIT_LEVEL_AUTONOMOUS_COMMUNITY,
     TERRITORIAL_UNIT_LEVEL_MUNICIPALITY,
@@ -717,6 +719,167 @@ def test_build_export_reuses_catastro_territorial_aggregate_cache():
             archive.read("datasets/catastro_autonomous_community_aggregates.json").decode("utf-8")
         )
         assert catastro_payload["metadata"]["cache_status"] == "hit"
+
+
+def test_build_export_marks_catastro_territorial_aggregate_as_partial_when_some_municipalities_fail():
+    from app.services.catastro_client import CatastroUpstreamError
+
+    territorial_repo, series_repo, artifact_repo, snapshot_repo = (
+        _build_autonomous_community_export_repositories()
+    )
+    catastro_client = DummyCatastroClientService()
+    catastro_client.raise_error = CatastroUpstreamError(
+        status_code=503,
+        detail={
+            "message": "The Catastro service is temporarily unavailable.",
+            "path": "/jaxi/tabla.do",
+            "retryable": True,
+        },
+    )
+    catastro_cache_repo = DummyCatastroMunicipalityAggregateCacheRepository()
+    catastro_aggregate_cache_repo = DummyCatastroTerritorialAggregateCacheRepository()
+    ingestion_repo = DummyIngestionRepository()
+
+    seeded_at = datetime(2026, 3, 15, 12, 0, tzinfo=UTC)
+    asyncio.run(
+        catastro_cache_repo.upsert_payload(
+            provider_family="catastro_urbano_municipality_aggregates",
+            municipality_code="33044",
+            reference_year="2025",
+            payload={
+                "reference_year": "2025",
+                "province_file_code": "04133",
+                "province_label": "Asturias",
+                "municipality_option_value": "0043",
+                "municipality_label": "Oviedo",
+                "indicators": catastro_client.payload["indicators"],
+            },
+            ttl_seconds=7200,
+            metadata=catastro_client.payload["metadata"],
+            now=seeded_at,
+        )
+    )
+    territorial_repo.descendants_by_unit_id[2] = [
+        {
+            "territorial_unit_id": 33044,
+            "municipality_code": "33044",
+            "canonical_name": "Oviedo",
+            "display_name": "Oviedo",
+            "province_territorial_unit_id": 33,
+            "province_code": "33",
+            "province_canonical_name": "Asturias",
+            "province_display_name": "Asturias",
+            "autonomous_community_territorial_unit_id": 2,
+            "autonomous_community_code": "03",
+            "autonomous_community_canonical_name": "Asturias",
+        },
+        {
+            "territorial_unit_id": 33024,
+            "municipality_code": "33024",
+            "canonical_name": "Gijon",
+            "display_name": "Gijon",
+            "province_territorial_unit_id": 33,
+            "province_code": "33",
+            "province_canonical_name": "Asturias",
+            "province_display_name": "Asturias",
+            "autonomous_community_territorial_unit_id": 2,
+            "autonomous_community_code": "03",
+            "autonomous_community_canonical_name": "Asturias",
+        },
+    ]
+
+    service = _build_service(
+        territorial_repo,
+        series_repo,
+        artifact_repo,
+        snapshot_repo,
+        catastro_client=catastro_client,
+        catastro_cache_repo=catastro_cache_repo,
+        catastro_aggregate_cache_repo=catastro_aggregate_cache_repo,
+        ingestion_repo=ingestion_repo,
+    )
+
+    result = asyncio.run(
+        service.build_export(
+            job_id="job-export-catastro-territorial-partial",
+            unit_level="autonomous_community",
+            code_value="03",
+            include_providers=["territorial", "catastro"],
+        )
+    )
+
+    assert result is not None
+    assert result.summary["provider_coverage"]["catastro"]["coverage_status"] == "partial"
+    assert result.summary["provider_coverage"]["catastro"]["municipalities_expected"] == 2
+    assert result.summary["provider_coverage"]["catastro"]["municipalities_included"] == 1
+    assert result.summary["provider_coverage"]["catastro"]["municipalities_missing"] == 1
+
+    artifact = asyncio.run(artifact_repo.get_by_export_id(result.export_id))
+    assert artifact is not None
+    with ZipFile(io.BytesIO(artifact["payload_bytes"])) as archive:
+        catastro_payload = json.loads(
+            archive.read("datasets/catastro_autonomous_community_aggregates.json").decode("utf-8")
+        )
+        assert catastro_payload["summary"]["municipalities_expected"] == 2
+        assert catastro_payload["summary"]["municipalities_included"] == 1
+        assert catastro_payload["summary"]["municipalities_missing"] == 1
+        assert catastro_payload["metadata"]["coverage_status"] == "partial"
+        assert catastro_payload["metadata"]["missing_municipality_codes"] == ["33024"]
+        assert catastro_payload["metadata"]["missing_municipality_names"] == ["Gijon"]
+
+
+def test_build_export_fails_when_catastro_territorial_aggregate_has_zero_coverage():
+    from app.services.catastro_client import CatastroUpstreamError
+
+    territorial_repo, series_repo, artifact_repo, snapshot_repo = (
+        _build_autonomous_community_export_repositories()
+    )
+    catastro_client = DummyCatastroClientService()
+    catastro_client.raise_error = CatastroUpstreamError(
+        status_code=503,
+        detail={
+            "message": "The Catastro service is temporarily unavailable.",
+            "path": "/jaxi/tabla.do",
+            "retryable": True,
+        },
+    )
+    territorial_repo.descendants_by_unit_id[2] = [
+        {
+            "territorial_unit_id": 33024,
+            "municipality_code": "33024",
+            "canonical_name": "Gijon",
+            "display_name": "Gijon",
+            "province_territorial_unit_id": 33,
+            "province_code": "33",
+            "province_canonical_name": "Asturias",
+            "province_display_name": "Asturias",
+            "autonomous_community_territorial_unit_id": 2,
+            "autonomous_community_code": "03",
+            "autonomous_community_canonical_name": "Asturias",
+        }
+    ]
+
+    service = _build_service(
+        territorial_repo,
+        series_repo,
+        artifact_repo,
+        snapshot_repo,
+        catastro_client=catastro_client,
+    )
+
+    with pytest.raises(CatastroUpstreamError) as exc_info:
+        asyncio.run(
+            service.build_export(
+                job_id="job-export-catastro-territorial-zero-coverage",
+                unit_level=TERRITORIAL_UNIT_LEVEL_AUTONOMOUS_COMMUNITY,
+                code_value="03",
+                include_providers=["territorial", "catastro"],
+            )
+        )
+
+    assert exc_info.value.detail["message"] == (
+        "Catastro aggregates could not be built from municipality coverage."
+    )
 
 
 def test_build_export_reuses_catastro_cache_without_upstream_call():

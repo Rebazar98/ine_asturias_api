@@ -292,10 +292,11 @@ def _build_territorial_catalog_resources() -> list[TerritorialCatalogResourceRes
             path="/territorios/export",
             summary=(
                 "Queue a multi-source territorial export bundle for a canonical territorial entity, "
-                "including opt-in Catastro municipality aggregates."
+                "including opt-in Catastro municipality and supramunicipal aggregates."
             ),
             unit_levels=[
                 TERRITORIAL_UNIT_LEVEL_AUTONOMOUS_COMMUNITY,
+                TERRITORIAL_UNIT_LEVEL_PROVINCE,
                 TERRITORIAL_UNIT_LEVEL_MUNICIPALITY,
             ],
             response_contract="TerritorialExportJobAcceptedResponse",
