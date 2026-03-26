@@ -34,14 +34,14 @@ class _MockArqPool:
     def __init__(self) -> None:
         self.enqueued: list[dict[str, Any]] = []
 
-    async def enqueue_job(self, fn_name: str, **kwargs: Any) -> None:
-        self.enqueued.append({"fn_name": fn_name, **kwargs})
+    async def enqueue_job(self, fn_name: str, *args: Any, **kwargs: Any) -> None:
+        self.enqueued.append({"fn_name": fn_name, "args": args, **kwargs})
 
 
 class _FailingArqPool:
     """arq pool that always raises on enqueue_job."""
 
-    async def enqueue_job(self, fn_name: str, **kwargs: Any) -> None:
+    async def enqueue_job(self, fn_name: str, *args: Any, **kwargs: Any) -> None:
         raise RuntimeError("arq connection refused")
 
 
@@ -69,12 +69,15 @@ def test_scheduled_territorial_sync_logs_and_returns_when_enabled() -> None:
     """When enabled, scheduled_territorial_sync must complete without raising."""
 
     async def scenario() -> None:
+        job_store = InMemoryJobStore()
+        arq_pool = _MockArqPool()
         ctx = {
             "settings": _settings(scheduled_territorial_sync_enabled=True),
-            "arq_pool": _MockArqPool(),
+            "job_store": job_store,
+            "arq_pool": arq_pool,
         }
-        # Should not raise; placeholder implementation just logs.
         await scheduled_territorial_sync(ctx)
+        assert len(arq_pool.enqueued) == 1
 
     asyncio.run(scenario())
 

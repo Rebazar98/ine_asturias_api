@@ -1119,11 +1119,11 @@ async def _scheduled_territorial_sync_placeholder(ctx: dict[str, Any]) -> None:
 async def scheduled_territorial_sync(ctx: dict[str, Any]) -> None:
     """Cron job: enqueue the protected IGN administrative boundary refresh."""
     settings = ctx["settings"]
-    job_store: RedisJobStore = ctx["job_store"]
-    arq_pool = ctx["arq_pool"]
     if not settings.scheduled_territorial_sync_enabled:
         logger.info("scheduled_territorial_sync_disabled")
         return
+    job_store: RedisJobStore = ctx["job_store"]
+    arq_pool = ctx["arq_pool"]
     try:
         params = {
             "snapshot_url": settings.ign_admin_snapshot_url,
