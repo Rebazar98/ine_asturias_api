@@ -27,6 +27,48 @@ class CartoCiudadNormalizationError(Exception):
         self.detail = detail
 
 
+_CARTOCIUDAD_MOJIBAKE_MARKERS = (
+    "ÃƒÆ’",
+    "Ãƒâ€š",
+    "ÃƒÂ¢",
+    "Ã†â€™",
+    "Ã¢â€šÂ¬",
+    "Ã¢â€žÂ¢",
+    "Ã¯Â¿Â½",
+    "Ã±",
+    "Ã³",
+    "Ã¡",
+    "Ã©",
+    "Ã­",
+    "Ãº",
+)
+
+
+def repair_geocoding_text(value: str) -> str:
+    current = value
+    for _ in range(3):
+        if _mojibake_score(current) == 0:
+            break
+
+        candidates = [current]
+        for source_encoding in ("cp1252", "latin-1"):
+            try:
+                candidate = current.encode(source_encoding).decode("utf-8")
+            except (UnicodeEncodeError, UnicodeDecodeError):
+                continue
+            if candidate != current:
+                candidates.append(candidate)
+
+        best_candidate = min(candidates, key=_mojibake_score)
+        if best_candidate == current:
+            break
+        if _mojibake_score(best_candidate) > _mojibake_score(current):
+            break
+        current = best_candidate
+
+    return current
+
+
 def normalize_cartociudad_geocode_response(
     *,
     query: str,
@@ -252,7 +294,7 @@ async def attach_territorial_resolution(
     resolution = GeocodingTerritorialResolutionResponse(
         territorial_unit_id=lookup["id"],
         matched_by=lookup["matched_by"],
-        canonical_name=lookup["canonical_name"],
+        canonical_name=repair_geocoding_text(str(lookup["canonical_name"])),
         canonical_code=(lookup.get("canonical_code") or {}).get("code_value"),
         source_system=(lookup.get("canonical_code") or {}).get("source_system"),
         unit_level=lookup["unit_level"],
@@ -278,6 +320,10 @@ def _extract_payload_items(payload: dict[str, Any] | list[Any]) -> list[dict[str
     )
 
 
+def _mojibake_score(value: str) -> int:
+    return sum(value.count(marker) for marker in _CARTOCIUDAD_MOJIBAKE_MARKERS)
+
+
 def _pick_first(payload: dict[str, Any], *keys: str) -> str | None:
     for key in keys:
         value = payload.get(key)
@@ -285,7 +331,7 @@ def _pick_first(payload: dict[str, Any], *keys: str) -> str | None:
             continue
         normalized = str(value).strip()
         if normalized:
-            return normalized
+            return repair_geocoding_text(normalized)
     return None
 
 

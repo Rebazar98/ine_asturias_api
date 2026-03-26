@@ -32,6 +32,7 @@ from app.services.cartociudad_normalizers import (
     attach_territorial_resolution,
     normalize_cartociudad_geocode_response,
     normalize_cartociudad_reverse_geocode_response,
+    repair_geocoding_text,
 )
 from app.services.geocoding_privacy import (
     build_geocode_audit_request_params,
@@ -61,6 +62,8 @@ def _build_geocoding_context_from_hierarchy(
     for item in hierarchy:
         unit_level = item.get("unit_level")
         canonical_name = item.get("canonical_name")
+        if canonical_name is not None:
+            canonical_name = repair_geocoding_text(str(canonical_name))
         canonical_code = ((item.get("canonical_code") or {}) or {}).get("code_value")
         if unit_level == TERRITORIAL_UNIT_LEVEL_COUNTRY:
             payload["country_code"] = canonical_code

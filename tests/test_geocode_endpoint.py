@@ -241,6 +241,19 @@ def _oviedo_point_resolution_payload() -> dict[str, Any]:
     }
 
 
+def _gijon_point_resolution_payload_with_mojibake() -> dict[str, Any]:
+    payload = _oviedo_point_resolution_payload()
+    payload["best_match"]["canonical_name"] = "GijÃ³n"
+    payload["best_match"]["display_name"] = "GijÃ³n"
+    payload["best_match"]["canonical_code"]["code_value"] = "33024"
+    payload["hierarchy"][0]["canonical_name"] = "EspaÃ±a"
+    payload["hierarchy"][0]["display_name"] = "EspaÃ±a"
+    payload["hierarchy"][3]["canonical_name"] = "GijÃ³n"
+    payload["hierarchy"][3]["display_name"] = "GijÃ³n"
+    payload["hierarchy"][3]["canonical_code"]["code_value"] = "33024"
+    return payload
+
+
 def test_geocode_endpoint_returns_semantic_response_and_persists_cache(
     client, dummy_territorial_repo, dummy_ingestion_repo
 ):
@@ -367,6 +380,53 @@ def test_geocode_endpoint_returns_semantic_response_and_persists_cache(
         ][0]["id"]
         == "oviedo-1"
     )
+
+
+def test_geocode_endpoint_repairs_mojibake_in_provider_and_internal_context(
+    client, dummy_territorial_repo
+):
+    cache_repo = DummyGeocodingCacheRepository()
+    cartociudad_client = DummyCartoCiudadClientService(
+        payload=[
+            {
+                "id": "gijon-1",
+                "type": "municipality",
+                "label": "GijÃ³n/XixÃ³n",
+                "address": "GijÃ³n/XixÃ³n",
+                "lat": 43.5351550760999,
+                "lon": -5.663608052406369,
+                "pais": "EspaÃ±a",
+                "municipio": "GijÃ³n/XixÃ³n",
+                "comunidadAutonoma": "Principado de Asturias",
+            }
+        ]
+    )
+    dummy_territorial_repo.point_resolution_payload = _gijon_point_resolution_payload_with_mojibake()
+    dummy_territorial_repo.by_name[(TERRITORIAL_UNIT_LEVEL_MUNICIPALITY, "Gijón/Xixón")] = {
+        "id": 24,
+        "unit_level": "municipality",
+        "canonical_name": "GijÃ³n",
+        "matched_by": "canonical_name",
+        "canonical_code": {
+            "source_system": "ine",
+            "code_type": "municipality",
+            "code_value": "33024",
+            "is_primary": True,
+        },
+    }
+    app.dependency_overrides[get_geocoding_cache_repository] = lambda: cache_repo
+    app.dependency_overrides[get_cartociudad_client_service] = lambda: cartociudad_client
+
+    response = client.get("/geocode?query=Gijon")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["territorial_context"]["country_name"] == "España"
+    assert payload["territorial_context"]["municipality_name"] == "Gijón"
+    assert payload["result"]["label"] == "Gijón/Xixón"
+    assert payload["result"]["territorial_context"]["country_name"] == "España"
+    assert payload["result"]["territorial_context"]["municipality_name"] == "Gijón/Xixón"
+    assert payload["result"]["territorial_resolution"]["canonical_name"] == "Gijón"
 
 
 def test_geocode_endpoint_uses_persistent_cache_before_provider(
@@ -599,6 +659,50 @@ def test_reverse_geocode_endpoint_returns_semantic_response_and_persists_cache(
         cache_repo.reverse_rows[(GEOCODING_PROVIDER_CARTOCIUDAD, cache_key)]["payload"]["id"]
         == "reverse-1"
     )
+
+
+def test_reverse_geocode_endpoint_repairs_mojibake_in_provider_and_internal_context(
+    client, dummy_territorial_repo
+):
+    cache_repo = DummyGeocodingCacheRepository()
+    cartociudad_client = DummyCartoCiudadClientService(
+        payload={
+            "id": "reverse-gijon",
+            "type": "portal",
+            "label": "CAMPO VALDES",
+            "address": "CAMPO VALDES",
+            "postalCode": "33201",
+            "lat": 43.545559890101366,
+            "lon": -5.661852647781838,
+            "pais": "EspaÃ±a",
+            "municipio": "GijÃ³n/XixÃ³n",
+            "comunidadAutonoma": "Principado de Asturias",
+        }
+    )
+    dummy_territorial_repo.point_resolution_payload = _gijon_point_resolution_payload_with_mojibake()
+    dummy_territorial_repo.by_name[(TERRITORIAL_UNIT_LEVEL_MUNICIPALITY, "Gijón/Xixón")] = {
+        "id": 24,
+        "unit_level": "municipality",
+        "canonical_name": "GijÃ³n",
+        "matched_by": "canonical_name",
+        "canonical_code": {
+            "source_system": "ine",
+            "code_type": "municipality",
+            "code_value": "33024",
+            "is_primary": True,
+        },
+    }
+    app.dependency_overrides[get_geocoding_cache_repository] = lambda: cache_repo
+    app.dependency_overrides[get_cartociudad_client_service] = lambda: cartociudad_client
+
+    response = client.get("/reverse_geocode?lat=43.5453&lon=-5.6619")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["territorial_context"]["country_name"] == "España"
+    assert payload["territorial_context"]["municipality_name"] == "Gijón"
+    assert payload["result"]["territorial_context"]["municipality_name"] == "Gijón/Xixón"
+    assert payload["result"]["territorial_resolution"]["canonical_name"] == "Gijón"
 
 
 def test_reverse_geocode_endpoint_uses_persistent_cache_before_provider(

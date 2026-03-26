@@ -384,6 +384,18 @@ En esta fase:
 - los logs operativos y errores upstream usan una huella de coordenadas saneada en vez del par completo.
 - el cliente aplica el mismo esquema de reintentos acotados y circuit breaker antes de devolver error controlado.
 
+Validacion E2E real cerrada a 26 de marzo de 2026:
+
+- `GET /geocode?query=Oviedo`, `GET /geocode?query=Gijon` y `GET /geocode?query=Aviles` devolvieron contrato semantico consistente con `summary.resolved=true`, cache persistente reutilizable y `territorial_context` enriquecido desde la resolucion espacial interna.
+- `GET /reverse_geocode?lat=43.3614&lon=-5.8494` y `GET /reverse_geocode?lat=43.5453&lon=-5.6619` devolvieron `coverage_status=full` para Asturias y reuso correcto de `reverse_geocode_cache`.
+- un punto fuera de Asturias (`40.4168,-3.7038`) degrada de forma controlada: mantiene `provider_hit=true`, `territorial_match=true` y `partial_resolution=true`, con solo `country` resuelto desde cobertura interna cuando no existe geometria cargada del resto de niveles.
+- la salida publica de `/geocode` y `/reverse_geocode` sanea mojibake conocido de provider y de nombres territoriales persistidos antes de serializar `label`, `territorial_context` y `territorial_resolution`.
+
+Riesgo conocido de provider:
+
+- CartoCiudad puede devolver JSON invalido o payloads inutilizables en queries textuales ambiguas. Un caso real observado fue `GET /geocode?query=Plaza Mayor Oviedo`, que devolvio error upstream controlado sin exponer payload raw.
+- Mientras ese comportamiento exista, las automatizaciones deben tratar los errores de `/geocode` como fallos retryable solo cuando `detail.message` indique indisponibilidad o JSON invalido del provider, y no asumir que todas las queries ambiguas tendran resultado util.
+
 ### Resolucion territorial semantica por punto
 
 ```http
