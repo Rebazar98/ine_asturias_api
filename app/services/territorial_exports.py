@@ -815,6 +815,35 @@ class TerritorialExportService:
             ),
         }
 
+    async def build_catastro_dataset_payload(
+        self,
+        *,
+        unit_level: str,
+        code_value: str,
+    ) -> dict[str, Any] | None:
+        unit_payload = await self.territorial_repo.get_unit_detail_by_canonical_code(
+            unit_level=unit_level,
+            code_value=code_value,
+        )
+        if unit_payload is None:
+            return None
+
+        unit = TerritorialUnitDetailResponse(**unit_payload)
+        hierarchy_payload = await self.territorial_repo.list_hierarchy(unit.id)
+        hierarchy = [TerritorialUnitSummaryResponse(**item) for item in hierarchy_payload]
+        context = ExportContext(
+            unit=unit,
+            hierarchy=hierarchy,
+            territorial_context=self._build_territorial_context(unit, hierarchy),
+        )
+        provider = self.providers[EXPORT_PROVIDER_CATASTRO]
+        if not isinstance(provider, CatastroExportProvider):
+            raise ValueError("Catastro export provider is not configured.")
+
+        if unit.unit_level == TERRITORIAL_UNIT_LEVEL_MUNICIPALITY:
+            return await provider._build_municipality_dataset_payload(context=context)
+        return await provider._build_territorial_aggregate_dataset_payload(context=context)
+
     async def build_export(
         self,
         *,

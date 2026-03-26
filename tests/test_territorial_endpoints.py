@@ -600,9 +600,9 @@ def test_get_territorial_catalog_exposes_resources_and_basic_coverage(
     payload = response.json()
     assert payload["source"] == "internal.catalog.territorial"
     assert payload["summary"] == {
-        "resources_total": 15,
+        "resources_total": 16,
         "territorial_levels_total": 3,
-        "read_resources_total": 8,
+        "read_resources_total": 9,
         "analytics_resources_total": 2,
         "job_resources_total": 5,
     }
@@ -642,6 +642,7 @@ def test_get_territorial_catalog_exposes_resources_and_basic_coverage(
     assert resource_keys == {
         "territorial.autonomous_communities.list",
         "territorial.provinces.list",
+        "territorial.dossier.detail",
         "territorial.geometry.detail",
         "territorial.geocode.query",
         "territorial.reverse_geocode.query",
@@ -670,6 +671,13 @@ def test_get_territorial_catalog_exposes_resources_and_basic_coverage(
     )
     assert geometry_resource["path"] == "/territorios/{unit_level}/{code_value}/geometry"
     assert geometry_resource["response_contract"] == "TerritorialGeometryResponse"
+    dossier_resource = next(
+        resource
+        for resource in payload["resources"]
+        if resource["resource_key"] == "territorial.dossier.detail"
+    )
+    assert dossier_resource["path"] == "/territorios/{unit_level}/{code_value}/dossier"
+    assert dossier_resource["response_contract"] == "TerritorialDossierResponse"
     report_job_resource = next(
         resource
         for resource in payload["resources"]
@@ -1175,9 +1183,7 @@ def test_resolve_point_validates_coordinate_ranges(client):
     assert response.status_code == 422
 
 
-def test_get_territorial_geometry_returns_semantic_boundary_payload(
-    client, dummy_territorial_repo
-):
+def test_get_territorial_geometry_returns_semantic_boundary_payload(client, dummy_territorial_repo):
     _seed_municipality_geometry_context(dummy_territorial_repo)
 
     response = client.get("/territorios/municipality/33044/geometry")
@@ -2275,28 +2281,30 @@ def test_list_municipalities_pagination(client, dummy_territorial_repo):
 def test_get_indicator_series_happy_path(client, dummy_series_repo):
     from app.schemas import NormalizedSeriesItem
 
-    dummy_series_repo.items.extend([
-        NormalizedSeriesItem(
-            operation_code="22",
-            table_id="2852",
-            variable_id="POP_TOTAL",
-            geography_name="Oviedo",
-            geography_code="33044",
-            period="2023",
-            value=221000.0,
-            unit="personas",
-        ),
-        NormalizedSeriesItem(
-            operation_code="22",
-            table_id="2852",
-            variable_id="POP_TOTAL",
-            geography_name="Oviedo",
-            geography_code="33044",
-            period="2024",
-            value=220543.0,
-            unit="personas",
-        ),
-    ])
+    dummy_series_repo.items.extend(
+        [
+            NormalizedSeriesItem(
+                operation_code="22",
+                table_id="2852",
+                variable_id="POP_TOTAL",
+                geography_name="Oviedo",
+                geography_code="33044",
+                period="2023",
+                value=221000.0,
+                unit="personas",
+            ),
+            NormalizedSeriesItem(
+                operation_code="22",
+                table_id="2852",
+                variable_id="POP_TOTAL",
+                geography_name="Oviedo",
+                geography_code="33044",
+                period="2024",
+                value=220543.0,
+                unit="personas",
+            ),
+        ]
+    )
 
     response = client.get("/estadisticas/POP_TOTAL/33044")
 
@@ -2328,28 +2336,30 @@ def test_get_indicator_series_empty_returns_empty(client, dummy_series_repo):
 def test_get_indicator_series_with_operation_filter(client, dummy_series_repo):
     from app.schemas import NormalizedSeriesItem
 
-    dummy_series_repo.items.extend([
-        NormalizedSeriesItem(
-            operation_code="22",
-            table_id="2852",
-            variable_id="POP",
-            geography_name="Gijon",
-            geography_code="33024",
-            period="2024",
-            value=270000.0,
-            unit="personas",
-        ),
-        NormalizedSeriesItem(
-            operation_code="99",
-            table_id="9999",
-            variable_id="POP",
-            geography_name="Gijon",
-            geography_code="33024",
-            period="2024",
-            value=999999.0,
-            unit="personas",
-        ),
-    ])
+    dummy_series_repo.items.extend(
+        [
+            NormalizedSeriesItem(
+                operation_code="22",
+                table_id="2852",
+                variable_id="POP",
+                geography_name="Gijon",
+                geography_code="33024",
+                period="2024",
+                value=270000.0,
+                unit="personas",
+            ),
+            NormalizedSeriesItem(
+                operation_code="99",
+                table_id="9999",
+                variable_id="POP",
+                geography_name="Gijon",
+                geography_code="33024",
+                period="2024",
+                value=999999.0,
+                unit="personas",
+            ),
+        ]
+    )
 
     response = client.get("/estadisticas/POP/33024?operation_code=22")
 
@@ -2363,28 +2373,30 @@ def test_get_indicator_series_with_operation_filter(client, dummy_series_repo):
 def test_get_indicator_series_period_filter(client, dummy_series_repo):
     from app.schemas import NormalizedSeriesItem
 
-    dummy_series_repo.items.extend([
-        NormalizedSeriesItem(
-            operation_code="22",
-            table_id="2852",
-            variable_id="IND",
-            geography_name="Asturias",
-            geography_code="33",
-            period="2021",
-            value=100.0,
-            unit="u",
-        ),
-        NormalizedSeriesItem(
-            operation_code="22",
-            table_id="2852",
-            variable_id="IND",
-            geography_name="Asturias",
-            geography_code="33",
-            period="2024",
-            value=110.0,
-            unit="u",
-        ),
-    ])
+    dummy_series_repo.items.extend(
+        [
+            NormalizedSeriesItem(
+                operation_code="22",
+                table_id="2852",
+                variable_id="IND",
+                geography_name="Asturias",
+                geography_code="33",
+                period="2021",
+                value=100.0,
+                unit="u",
+            ),
+            NormalizedSeriesItem(
+                operation_code="22",
+                table_id="2852",
+                variable_id="IND",
+                geography_name="Asturias",
+                geography_code="33",
+                period="2024",
+                value=110.0,
+                unit="u",
+            ),
+        ]
+    )
 
     response = client.get("/estadisticas/IND/33?period_from=2023")
 
@@ -2397,18 +2409,20 @@ def test_get_indicator_series_period_filter(client, dummy_series_repo):
 def test_get_indicator_series_metadata_contains_operation_codes(client, dummy_series_repo):
     from app.schemas import NormalizedSeriesItem
 
-    dummy_series_repo.items.extend([
-        NormalizedSeriesItem(
-            operation_code="22",
-            table_id="2852",
-            variable_id="IPC",
-            geography_name="Asturias",
-            geography_code="33",
-            period="2024",
-            value=105.0,
-            unit="indice",
-        ),
-    ])
+    dummy_series_repo.items.extend(
+        [
+            NormalizedSeriesItem(
+                operation_code="22",
+                table_id="2852",
+                variable_id="IPC",
+                geography_name="Asturias",
+                geography_code="33",
+                period="2024",
+                value=105.0,
+                unit="indice",
+            ),
+        ]
+    )
 
     response = client.get("/estadisticas/IPC/33")
 

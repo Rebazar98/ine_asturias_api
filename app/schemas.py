@@ -823,6 +823,110 @@ class TerritorialGeometryResponse(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class TerritorialDossierContextResponse(BaseModel):
+    territorial_unit_id: int
+    unit_level: str
+    canonical_code: TerritorialUnitCodeResponse | None = None
+    canonical_name: str
+    display_name: str
+    country_code: str
+    hierarchy: list[TerritorialUnitSummaryResponse] = Field(default_factory=list)
+
+
+class TerritorialDossierSummaryResponse(BaseModel):
+    resolved: bool = True
+    has_geometry: bool = False
+    geometry_coverage_status: Literal["none", "available"] = "none"
+    has_ine_data: bool = False
+    has_catastro_data: bool = False
+    partial_sections: bool = False
+    section_count: int = 0
+
+
+class TerritorialDossierIdentitySectionResponse(BaseModel):
+    section_key: Literal["identity"] = "identity"
+    title: str = "Identity"
+    unit: TerritorialUnitDetailResponse
+    hierarchy: list[TerritorialUnitSummaryResponse] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class TerritorialDossierGeometrySectionResponse(BaseModel):
+    section_key: Literal["geometry"] = "geometry"
+    title: str = "Geometry"
+    summary: TerritorialGeometrySummaryResponse
+    geometry: dict[str, Any] | None = None
+    centroid: dict[str, Any] | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class TerritorialDossierINEIndicatorResponse(AnalyticalSeriesItemResponse):
+    operation_code: str
+    table_id: str
+    variable_id: str
+    geography_code: str
+    geography_name: str
+
+
+class TerritorialDossierINESummaryResponse(BaseModel):
+    coverage_status: Literal["none", "partial", "full"] = "none"
+    operations_considered: list[str] = Field(default_factory=list)
+    operations_present: list[str] = Field(default_factory=list)
+    indicators_total: int = 0
+    indicators_returned: int = 0
+    latest_period: str | None = None
+
+
+class TerritorialDossierINESectionResponse(BaseModel):
+    section_key: Literal["ine"] = "ine"
+    title: str = "INE"
+    summary: TerritorialDossierINESummaryResponse = Field(
+        default_factory=TerritorialDossierINESummaryResponse
+    )
+    series: list[TerritorialDossierINEIndicatorResponse] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class TerritorialDossierCatastroSummaryResponse(BaseModel):
+    coverage_status: Literal["none", "partial", "complete", "unavailable"] = "none"
+    reference_year: str | None = None
+    indicators_total: int = 0
+    municipalities_expected: int | None = None
+    municipalities_included: int | None = None
+    municipalities_missing: int | None = None
+    coverage_ratio: float | None = None
+    parcelas_urbanas: float | int | None = None
+    bienes_inmuebles: float | int | None = None
+    valor_catastral_total_miles_euros: float | int | None = None
+
+
+class TerritorialDossierCatastroSectionResponse(BaseModel):
+    section_key: Literal["catastro"] = "catastro"
+    title: str = "Catastro"
+    source: str | None = None
+    summary: TerritorialDossierCatastroSummaryResponse = Field(
+        default_factory=TerritorialDossierCatastroSummaryResponse
+    )
+    series: list[AnalyticalSeriesItemResponse] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class TerritorialDossierSectionsResponse(BaseModel):
+    identity: TerritorialDossierIdentitySectionResponse | None = None
+    geometry: TerritorialDossierGeometrySectionResponse | None = None
+    ine: TerritorialDossierINESectionResponse | None = None
+    catastro: TerritorialDossierCatastroSectionResponse | None = None
+
+
+class TerritorialDossierResponse(BaseModel):
+    source: Literal["internal.territorial.dossier"] = "internal.territorial.dossier"
+    generated_at: datetime
+    territorial_context: TerritorialDossierContextResponse
+    summary: TerritorialDossierSummaryResponse
+    sections: TerritorialDossierSectionsResponse
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class GeocodingTerritorialContextResponse(BaseModel):
     country_code: str | None = None
     autonomous_community_code: str | None = None

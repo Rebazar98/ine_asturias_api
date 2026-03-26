@@ -22,6 +22,7 @@ from app.dependencies import (
     get_series_repository,
     get_settings,
     get_territorial_analytics_service,
+    get_territorial_dossier_service,
     get_territorial_export_artifact_repository,
     get_territorial_export_service,
     get_territorial_repository,
@@ -52,6 +53,7 @@ from app.schemas import (
     TerritorialCatalogResourceResponse,
     TerritorialCatalogResponse,
     TerritorialCatalogSummaryResponse,
+    TerritorialDossierResponse,
     TerritorialExportJobAcceptedResponse,
     TerritorialExportJobStatusResponse,
     TerritorialExportRequest,
@@ -85,6 +87,7 @@ from app.services.territorial_analytics import (
     MUNICIPALITY_REPORT_TYPE,
     TerritorialAnalyticsService,
 )
+from app.services.territorial_dossier import TerritorialDossierService
 from app.services.territorial_exports import TERRITORIAL_EXPORT_JOB_TYPE, TerritorialExportService
 from app.settings import Settings
 
@@ -250,6 +253,25 @@ def _build_territorial_catalog_resources() -> list[TerritorialCatalogResourceRes
             unit_levels=[TERRITORIAL_UNIT_LEVEL_MUNICIPALITY],
             path_params=["codigo_ine"],
             response_contract="TerritorialUnitDetailResponse",
+        ),
+        TerritorialCatalogResourceResponse(
+            resource_key="territorial.dossier.detail",
+            title="Territorial semantic dossier",
+            category="territorial_read",
+            method="GET",
+            path="/territorios/{unit_level}/{code_value}/dossier",
+            summary=(
+                "Read a composite territorial dossier with canonical identity, geometry, "
+                "prioritized INE indicators and Catastro coverage through a single semantic contract."
+            ),
+            unit_levels=[
+                TERRITORIAL_UNIT_LEVEL_AUTONOMOUS_COMMUNITY,
+                TERRITORIAL_UNIT_LEVEL_PROVINCE,
+                TERRITORIAL_UNIT_LEVEL_MUNICIPALITY,
+            ],
+            path_params=["unit_level", "code_value"],
+            query_params=["include_geometry", "include_ine", "include_catastro"],
+            response_contract="TerritorialDossierResponse",
         ),
         TerritorialCatalogResourceResponse(
             resource_key="territorial.geometry.detail",
@@ -863,6 +885,47 @@ async def resolve_territorial_point(
             "ambiguity_by_level": resolution.get("ambiguity_by_level", {}),
         },
     )
+
+
+@router.get(
+    "/territorios/{unit_level}/{code_value}/dossier",
+    response_model=TerritorialDossierResponse,
+    tags=["territorial-read"],
+    summary="Get semantic territorial dossier by canonical code",
+    description=(
+        "Composite territorial dossier over the internal territorial model. "
+        "It consolidates canonical identity, optional geometry, prioritized INE indicators "
+        "and Catastro coverage without exposing raw provider payloads."
+    ),
+)
+async def get_territorial_dossier(
+    unit_level: str = Path(
+        ...,
+        pattern="^(autonomous_community|province|municipality)$",
+    ),
+    code_value: str = Path(..., min_length=1),
+    include_geometry: bool = Query(default=True),
+    include_ine: bool = Query(default=True),
+    include_catastro: bool = Query(default=True),
+    dossier_service: TerritorialDossierService = Depends(get_territorial_dossier_service),
+) -> TerritorialDossierResponse:
+    dossier = await dossier_service.build_dossier(
+        unit_level=unit_level,
+        code_value=code_value,
+        include_geometry=include_geometry,
+        include_ine=include_ine,
+        include_catastro=include_catastro,
+    )
+    if dossier is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "message": "Territorial unit code was not found.",
+                "unit_level": unit_level,
+                "code_value": code_value,
+            },
+        )
+    return dossier
 
 
 @router.get(

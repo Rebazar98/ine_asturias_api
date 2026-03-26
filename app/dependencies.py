@@ -39,6 +39,7 @@ from app.services.ign_admin_client import IGNAdministrativeSnapshotClient
 from app.services.ine_client import INEClientService
 from app.services.ine_operation_ingestion import INEOperationIngestionService
 from app.services.territorial_analytics import TerritorialAnalyticsService
+from app.services.territorial_dossier import TerritorialDossierService
 from app.services.territorial_exports import TerritorialExportService
 from app.settings import Settings, get_settings
 
@@ -270,6 +271,18 @@ def get_territorial_export_service(
         catastro_cache_ttl_seconds=settings.catastro_cache_ttl_seconds,
         catastro_aggregate_cache_ttl_seconds=settings.catastro_aggregate_cache_ttl_seconds,
         catastro_aggregate_max_concurrency=settings.catastro_aggregate_max_concurrency,
+    )
+
+
+def get_territorial_dossier_service(
+    territorial_repo: TerritorialRepository = Depends(get_territorial_repository),
+    series_repo: SeriesRepository = Depends(get_series_repository),
+    territorial_export_service: TerritorialExportService = Depends(get_territorial_export_service),
+) -> TerritorialDossierService:
+    return TerritorialDossierService(
+        territorial_repo=territorial_repo,
+        series_repo=series_repo,
+        territorial_export_service=territorial_export_service,
     )
 
 
