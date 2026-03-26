@@ -872,7 +872,9 @@ async def run_territorial_admin_boundaries_load_job(
             }
         )
 
-        ign_client = IGNAdministrativeSnapshotClient(http_client=ctx["http_client"], settings=settings)
+        ign_client = IGNAdministrativeSnapshotClient(
+            http_client=ctx["http_client"], settings=settings
+        )
         snapshot_payload = await ign_client.fetch_snapshot(snapshot_url=payload.get("snapshot_url"))
         await report_progress(
             {
