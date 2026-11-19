@@ -37,6 +37,6 @@ Este documento fija una base minima de SLOs/SLIs para el backend antes de una ex
 
 ## Alertas base
 
-Las reglas iniciales estan en [monitoring/prometheus-alerts.yml](C:/Users/user/OneDrive/Documents/Playground/monitoring/prometheus-alerts.yml).
+Las reglas iniciales estan en [monitoring/prometheus-alerts.yml](../monitoring/prometheus-alerts.yml).
 
 Estas reglas son una base y asumen jobs Prometheus llamados `ine_asturias_api` y `ine_asturias_worker`. Si el despliegue usa otros nombres, ajusta las expresiones antes de activarlas.

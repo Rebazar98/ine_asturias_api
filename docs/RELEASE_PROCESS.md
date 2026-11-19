@@ -21,11 +21,11 @@ No cubre despliegue cloud ni nuevas integraciones funcionales.
 - `docker compose` disponible.
 - `.env` derivado de `.env.example` o `--env-file` explicito.
 - Backup reciente disponible en `backups/ine_asturias.dump` si se va a ejecutar el restore drill local.
-- si el RC se valida sobre staging, staging DEBE cumplir previamente el criterio de aceptacion definido en [DEPLOYMENT_STAGING.md](C:/Users/user/OneDrive/Documents/Playground/DEPLOYMENT_STAGING.md).
+- si el RC se valida sobre staging, staging DEBE cumplir previamente el criterio de aceptacion definido en [DEPLOYMENT_STAGING.md](DEPLOYMENT_STAGING.md).
 
 ## Comando operativo recomendado
 
-La forma mas simple de ejecutar el RC en local es usar [scripts/release_candidate.ps1](C:/Users/user/OneDrive/Documents/Playground/scripts/release_candidate.ps1).
+La forma mas simple de ejecutar el RC en local es usar [scripts/release_candidate.ps1](../scripts/release_candidate.ps1).
 
 Sin restore drill en la misma ejecucion:
 
@@ -67,7 +67,7 @@ Nota operativa para staging:
 
 2. **Versionado y changelog**
    - confirmar la version candidata actual en `APP_VERSION`;
-   - actualizar [CHANGELOG.md](C:/Users/user/OneDrive/Documents/Playground/CHANGELOG.md) si el RC incorpora cambios relevantes desde la ultima entrada;
+   - actualizar [CHANGELOG.md](../CHANGELOG.md) si el RC incorpora cambios relevantes desde la ultima entrada;
    - verificar que la version documentada en changelog y configuracion coincide con la release que se esta validando.
 
 3. **Calidad de codigo**
@@ -150,7 +150,7 @@ Resultado esperado:
 - sin `geometry`, `centroid` ni payloads raw del proveedor en el bundle
 
 7. **Restore drill reciente**
-   - ejecutar [scripts/restore_drill.ps1](C:/Users/user/OneDrive/Documents/Playground/scripts/restore_drill.ps1) en local, o
+   - ejecutar [scripts/restore_drill.ps1](../scripts/restore_drill.ps1) en local, o
    - ejecutar manualmente el workflow `Restore Drill` en GitHub Actions.
 
 8. **Verificacion de endpoints criticos**
@@ -234,7 +234,7 @@ Para el primer RC real, el equipo DEBE conservar al menos:
 - enlace al run de `Security Scan`;
 - artefacto `restore-drill-artifacts` descargado o retenido en GitHub Actions;
 - artefacto `trivy-report` descargado o retenido en GitHub Actions;
-- referencia a cualquier excepcion temporal registrada con [SECURITY_EXCEPTION_TEMPLATE.md](C:/Users/user/OneDrive/Documents/Playground/SECURITY_EXCEPTION_TEMPLATE.md).
+- referencia a cualquier excepcion temporal registrada con [SECURITY_EXCEPTION_TEMPLATE.md](archive/SECURITY_EXCEPTION_TEMPLATE.md).
 
 ## Politica minima de aceptacion de hallazgos
 
@@ -265,7 +265,7 @@ Una excepcion temporal DEBE registrarse al menos en la PR o ticket de release co
 
 La fecha limite recomendada para excepciones temporales es de 30 dias maximo.
 
-Plantilla recomendada: [SECURITY_EXCEPTION_TEMPLATE.md](C:/Users/user/OneDrive/Documents/Playground/SECURITY_EXCEPTION_TEMPLATE.md).
+Plantilla recomendada: [SECURITY_EXCEPTION_TEMPLATE.md](archive/SECURITY_EXCEPTION_TEMPLATE.md).
 
 ### Revalidacion de excepciones
 
@@ -338,17 +338,17 @@ La continuidad post-RC se considera aprobada solo si:
 - `Restore Drill` termina en `Success`;
 - `Security Scan` no deja hallazgos `HIGH` o `CRITICAL` sin decision explicita;
 - no aparecen regresiones operativas en `/health`, `/health/ready`, smoke test o integridad restaurada;
-- cualquier excepcion temporal queda registrada con [SECURITY_EXCEPTION_TEMPLATE.md](C:/Users/user/OneDrive/Documents/Playground/SECURITY_EXCEPTION_TEMPLATE.md).
+- cualquier excepcion temporal queda registrada con [SECURITY_EXCEPTION_TEMPLATE.md](archive/SECURITY_EXCEPTION_TEMPLATE.md).
 
 ## Primer RC real aceptable
 
 El primer RC real puede considerarse aceptable solo si existe evidencia de que:
 
-- [scripts/release_candidate.ps1](C:/Users/user/OneDrive/Documents/Playground/scripts/release_candidate.ps1) ha terminado correctamente en local o staging controlado;
+- [scripts/release_candidate.ps1](../scripts/release_candidate.ps1) ha terminado correctamente en local o staging controlado;
 - el workflow `Restore Drill` ha terminado en `Success` y ha dejado `restore-drill-artifacts` revisable;
 - el workflow `Security Scan` ha sido ejecutado y su artefacto `trivy-report` ha sido revisado;
 - no existen hallazgos `HIGH` o `CRITICAL` sin decision explicita;
-- cualquier excepcion temporal esta registrada con [SECURITY_EXCEPTION_TEMPLATE.md](C:/Users/user/OneDrive/Documents/Playground/SECURITY_EXCEPTION_TEMPLATE.md);
+- cualquier excepcion temporal esta registrada con [SECURITY_EXCEPTION_TEMPLATE.md](archive/SECURITY_EXCEPTION_TEMPLATE.md);
 - `/health`, `/health/ready` y `/metrics` han sido confirmados durante la validacion.
 
 ## Criterio minimo de aprobacion del RC
@@ -370,7 +370,7 @@ La aceptacion de un RC NO implica por si sola que el proyecto este listo para in
 
 Antes de abrir CartoCiudad, IGN o cualquier nueva fuente externa, el repositorio DEBE cumplir ademas estas condiciones:
 
-- staging cumple el criterio de "staging operativo real" definido en [DEPLOYMENT_STAGING.md](C:/Users/user/OneDrive/Documents/Playground/DEPLOYMENT_STAGING.md);
+- staging cumple el criterio de "staging operativo real" definido en [DEPLOYMENT_STAGING.md](DEPLOYMENT_STAGING.md);
 - la continuidad post-RC ha sido revalidada cuando haya cambios de workflows, imagenes o dependencias;
 - `/ine/series` mantiene un contrato semantico estable y probado;
 - la estrategia de cruce con `territorial_unit_codes` ya esta documentada y asumida como base canonica;

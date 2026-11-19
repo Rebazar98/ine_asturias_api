@@ -33,7 +33,7 @@ El rollback detallado y el ensayo completo de staging se documentaran en los sig
 
 La plantilla base de staging es:
 
-- [.env.staging.example](C:/Users/user/OneDrive/Documents/Playground/.env.staging.example)
+- [.env.staging.example](../.env.staging.example)
 
 NO uses esa plantilla como fichero final de staging compartido. Debe copiarse fuera del repo o a un fichero local ignorado.
 

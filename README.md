@@ -1,27 +1,88 @@
 ﻿# ine_asturias_api
 
-`ine_asturias_api` es un backend FastAPI para ingesta, normalizacion y publicacion de datos del INE con foco inicial en Asturias. La base actual ya incorpora PostgreSQL, PostGIS, Alembic, Redis, jobs desacoplados, worker dedicado, catalogo persistente de tablas, observabilidad minima, CartoCiudad bajo demanda y una carga administrativa IGN/CNIG versionable para enriquecer el modelo territorial interno.
+[![CI](https://github.com/Rebazar98/ine_asturias_api/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Rebazar98/ine_asturias_api/actions/workflows/ci.yml)
+![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white)
+![PostGIS](https://img.shields.io/badge/PostgreSQL-PostGIS-336791?logo=postgresql&logoColor=white)
 
-## Documentacion
+**API que unifica datos territoriales y estadísticos oficiales de España (INE, CartoCiudad, IGN/CNIG y Catastro) en contratos propios, estables y listos para consumir desde n8n, agentes de IA u otras aplicaciones.** Foco inicial: Asturias.
 
-Documentacion disponible en la raiz del proyecto:
+## Qué problema resuelve
 
-- `README.md`: guia funcional y operativa del backend actual.
-- `DOCUMENTACION_EVOLUCION_PROYECTO.txt`: registro historico y memoria tecnica del proyecto.
-- `PLAN_TECNICO_PLATAFORMA_DATOS_TERRITORIALES.md`: roadmap de evolucion hacia plataforma territorial multi-fuente.
-- `PLAN_FASE_CARTOCIUDAD_IGN_ON_DEMAND.md`: plan ejecutado para consolidar CartoCiudad como segunda fuente oficial bajo demanda.
-- `PLAN_FASE_IGN_ADMINISTRATIVO_DIRECTO.md`: plan ejecutado para incorporar IGN/CNIG administrativo directo mediante snapshots versionables.
-- `MONITORING_SLOS.md`: objetivos operativos, SLIs y reglas base de alertado para produccion.
-- `FASE2_STAGING_OPERATIVO_BACKLOG.md`: contexto de trabajo y backlog ejecutable para la fase de staging operativo real.
-- `FASE3_MODELO_TERRITORIAL_BACKLOG.md`: backlog ejecutable para la fase de modelo territorial operativo y base geoespacial interna.
-- `FASE4_API_TERRITORIAL_BACKLOG.md`: backlog ejecutable para la fase de API territorial unificada y primera integracion geografica.
-- `FASE5_AUTOMATIZACION_ANALITICA_BACKLOG.md`: backlog ejecutable para la fase de automatizacion, analitica operativa y consumo productivo.
-- `AGENTS.md`: guia de arquitectura y reglas operativas para agentes y colaboradores tecnicos.
-- `RELEASE_PROCESS.md`: proceso operativo para preparar y validar un release candidate.
-- `DEPLOYMENT_STAGING.md`: guia operativa para desplegar y verificar un entorno de staging reproducible.
-- `CHANGELOG.md`: historial de versiones y release candidates aceptados.
-- `SECURITY_EXCEPTION_TEMPLATE.md`: plantilla minima para registrar excepciones temporales de seguridad.
-- `ACTA_RC1.md`: acta del primer Release Candidate real y siguiente bloque recomendado de evolucion.
+Cada fuente oficial tiene su propio formato, sus límites y su disponibilidad, y las automatizaciones que dependen de ellas directamente se rompen con facilidad. Esta API ingiere los datos, los normaliza, los guarda con trazabilidad y los publica con un único contrato semántico.
+
+## Capacidades
+
+- **Ingesta del INE** idempotente (upsert por clave lógica), con el dato crudo conservado para auditoría.
+- **Geocodificación directa e inversa** con CartoCiudad y caché persistente.
+- **Modelo territorial en PostGIS**: comunidades, provincias y municipios con geometría, y resolución de un punto a su municipio.
+- **Resúmenes e informes municipales** y **exportación multi-fuente en ZIP** mediante jobs asíncronos (`202 + job_id + polling`).
+- **Pensada para automatización**: endpoints recomendados para n8n y agentes, que nunca exponen el formato crudo del proveedor.
+- **Lista para operar**: API key, rate limiting, circuit breaker y reintentos hacia proveedores, métricas Prometheus, SLOs, backup y restore.
+
+## Arquitectura
+
+```mermaid
+flowchart LR
+    C["n8n · agentes IA · apps"] --> API["FastAPI"]
+    API --> PG[("PostgreSQL + PostGIS")]
+    API -- "jobs" --> R[("Redis + arq")]
+    R --> W["Worker"]
+    W --> PG
+    API --> S["Adapters de proveedores"]
+    W --> S
+    S --> F["INE · CartoCiudad · IGN/CNIG · Catastro"]
+```
+
+| Capa | Contenido |
+|---|---|
+| `app/api` | Routers HTTP, sin lógica de negocio |
+| `app/services` | Lógica de dominio y adapters de cada proveedor |
+| `app/repositories` | Persistencia SQLAlchemy |
+| `app/worker.py` | Worker `arq` para jobs pesados |
+| `alembic/` | Migraciones versionadas |
+
+## Stack y calidad
+
+Python 3.12 · FastAPI · SQLAlchemy · PostgreSQL 16 + PostGIS · Redis + arq · Alembic · Docker Compose · Nginx · Prometheus
+
+- 73 ficheros de tests con `pytest` (unitarios e integración) y `ruff` para lint y formato.
+- CI en GitHub Actions, dependencias congeladas en `requirements.lock` y contenedores non-root.
+- Desarrollo asistido por agentes de IA con reglas de arquitectura explícitas ([AGENTS.md](AGENTS.md), [CLAUDE.md](CLAUDE.md)).
+
+## Puesta en marcha
+
+```bash
+cp .env.example .env
+docker compose up --build
+# API:  http://127.0.0.1:8001
+# Docs: http://127.0.0.1:8001/docs
+```
+
+Ejemplos:
+
+```bash
+curl "http://127.0.0.1:8001/geocode?query=Gijon"
+curl "http://127.0.0.1:8001/territorios/resolve-point?lat=43.3614&lon=-5.8494"
+curl "http://127.0.0.1:8001/territorios/municipio/33044/resumen"
+```
+
+## Documentación
+
+| Documento | Contenido |
+|---|---|
+| [AGENTS.md](AGENTS.md) | Reglas de arquitectura y convenciones |
+| [CHANGELOG.md](CHANGELOG.md) | Historial de versiones |
+| [docs/PLAN_TECNICO_PLATAFORMA_DATOS_TERRITORIALES.md](docs/PLAN_TECNICO_PLATAFORMA_DATOS_TERRITORIALES.md) | Visión y arquitectura objetivo |
+| [docs/DEPLOYMENT_STAGING.md](docs/DEPLOYMENT_STAGING.md) | Despliegue de un entorno de staging reproducible |
+| [docs/RELEASE_PROCESS.md](docs/RELEASE_PROCESS.md) | Proceso de release candidate |
+| [docs/MONITORING_SLOS.md](docs/MONITORING_SLOS.md) | SLOs, SLIs y alertas |
+| [docs/DOCUMENTACION_EVOLUCION_PROYECTO.txt](docs/DOCUMENTACION_EVOLUCION_PROYECTO.txt) | Registro histórico y memoria técnica |
+| [docs/archive/](docs/archive/) | Backlogs de fases completadas, planes ejecutados y actas |
+
+---
+
+# Guía técnica detallada
 
 ## Arquitectura actual
 
@@ -126,7 +187,7 @@ Reglas operativas de seguridad:
 - `requirements.txt` mantiene solo dependencias directas y versionadas de forma exacta.
 - `requirements.lock` congela el conjunto efectivo usado por Docker y CI.
 - Docker y CI DEBEN instalar desde `requirements.lock`.
-- El proyecto usa versionado semantico simple y registra hitos operativos en [CHANGELOG.md](C:/Users/user/OneDrive/Documents/Playground/CHANGELOG.md).
+- El proyecto usa versionado semantico simple y registra hitos operativos en [CHANGELOG.md](CHANGELOG.md).
 - Politica de actualizacion recomendada:
   1. editar `requirements.txt` de forma intencional,
   2. reconstruir la imagen base,
@@ -139,8 +200,8 @@ Version actual recomendada:
 
 ## Imagenes base y seguridad ligera
 
-- La imagen de aplicacion queda fijada a `python:3.12.13-slim` con digest explicito en [Dockerfile](C:/Users/user/OneDrive/Documents/Playground/Dockerfile).
-- `postgis/postgis` y `redis` quedan fijadas por tag y digest en [docker-compose.yml](C:/Users/user/OneDrive/Documents/Playground/docker-compose.yml).
+- La imagen de aplicacion queda fijada a `python:3.12.13-slim` con digest explicito en [Dockerfile](Dockerfile).
+- `postgis/postgis` y `redis` quedan fijadas por tag y digest en [docker-compose.yml](docker-compose.yml).
 - Esta politica reduce deriva del runtime sin introducir un sistema pesado de gestion de imagenes.
 - Los contenedores de aplicacion corren como non-root y con `cap_drop: [ALL]`.
 
@@ -148,8 +209,8 @@ Version actual recomendada:
 
 La capa ligera adoptada en esta fase es:
 
-- [dependabot.yml](C:/Users/user/OneDrive/Documents/Playground/.github/dependabot.yml) para pip, docker y github-actions, con frecuencia semanal.
-- [security-scan.yml](C:/Users/user/OneDrive/Documents/Playground/.github/workflows/security-scan.yml) para escaneo manual o semanal de la imagen API con Trivy y artefacto 	rivy-report.
+- [dependabot.yml](.github/dependabot.yml) para pip, docker y github-actions, con frecuencia semanal.
+- [security-scan.yml](.github/workflows/security-scan.yml) para escaneo manual o semanal de la imagen API con Trivy y artefacto 	rivy-report.
 - pip check en CI y en build para detectar incompatibilidades declarativas de dependencias.
 - Los workflows oficiales usan versiones de `actions/*` alineadas con Node 24 (`checkout@v5`, `setup-python@v6`, `upload-artifact@v6`) para reducir riesgo de rotura futura en GitHub Actions.
 
@@ -188,7 +249,7 @@ Migraciones incluidas:
 
 ### Bootstrap seguro para bases existentes
 
-El proyecto incluye [scripts/bootstrap_alembic.py](C:/Users/user/OneDrive/Documents/Playground/scripts/bootstrap_alembic.py) para resolver de forma segura la transicion desde bases heredadas sin `alembic_version`.
+El proyecto incluye [scripts/bootstrap_alembic.py](scripts/bootstrap_alembic.py) para resolver de forma segura la transicion desde bases heredadas sin `alembic_version`.
 
 Reglas del bootstrap:
 
@@ -910,7 +971,7 @@ La exportacion Prometheus se resuelve de forma pragmatica:
 - `/metrics` ya no debe exponerse sin control en entornos compartidos: en `staging` y `production` requiere `X-API-Key`, mientras que `local/dev/test` mantienen acceso abierto para desarrollo y troubleshooting.
 
 Si necesitas diagnostico fino por proceso, consulta el worker directamente desde la red interna de Docker o publica temporalmente su puerto de metricas en un entorno controlado.
-Los objetivos operativos y reglas base de alertado quedan definidos en [MONITORING_SLOS.md](C:/Users/user/OneDrive/Documents/Playground/MONITORING_SLOS.md) y [monitoring/prometheus-alerts.yml](C:/Users/user/OneDrive/Documents/Playground/monitoring/prometheus-alerts.yml).
+Los objetivos operativos y reglas base de alertado quedan definidos en [MONITORING_SLOS.md](docs/MONITORING_SLOS.md) y [monitoring/prometheus-alerts.yml](monitoring/prometheus-alerts.yml).
 
 Metricas operativas nuevas relevantes:
 
@@ -1080,7 +1141,7 @@ Esta evidencia confirma que la capa publica `geocode` / `reverse_geocode` / `ter
 
 ## Smoke test automatizado
 
-El repositorio incluye [scripts/smoke_stack.py](C:/Users/user/OneDrive/Documents/Playground/scripts/smoke_stack.py) como validacion runtime minima del stack.
+El repositorio incluye [scripts/smoke_stack.py](scripts/smoke_stack.py) como validacion runtime minima del stack.
 
 Valida de forma automatica:
 
@@ -1171,7 +1232,7 @@ Si necesitas corregir formato de forma segura:
 ruff format .
 ```
 
-La configuracion queda en [pyproject.toml](C:/Users/user/OneDrive/Documents/Playground/pyproject.toml) con una seleccion ligera de reglas para evitar degradacion futura sin introducir una carga excesiva. El criterio seguido es ampliar el gate solo sobre capas operativas ya estables, evitando churn innecesario en el resto del repositorio.
+La configuracion queda en [pyproject.toml](pyproject.toml) con una seleccion ligera de reglas para evitar degradacion futura sin introducir una carga excesiva. El criterio seguido es ampliar el gate solo sobre capas operativas ya estables, evitando churn innecesario en el resto del repositorio.
 
 ## Backup y restore de PostgreSQL
 
@@ -1237,11 +1298,11 @@ La verificacion comprueba como minimo:
 - `GET /health/ready`
 - contrato basico de `/ine/series`
 
-Si necesitas una validacion funcional mas completa tras el restore, ejecuta ademas [scripts/smoke_stack.py](C:/Users/user/OneDrive/Documents/Playground/scripts/smoke_stack.py).
+Si necesitas una validacion funcional mas completa tras el restore, ejecuta ademas [scripts/smoke_stack.py](scripts/smoke_stack.py).
 
 ### Rutina repetible de restore
 
-El repositorio incluye [scripts/restore_drill.ps1](C:/Users/user/OneDrive/Documents/Playground/scripts/restore_drill.ps1) para repetir el drill completo de recuperacion de forma estable.
+El repositorio incluye [scripts/restore_drill.ps1](scripts/restore_drill.ps1) para repetir el drill completo de recuperacion de forma estable.
 
 Comando recomendado para entorno local:
 
@@ -1270,7 +1331,7 @@ La configuracion queda preparada para dos usos claros:
 
 - `.env.example`: valores por defecto para desarrollo/local con Docker Compose.
 - `.env.staging.example`: mismo contrato de variables, pero con `APP_ENV=staging` y placeholders seguros para futuros despliegues.
-- [DEPLOYMENT_STAGING.md](C:/Users/user/OneDrive/Documents/Playground/DEPLOYMENT_STAGING.md): procedimiento operativo para levantar staging como entorno de ensayo real.
+- [DEPLOYMENT_STAGING.md](docs/DEPLOYMENT_STAGING.md): procedimiento operativo para levantar staging como entorno de ensayo real.
   Tambien incluye el rollback operativo minimo y el uso de restore desde backup como mecanismo oficial cuando no exista downgrade seguro de migraciones.
   A partir de esta fase tambien define el ensayo completo de staging: deploy, migrate, health, smoke, rollback y restore verification.
 
@@ -1316,24 +1377,24 @@ Reglas operativas:
 - staging DEBE usar el mismo contrato de variables que local para que la aplicacion siga siendo reproducible sin ramas de configuracion especiales.
 ## CI minima
 
-La CI base queda en [.github/workflows/ci.yml](C:/Users/user/OneDrive/Documents/Playground/.github/workflows/ci.yml) y ejecuta:
+La CI base queda en [.github/workflows/ci.yml](.github/workflows/ci.yml) y ejecuta:
 
 - instalacion de dependencias Python desde `requirements.lock`
 - `pytest`
 - arranque controlado de `db` y `redis`
 - validacion de migraciones con `docker compose run --rm migrate`
 - arranque de `api` y `worker`
-- smoke test con [scripts/smoke_stack.py](C:/Users/user/OneDrive/Documents/Playground/scripts/smoke_stack.py)
+- smoke test con [scripts/smoke_stack.py](scripts/smoke_stack.py)
 - recogida de logs en caso de fallo y `docker compose down -v` al final
 
 Workflows manuales adicionales:
 
-- [restore-drill.yml](C:/Users/user/OneDrive/Documents/Playground/.github/workflows/restore-drill.yml): ejecuta un restore drill completo bajo demanda en CI y publica `restore-drill-artifacts` con `seed-smoke.txt`, `smoke-test.txt`, `verify-restore.txt`, `compose-ps.txt` y logs de servicios.
-- [security-scan.yml](C:/Users/user/OneDrive/Documents/Playground/.github/workflows/security-scan.yml): escanea la imagen API con Trivy de forma manual o semanal y publica el artefacto `trivy-report` con `trivy-report.txt`.
+- [restore-drill.yml](.github/workflows/restore-drill.yml): ejecuta un restore drill completo bajo demanda en CI y publica `restore-drill-artifacts` con `seed-smoke.txt`, `smoke-test.txt`, `verify-restore.txt`, `compose-ps.txt` y logs de servicios.
+- [security-scan.yml](.github/workflows/security-scan.yml): escanea la imagen API con Trivy de forma manual o semanal y publica el artefacto `trivy-report` con `trivy-report.txt`.
 
 ## Release candidate
 
-El proceso operativo completo para preparar un RC queda formalizado en [RELEASE_PROCESS.md](C:/Users/user/OneDrive/Documents/Playground/RELEASE_PROCESS.md). La forma recomendada de ejecutarlo localmente es [scripts/release_candidate.ps1](C:/Users/user/OneDrive/Documents/Playground/scripts/release_candidate.ps1).
+El proceso operativo completo para preparar un RC queda formalizado en [RELEASE_PROCESS.md](docs/RELEASE_PROCESS.md). La forma recomendada de ejecutarlo localmente es [scripts/release_candidate.ps1](scripts/release_candidate.ps1).
 
 Ejemplo:
 
@@ -1349,16 +1410,16 @@ Antes de declarar una release operativa, comprobar como minimo:
 - `ruff format --check app/api app/core scripts main.py app/settings.py app/worker.py`
 - `pytest`
 - `docker compose run --rm migrate`
-- smoke test verde con [scripts/smoke_stack.py](C:/Users/user/OneDrive/Documents/Playground/scripts/smoke_stack.py)
-- restore drill ejecutado recientemente con [scripts/restore_drill.ps1](C:/Users/user/OneDrive/Documents/Playground/scripts/restore_drill.ps1)
+- smoke test verde con [scripts/smoke_stack.py](scripts/smoke_stack.py)
+- restore drill ejecutado recientemente con [scripts/restore_drill.ps1](scripts/restore_drill.ps1)
 - revision de `.env.example` y `.env.staging.example`
 - confirmacion de `requirements.lock` actualizado si hubo cambios de dependencias
-- confirmacion de tags/digests en [Dockerfile](C:/Users/user/OneDrive/Documents/Playground/Dockerfile) y [docker-compose.yml](C:/Users/user/OneDrive/Documents/Playground/docker-compose.yml)
+- confirmacion de tags/digests en [Dockerfile](Dockerfile) y [docker-compose.yml](docker-compose.yml)
 - `/health`, `/health/ready` y `/metrics` respondiendo correctamente
 
 ### Continuidad post-RC
 
-Despues de aceptar un RC, el equipo DEBE repetir `Restore Drill` y `Security Scan` cuando cambien workflows, dependencias, imagenes base o digests. El detalle operativo y la evidencia minima requerida quedan definidos en [RELEASE_PROCESS.md](C:/Users/user/OneDrive/Documents/Playground/RELEASE_PROCESS.md).
+Despues de aceptar un RC, el equipo DEBE repetir `Restore Drill` y `Security Scan` cuando cambien workflows, dependencias, imagenes base o digests. El detalle operativo y la evidencia minima requerida quedan definidos en [RELEASE_PROCESS.md](docs/RELEASE_PROCESS.md).
 ## Testing
 
 Los tests actuales siguen evitando red real con `httpx.MockTransport` y dummies de repositorio. Tambien existe una prueba de integracion opcional para Redis real.

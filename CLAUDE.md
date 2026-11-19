@@ -109,7 +109,7 @@ Los permisos pre-aprobados están en `.claude/settings.json`. Requieren aprobaci
 
 Tras cualquier modificación significativa (nueva funcionalidad, cambio arquitectónico, nueva fase, cambio de convenciones), Claude **debe**:
 
-1. Actualizar `DOCUMENTACION_EVOLUCION_PROYECTO.txt` añadiendo una entrada con fecha, descripción del cambio y decisiones relevantes tomadas.
+1. Actualizar `docs/DOCUMENTACION_EVOLUCION_PROYECTO.txt` añadiendo una entrada con fecha, descripción del cambio y decisiones relevantes tomadas.
 2. Actualizar este `CLAUDE.md` si el cambio afecta a comandos, estructura, estado de fases o reglas críticas.
 3. Actualizar `AGENTS.md` si el cambio afecta a convenciones arquitectónicas, nuevas capas o nuevos providers.
 4. Actualizar `CHANGELOG.md` si el cambio constituye una entrega o versión relevante.
@@ -152,10 +152,10 @@ Comandos personalizados en `.claude/commands/` invocables con `/nombre`:
 | Archivo | Contenido |
 |---------|-----------|
 | `AGENTS.md` | Reglas completas de arquitectura para agentes |
-| `DOCUMENTACION_EVOLUCION_PROYECTO.txt` | Registro histórico y técnico del proyecto **(actualizar tras cambios)** |
-| `PLAN_TECNICO_PLATAFORMA_DATOS_TERRITORIALES.md` | Visión y arquitectura objetivo |
+| `docs/DOCUMENTACION_EVOLUCION_PROYECTO.txt` | Registro histórico y técnico del proyecto **(actualizar tras cambios)** |
+| `docs/PLAN_TECNICO_PLATAFORMA_DATOS_TERRITORIALES.md` | Visión y arquitectura objetivo |
 | `CHANGELOG.md` | Historial de versiones |
-| `DEPLOYMENT_STAGING.md` | Guía de staging |
-| `MONITORING_SLOS.md` | SLOs y alertas Prometheus |
-| `RELEASE_PROCESS.md` | Proceso de release y candidatos |
+| `docs/DEPLOYMENT_STAGING.md` | Guía de staging |
+| `docs/MONITORING_SLOS.md` | SLOs y alertas Prometheus |
+| `docs/RELEASE_PROCESS.md` | Proceso de release y candidatos |
 | `docs/archive/` | Backlogs de fases completadas, planes ejecutados y actas históricas |
